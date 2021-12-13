@@ -1,0 +1,42 @@
+{
+  database: {
+    host: "localhost"
+    port: 5432
+    database: "aircraft"
+    pool_size: 5
+  }
+  rate_limit: {
+    message: 180
+    message_per_second: 60
+    post: 6
+    post_per_second: 600
+    register: 3
+    register_per_second: 3600
+    image: 6
+    image_per_second: 3600
+    comment: 6
+    comment_per_second: 600
+  }
+  federation: {
+    enabled: false
+    strict_allowlist: true
+  }
+  captcha: {
+    enabled: false
+    difficulty: "medium"
+  }
+  email: {
+    smtp_server: "localhost:25"
+    smtp_login: "string"
+    smtp_password: "string"
+    smtp_from_address: "noreply@example.com"
+    use_tls: true
+  }
+  hostname: "unset"
+  bind: "0.0.0.0"
+  port: 8536
+  tls_enabled: true
+  pictrs_url: "http:#localhost:8080"
+  slur_filter: "(\bThis\b)|(\bis\b)|(\bsample\b)"
+  actor_name_max_length: 20
+}

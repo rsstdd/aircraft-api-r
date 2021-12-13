@@ -1,0 +1,20 @@
+[package]
+name = "aircraft_api_common"
+version = "0.14.1"
+edition = "2018"
+
+[lib]
+name = "aircraft_api_common"
+path = "src/lib.rs"
+doctest = false
+
+[dependencies]
+aircraft_db_schema = { version = "=0.1.0", path = "../db_schema" }
+aircraft_utils = { version = "=0.1.0", path = "../utils" }
+serde = { version = "1.0.130", features = ["derive"] }
+log = "0.4.14"
+diesel = "1.4.8"
+actix-web = { version = "4.0.0-beta.9", default-features = false, features = ["cookies"] }
+chrono = { version = "0.4.19", features = ["serde"] }
+serde_json = { version = "1.0.68", features = ["preserve_order"] }
+url = "2.2.2"

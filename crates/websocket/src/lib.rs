@@ -1,0 +1,190 @@
+#[macro_use]
+extern crate strum_macros;
+
+use crate::chat_server::ChatServer;
+use actix::Addr;
+use background_jobs::QueueHandle;
+use aircraft_db_schema::{source::secret::Secret, DbPool};
+use aircraft_utils::{settings::structs::Settings, AircraftError};
+use reqwest::Client;
+use serde::Serialize;
+
+pub mod chat_server;
+pub mod handlers;
+pub mod messages;
+pub mod routes;
+pub mod send;
+
+pub struct AircraftContext {
+  pool: DbPool,
+  chat_server: Addr<ChatServer>,
+  client: Client,
+  activity_queue: QueueHandle,
+  settings: Settings,
+  secret: Secret,
+}
+
+impl AircraftContext {
+  pub fn create(
+    pool: DbPool,
+    chat_server: Addr<ChatServer>,
+    client: Client,
+    activity_queue: QueueHandle,
+    settings: Settings,
+    secret: Secret,
+  ) -> AircraftContext {
+    AircraftContext {
+      pool,
+      chat_server,
+      client,
+      activity_queue,
+      settings,
+      secret,
+    }
+  }
+  pub fn pool(&self) -> &DbPool {
+    &self.pool
+  }
+  pub fn chat_server(&self) -> &Addr<ChatServer> {
+    &self.chat_server
+  }
+  pub fn client(&self) -> &Client {
+    &self.client
+  }
+  pub fn activity_queue(&self) -> &QueueHandle {
+    &self.activity_queue
+  }
+  pub fn settings(&self) -> Settings {
+    // TODO hacky solution to be able to hotload the settings.
+    Settings::get()
+  }
+  pub fn secret(&self) -> &Secret {
+    &self.secret
+  }
+}
+
+impl Clone for AircraftContext {
+  fn clone(&self) -> Self {
+    AircraftContext {
+      pool: self.pool.clone(),
+      chat_server: self.chat_server.clone(),
+      client: self.client.clone(),
+      activity_queue: self.activity_queue.clone(),
+      settings: self.settings.clone(),
+      secret: self.secret.clone(),
+    }
+  }
+}
+
+#[derive(Serialize)]
+struct WebsocketResponse<T> {
+  op: String,
+  data: T,
+}
+
+pub fn serialize_websocket_message<OP, Response>(
+  op: &OP,
+  data: &Response,
+) -> Result<String, AircraftError>
+where
+  Response: Serialize,
+  OP: ToString,
+{
+  let response = WebsocketResponse {
+    op: op.to_string(),
+    data,
+  };
+  Ok(serde_json::to_string(&response)?)
+}
+
+#[derive(EnumString, ToString, Debug, Clone)]
+pub enum UserOperation {
+  Login,
+  GetCaptcha,
+  MarkCommentAsRead,
+  SaveComment,
+  CreateCommentLike,
+  CreateCommentReport,
+  ResolveCommentReport,
+  ListCommentReports,
+  CreatePostLike,
+  LockPost,
+  StickyPost,
+  SavePost,
+  CreatePostReport,
+  ResolvePostReport,
+  ListPostReports,
+  GetReportCount,
+  GetUnreadCount,
+  FollowCommunity,
+  GetReplies,
+  GetPersonMentions,
+  MarkPersonMentionAsRead,
+  GetModlog,
+  BanFromCommunity,
+  AddModToCommunity,
+  AddAdmin,
+  BanPerson,
+  Search,
+  ResolveObject,
+  MarkAllAsRead,
+  SaveUserSettings,
+  TransferCommunity,
+  TransferSite,
+  PasswordReset,
+  PasswordChange,
+  MarkPrivateMessageAsRead,
+  UserJoin,
+  GetSiteConfig,
+  SaveSiteConfig,
+  PostJoin,
+  CommunityJoin,
+  ModJoin,
+  ChangePassword,
+  GetSiteMetadata,
+  BlockCommunity,
+  BlockPerson,
+}
+
+#[derive(EnumString, ToString, Debug, Clone)]
+pub enum UserOperationCrud {
+  // Site
+  CreateSite,
+  GetSite,
+  EditSite,
+  // Community
+  CreateCommunity,
+  ListCommunities,
+  GetCommunity,
+  EditCommunity,
+  DeleteCommunity,
+  RemoveCommunity,
+  // Post
+  CreatePost,
+  GetPost,
+  GetPosts,
+  EditPost,
+  DeletePost,
+  RemovePost,
+  // Comment
+  CreateComment,
+  GetComments,
+  EditComment,
+  DeleteComment,
+  RemoveComment,
+  // User
+  Register,
+  GetPersonDetails,
+  DeleteAccount,
+  // Private Message
+  CreatePrivateMessage,
+  GetPrivateMessages,
+  EditPrivateMessage,
+  DeletePrivateMessage,
+}
+
+pub trait OperationType {}
+
+impl OperationType for UserOperationCrud {}
+
+impl OperationType for UserOperation {}
