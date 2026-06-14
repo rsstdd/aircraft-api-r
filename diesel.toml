@@ -1,5 +1,284 @@
-# For documentation on how to configure this file,
-# see diesel.rs/guides/configuring-diesel-cli
+# =============================================================================
+# Diesel CLI
+# =============================================================================
+# Diesel 2.3+ schema generation configuration.
+#
+# This project uses PostgreSQL schema namespaces:
+# - aircraft_ref
+# - aircraft_geo
+# - aircraft_org
+# - aircraft_core
+# - aircraft_cert
+# - aircraft_specs
+# - aircraft_power
+# - aircraft_systems
+# - aircraft_military
+# - aircraft_market
+# - aircraft_maint
+# - aircraft_prov
+# - aircraft_compare
+# - aircraft_ingest
+# - aircraft_read
+# =============================================================================
+
+
+# -----------------------------------------------------------------------------
+# Default schema generation target
+# -----------------------------------------------------------------------------
+# Use the core application schema as the default.
+# Additional schemas can be generated via:
+#
+#   diesel print-schema --schema-key aircraft_ref
+#   diesel print-schema --schema-key aircraft_core
+#   diesel print-schema --schema-key aircraft_specs
+#
+# Diesel's `schema` field only affects PostgreSQL. If omitted, Diesel searches
+# `public`, which is not correct for this project.
+# -----------------------------------------------------------------------------
 
 [print_schema]
-file = "aircraft_db/src/schema.rs"
+file = "src/database/schema/aircraft_core.rs"
+schema = "aircraft_core"
+with_docs = true
+generate_missing_sql_type_definitions = true
+custom_type_derives = ["diesel::sql_types::SqlType", "std::fmt::Debug"]
+import_types = ["diesel::sql_types::*"]
+allow_tables_to_appear_in_same_query_config = "fk_related_tables"
+column_sorting = "ordinal_position"
+
+
+# -----------------------------------------------------------------------------
+# Reference / lookup schema
+# -----------------------------------------------------------------------------
+
+[print_schema.aircraft_ref]
+file = "src/db/schema/aircraft_ref.rs"
+schema = "aircraft_ref"
+with_docs = true
+generate_missing_sql_type_definitions = true
+custom_type_derives = ["diesel::sql_types::SqlType", "std::fmt::Debug"]
+import_types = ["diesel::sql_types::*"]
+allow_tables_to_appear_in_same_query_config = "fk_related_tables"
+column_sorting = "ordinal_position"
+
+# PostgreSQL domains from 001_extensions_schemas_domains_triggers.sql.
+# Enable this only if application code needs Diesel custom SQL types for these
+# domains instead of treating them as their underlying SQL types.
+#
+# pg_domains_as_custom_types = [
+#   "nonneg_numeric",
+#   "confidence_score",
+#   "year_value",
+#   "slug_text",
+#   "lookup_code",
+# ]
+
+
+# -----------------------------------------------------------------------------
+# Geography
+# -----------------------------------------------------------------------------
+
+[print_schema.aircraft_geo]
+file = "src/db/schema/aircraft_geo.rs"
+schema = "aircraft_geo"
+with_docs = true
+generate_missing_sql_type_definitions = true
+custom_type_derives = ["diesel::sql_types::SqlType", "std::fmt::Debug"]
+import_types = ["diesel::sql_types::*"]
+allow_tables_to_appear_in_same_query_config = "fk_related_tables"
+column_sorting = "ordinal_position"
+
+
+# -----------------------------------------------------------------------------
+# Organizations
+# -----------------------------------------------------------------------------
+
+[print_schema.aircraft_org]
+file = "src/db/schema/aircraft_org.rs"
+schema = "aircraft_org"
+with_docs = true
+generate_missing_sql_type_definitions = true
+custom_type_derives = ["diesel::sql_types::SqlType", "std::fmt::Debug"]
+import_types = ["diesel::sql_types::*"]
+allow_tables_to_appear_in_same_query_config = "fk_related_tables"
+column_sorting = "ordinal_position"
+
+
+# -----------------------------------------------------------------------------
+# Aircraft identity backbone
+# -----------------------------------------------------------------------------
+
+[print_schema.aircraft_core]
+file = "src/db/schema/aircraft_core.rs"
+schema = "aircraft_core"
+with_docs = true
+generate_missing_sql_type_definitions = true
+custom_type_derives = ["diesel::sql_types::SqlType", "std::fmt::Debug"]
+import_types = ["diesel::sql_types::*"]
+allow_tables_to_appear_in_same_query_config = "fk_related_tables"
+column_sorting = "ordinal_position"
+
+
+# -----------------------------------------------------------------------------
+# Certification
+# -----------------------------------------------------------------------------
+
+[print_schema.aircraft_cert]
+file = "src/db/schema/aircraft_cert.rs"
+schema = "aircraft_cert"
+with_docs = true
+generate_missing_sql_type_definitions = true
+custom_type_derives = ["diesel::sql_types::SqlType", "std::fmt::Debug"]
+import_types = ["diesel::sql_types::*"]
+allow_tables_to_appear_in_same_query_config = "fk_related_tables"
+column_sorting = "ordinal_position"
+
+
+# -----------------------------------------------------------------------------
+# Aircraft specifications
+# -----------------------------------------------------------------------------
+
+[print_schema.aircraft_specs]
+file = "src/db/schema/aircraft_specs.rs"
+schema = "aircraft_specs"
+with_docs = true
+generate_missing_sql_type_definitions = true
+custom_type_derives = ["diesel::sql_types::SqlType", "std::fmt::Debug"]
+import_types = ["diesel::sql_types::*"]
+allow_tables_to_appear_in_same_query_config = "fk_related_tables"
+column_sorting = "ordinal_position"
+
+
+# -----------------------------------------------------------------------------
+# Powerplant / propulsion
+# -----------------------------------------------------------------------------
+
+[print_schema.aircraft_power]
+file = "src/db/schema/aircraft_power.rs"
+schema = "aircraft_power"
+with_docs = true
+generate_missing_sql_type_definitions = true
+custom_type_derives = ["diesel::sql_types::SqlType", "std::fmt::Debug"]
+import_types = ["diesel::sql_types::*"]
+allow_tables_to_appear_in_same_query_config = "fk_related_tables"
+column_sorting = "ordinal_position"
+
+
+# -----------------------------------------------------------------------------
+# Aircraft systems
+# -----------------------------------------------------------------------------
+
+[print_schema.aircraft_systems]
+file = "src/db/schema/aircraft_systems.rs"
+schema = "aircraft_systems"
+with_docs = true
+generate_missing_sql_type_definitions = true
+custom_type_derives = ["diesel::sql_types::SqlType", "std::fmt::Debug"]
+import_types = ["diesel::sql_types::*"]
+allow_tables_to_appear_in_same_query_config = "fk_related_tables"
+column_sorting = "ordinal_position"
+
+
+# -----------------------------------------------------------------------------
+# Military reference data
+# -----------------------------------------------------------------------------
+
+[print_schema.aircraft_military]
+file = "src/db/schema/aircraft_military.rs"
+schema = "aircraft_military"
+with_docs = true
+generate_missing_sql_type_definitions = true
+custom_type_derives = ["diesel::sql_types::SqlType", "std::fmt::Debug"]
+import_types = ["diesel::sql_types::*"]
+allow_tables_to_appear_in_same_query_config = "fk_related_tables"
+column_sorting = "ordinal_position"
+
+
+# -----------------------------------------------------------------------------
+# Market / buyer research
+# -----------------------------------------------------------------------------
+
+[print_schema.aircraft_market]
+file = "src/db/schema/aircraft_market.rs"
+schema = "aircraft_market"
+with_docs = true
+generate_missing_sql_type_definitions = true
+custom_type_derives = ["diesel::sql_types::SqlType", "std::fmt::Debug"]
+import_types = ["diesel::sql_types::*"]
+allow_tables_to_appear_in_same_query_config = "fk_related_tables"
+column_sorting = "ordinal_position"
+
+
+# -----------------------------------------------------------------------------
+# Maintenance / supportability
+# -----------------------------------------------------------------------------
+
+[print_schema.aircraft_maint]
+file = "src/db/schema/aircraft_maint.rs"
+schema = "aircraft_maint"
+with_docs = true
+generate_missing_sql_type_definitions = true
+custom_type_derives = ["diesel::sql_types::SqlType", "std::fmt::Debug"]
+import_types = ["diesel::sql_types::*"]
+allow_tables_to_appear_in_same_query_config = "fk_related_tables"
+column_sorting = "ordinal_position"
+
+
+# -----------------------------------------------------------------------------
+# Provenance / curation
+# -----------------------------------------------------------------------------
+
+[print_schema.aircraft_prov]
+file = "src/db/schema/aircraft_prov.rs"
+schema = "aircraft_prov"
+with_docs = true
+generate_missing_sql_type_definitions = true
+custom_type_derives = ["diesel::sql_types::SqlType", "std::fmt::Debug"]
+import_types = ["diesel::sql_types::*"]
+allow_tables_to_appear_in_same_query_config = "fk_related_tables"
+column_sorting = "ordinal_position"
+
+
+# -----------------------------------------------------------------------------
+# Comparison / mission suitability
+# -----------------------------------------------------------------------------
+
+[print_schema.aircraft_compare]
+file = "src/db/schema/aircraft_compare.rs"
+schema = "aircraft_compare"
+with_docs = true
+generate_missing_sql_type_definitions = true
+custom_type_derives = ["diesel::sql_types::SqlType", "std::fmt::Debug"]
+import_types = ["diesel::sql_types::*"]
+allow_tables_to_appear_in_same_query_config = "fk_related_tables"
+column_sorting = "ordinal_position"
+
+
+# -----------------------------------------------------------------------------
+# Ingest / staging
+# -----------------------------------------------------------------------------
+
+[print_schema.aircraft_ingest]
+file = "src/db/schema/aircraft_ingest.rs"
+schema = "aircraft_ingest"
+with_docs = true
+generate_missing_sql_type_definitions = true
+custom_type_derives = ["diesel::sql_types::SqlType", "std::fmt::Debug"]
+import_types = ["diesel::sql_types::*"]
+allow_tables_to_appear_in_same_query_config = "fk_related_tables"
+column_sorting = "ordinal_position"
+
+
+# -----------------------------------------------------------------------------
+# Read models / search surfaces
+# -----------------------------------------------------------------------------
+
+[print_schema.aircraft_read]
+file = "src/db/schema/aircraft_read.rs"
+schema = "aircraft_read"
+with_docs = true
+generate_missing_sql_type_definitions = true
+custom_type_derives = ["diesel::sql_types::SqlType", "std::fmt::Debug"]
+import_types = ["diesel::sql_types::*"]
+allow_tables_to_appear_in_same_query_config = "fk_related_tables"
+column_sorting = "ordinal_position"
