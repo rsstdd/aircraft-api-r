@@ -10,7 +10,20 @@ publish.workspace = true
 workspace = true
 
 [dependencies]
-config.workspace = true
-dotenvy.workspace = true
-serde.workspace = true
+# Error Tracking & Infrastructure Diagnostics
+anyhow.workspace = true
 thiserror.workspace = true
+tracing.workspace = true
+
+# Strongly-Typed Serialization Management
+serde = { workspace = true, features = ["derive"] }
+
+# Multi-Tiered Configuration Aggregator (Files + Environment Variables)
+config = { workspace = true}
+
+# Secret Hygiene & Zeroization Protection
+secrecy = { workspace = true, features = ["serde"] }
+
+[dev-dependencies]
+# For asserting correct parsing cascades across mock environment spaces
+serial_test.workspace = true

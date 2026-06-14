@@ -9,7 +9,7 @@ members = [
 #    "crates/aircraft_domain",
 #    "crates/aircraft_ingest",
 #    "crates/aircraft_observability",
-#    "xtask",
+    "xtask",
 ]
 default-members = [
 #    "apps/server",
@@ -31,13 +31,13 @@ publish = false
 
 [workspace.dependencies]
 # Internal workspace crates
-#aircraft_api = { path = "crates/aircraft_api" }
-#aircraft_app = { path = "crates/aircraft_app" }
-#aircraft_config = { path = "crates/aircraft_config" }
-#aircraft_db = { path = "crates/aircraft_db" }
-#aircraft_domain = { path = "crates/aircraft_domain" }
-#aircraft_ingest = { path = "crates/aircraft_ingest" }
-#aircraft_observability = { path = "crates/aircraft_observability" }
+aircraft_api = { path = "crates/aircraft_api" }
+aircraft_app = { path = "crates/aircraft_app" }
+aircraft_config = { path = "crates/aircraft_config" }
+aircraft_db = { path = "crates/aircraft_db" }
+aircraft_domain = { path = "crates/aircraft_domain" }
+aircraft_ingest = { path = "crates/aircraft_ingest" }
+aircraft_observability = { path = "crates/aircraft_observability" }
 
 # Error handling
 anyhow = "1.0"
@@ -87,6 +87,7 @@ pretty_assertions = "1.4"
 testcontainers = "0.27.3"
 insta = { version = "1.40", features = ["json"] }
 proptest = "1.5"
+serial_test = "3.5"
 
 [workspace.lints.rust]
 unsafe_code = "forbid"

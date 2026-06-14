@@ -11,3 +11,9 @@ workspace = true
 
 [dependencies]
 anyhow.workspace = true
+tokio = { workspace = true, features = ["macros", "rt-multi-thread"] }
+clap = { version = "4.5", features = ["derive"] }
+
+# Internal workspace crates required for execution logic
+aircraft_config = { path = "../crates/aircraft_config" }
+aircraft_db = { path = "../crates/aircraft_db" }

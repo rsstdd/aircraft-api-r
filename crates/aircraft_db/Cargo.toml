@@ -10,16 +10,26 @@ publish.workspace = true
 workspace = true
 
 [dependencies]
+# Internal Pure Domain Primitives
 aircraft_domain.workspace = true
 
+# Error Handling & Diagnostics
 anyhow.workspace = true
-bigdecimal.workspace = true
-chrono.workspace = true
-diesel.workspace = true
-diesel_migrations.workspace = true
-r2d2.workspace = true
-serde.workspace = true
-serde_json.workspace = true
 thiserror.workspace = true
 tracing.workspace = true
+
+# Asynchronous Database Infrastructure (Swapped out Diesel/R2D2)
+sqlx.workspace = true
+
+# Storage Model Primitives & Serialization
+bigdecimal.workspace = true
+chrono.workspace = true
+serde.workspace = true
+serde_json.workspace = true
 uuid.workspace = true
+
+[dev-dependencies]
+# Required for running containerized repository integration tests via Just/Xtask
+tokio = { workspace = true, features = ["macros", "rt-multi-thread"] }
+testcontainers.workspace = true
+pretty_assertions.workspace = true

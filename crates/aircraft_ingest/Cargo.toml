@@ -10,11 +10,21 @@ publish.workspace = true
 workspace = true
 
 [dependencies]
-aircraft_db.workspace = true
+# Internal Workspace Orchestration Layers
 aircraft_domain.workspace = true
+aircraft_app.workspace = true
 
+# Asynchronous Multi-Threaded Processing Stream Tools
+tokio = { workspace = true, features = ["rt", "sync", "time"] }
+futures.workspace = true
+
+# Data Serialization and Error Architecture
 anyhow.workspace = true
-serde.workspace = true
-serde_json.workspace = true
 thiserror.workspace = true
 tracing.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+
+# Data Primitives
+chrono.workspace = true
+uuid.workspace = true

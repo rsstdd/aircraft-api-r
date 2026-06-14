@@ -10,18 +10,34 @@ publish.workspace = true
 workspace = true
 
 [dependencies]
-aircraft_app.workspace = true
-aircraft_config.workspace = true
+# Internal Workspace Layers (Driving the Use-Cases)
 aircraft_domain.workspace = true
-aircraft_observability.workspace = true
+aircraft_app.workspace = true
 
-anyhow.workspace = true
+# Asynchronous HTTP Transport Core
 axum.workspace = true
+tower.workspace = true
+tower-http = { workspace = true, features = ["limit", "trace", "cors"] }
+
+# Data Input Boundary Validation & Serialization
 serde.workspace = true
 serde_json.workspace = true
+validator = { workspace = true, features = ["derive"] }
+
+# OpenAPI Specification / Documentation Generation
+utoipa = { workspace = true, features = ["axum_extras", "chrono", "uuid"] }
+utoipa-swagger-ui = { workspace = true, features = ["axum"] }
+
+# Error Management & Diagnostic Spans
+anyhow.workspace = true
 thiserror.workspace = true
-tokio.workspace = true
-tower.workspace = true
-tower-http.workspace = true
 tracing.workspace = true
-validator.workspace = true
+
+# Primitive Formats (for DTO mapping)
+chrono.workspace = true
+uuid.workspace = true
+
+[dev-dependencies]
+# For spinning up short-lived mock transport endpoints during isolation testing
+tokio = { workspace = true, features = ["macros", "rt"] }
+reqwest = { workspace = true, features = ["json"] }
