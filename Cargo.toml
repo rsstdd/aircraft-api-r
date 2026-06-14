@@ -1,61 +1,123 @@
-[package]
-name = "aircraft_server"
-version = "0.1.0"
-edition = "2024"
-description = "Aircraft Server"
-
-[lib]
-doctest = false
-
-[profile.dev]
-debug = 0
-
 [workspace]
+resolver = "3"
 members = [
-  "crates/api_common",
-  "crates/api_crud",
-  "crates/db_schema",
-  "crates/routes",
-  "crates/utils",
-  "crates/websocket",
+#    "apps/server",
+#    "crates/aircraft_api",
+#    "crates/aircraft_app",
+#    "crates/aircraft_config",
+#    "crates/aircraft_db",
+#    "crates/aircraft_domain",
+#    "crates/aircraft_ingest",
+#    "crates/aircraft_observability",
+#    "xtask",
+]
+default-members = [
+#    "apps/server",
+#    "crates/aircraft_api",
+#    "crates/aircraft_app",
+#    "crates/aircraft_config",
+#    "crates/aircraft_db",
+#    "crates/aircraft_domain",
+#    "crates/aircraft_ingest",
+#    "crates/aircraft_observability",
 ]
 
-[dependencies]
-aircraft_api = { version = "=0.1.0", path = "./crates/api" }
-aircraft_api_common = { version = "=0.1.0", path = "./crates/api_common" }
-aircraft_api_crud = { version = "=0.1.0", path = "./crates/api_crud" }
-aircraft_db_schema = { version = "=0.1.0", path = "./crates/db_schema" }
-aircraft_routes = { version = "=0.1.0", path = "./crates/routes" }
-aircraft_utils = { version = "=0.1.0", path = "./crates/utils" }
-aircraft_websocket = { version = "=0.1.0", path = "./crates/websocket" }
-diesel = { version = "2.2.0", features = ["postgres", "r2d2", "chrono"] }
-diesel_migrations = "2.2.0"
-chrono = { version = "0.4.38", features = ["serde"] }
-serde = { version = "1.0.210", features = ["derive"] }
-actix = "0.13.0"
-actix-web = { version = "4.9.0", default-features = false, features = ["rustls-0_23"] }
-tracing = "0.1.40"
-tracing-actix-web = "0.7.0"
-tracing-error = "0.2.0"
-tracing-log = "0.2.0"
-tracing-subscriber = { version = "0.3.18", features = ["env-filter"] }
-strum = { version = "0.26.0", features = ["derive"] }
-url = { version = "2.5.0", features = ["serde"] }
-openssl = "0.10.66"
-http-signature-normalization-actix = { version = "0.10.0", default-features = false, features = ["sha-2"] }
-tokio = { version = "1.40.0", features = ["sync", "rt-multi-thread", "macros"] }
-anyhow = "1.0.89"
-reqwest = { version = "0.11.27", features = ["json"] }
-activitystreams = "0.7.0-alpha.21"
-actix-rt = { version = "2.10.0", default-features = false }
-serde_json = { version = "1.0.128", features = ["preserve_order"] }
-clokwerk = "0.4.0"
-doku = "0.21.0"
+[workspace.package]
+edition = "2024"
+rust-version = "1.85"
+version = "0.1.0"
+license = "UNLICENSED"
+publish = false
 
-[dev-dependencies.cargo-husky]
-version = "1.5.0"
-default-features = false
-features = ["user-hooks"]
+[workspace.dependencies]
+# Internal workspace crates
+#aircraft_api = { path = "crates/aircraft_api" }
+#aircraft_app = { path = "crates/aircraft_app" }
+#aircraft_config = { path = "crates/aircraft_config" }
+#aircraft_db = { path = "crates/aircraft_db" }
+#aircraft_domain = { path = "crates/aircraft_domain" }
+#aircraft_ingest = { path = "crates/aircraft_ingest" }
+#aircraft_observability = { path = "crates/aircraft_observability" }
 
-[package.metadata.cargo-udeps.ignore]
-development = ["cargo-husky"]
+# Error handling
+anyhow = "1.0"
+thiserror = "2.0"
+
+# Async runtime & HTTP networking infrastructure
+tokio = { version = "1.40", features = ["full"] }
+axum = "0.8"
+tower = "0.5"
+tower-http = { version = "0.6", features = ["cors", "trace", "timeout", "limit", "request-id"] }
+hyper = "1.0"
+
+# Serialization
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+
+# Configuration layers
+config = "0.15"
+dotenvy = "0.15"
+
+# Database Engine (SQLx Async Blueprint Replacement)
+sqlx = { version = "0.9.0", features = ["postgres", "runtime-tokio", "tls-rustls", "chrono", "uuid", "bigdecimal", "macros"] }
+
+# Secret Hygiene & Memory Defenses
+secrecy = { version = "0.10", features = ["serde"] }
+zeroize = { version = "1.8", features = ["derive"] }
+
+# API Contract Discovery & Documentation
+utoipa = { version = "5.0", features = ["axum"] }
+utoipa-swagger-ui = { version = "9.0.2", features = ["axum"] }
+
+# Core Domain Data Primitives
+chrono = { version = "0.4", features = ["serde"] }
+bigdecimal = { version = "0.4", features = ["serde"] }
+uuid = { version = "1.10", features = ["serde", "v4"] }
+
+# Structured Diagnostic Observability
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter", "fmt", "json"] }
+tracing-error = "0.2"
+
+# Perimeter Invariant Validation
+validator = { version = "0.20", features = ["derive"] }
+
+# Testing Infrastructure & Verification Engines
+pretty_assertions = "1.4"
+testcontainers = "0.27.3"
+insta = { version = "1.40", features = ["json"] }
+proptest = "1.5"
+
+[workspace.lints.rust]
+unsafe_code = "forbid"
+missing_debug_implementations = "warn"
+unused_imports = "warn"
+unused_must_use = "deny"
+
+[workspace.lints.clippy]
+all = "warn"
+pedantic = "warn"
+nursery = "warn"
+unwrap_used = "deny"
+expect_used = "warn"
+panic = "warn"
+todo = "warn"
+dbg_macro = "deny"
+print_stdout = "warn"
+print_stderr = "warn"
+module_name_repetitions = "allow"
+missing_errors_doc = "allow"
+missing_panics_doc = "allow"
+
+[profile.dev]
+debug = true
+incremental = true
+
+[profile.release]
+lto = "thin"
+codegen-units = 1
+strip = "symbols"
+panic = "abort"
+
+[profile.test]
+debug = true
