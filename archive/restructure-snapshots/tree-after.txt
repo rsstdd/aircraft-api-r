@@ -1,0 +1,208 @@
+.
+├── apps
+│   └── server
+│       ├── Cargo.toml
+│       └── src
+│           ├── api_routes.rs
+│           ├── lib.rs
+│           └── main.rs
+├── archive
+│   ├── restructure-snapshots
+│   │   ├── aircraft_api.lib.rs.before
+│   │   ├── aircraft_db.lib.rs.before
+│   │   ├── Cargo.toml.before
+│   │   ├── Cargo.toml.proposed
+│   │   ├── tree-after.txt
+│   │   └── tree-before.txt
+│   └── template_crates
+│       ├── api_common
+│       │   ├── Cargo.toml
+│       │   └── src
+│       │       ├── comment.rs
+│       │       ├── lib.rs
+│       │       ├── site.rs
+│       │       └── websocket.rs
+│       ├── api_crud
+│       │   ├── Cargo.toml
+│       │   └── src
+│       │       ├── comment
+│       │       │   ├── create.rs
+│       │       │   ├── delete.rs
+│       │       │   ├── mod.rs
+│       │       │   ├── read.rs
+│       │       │   └── update.rs
+│       │       ├── lib.rs
+│       │       └── user
+│       │           ├── create.rs
+│       │           ├── delete.rs
+│       │           ├── mod.rs
+│       │           ├── read.rs
+│       │           └── update.rs
+│       ├── routes
+│       │   ├── Cargo.toml
+│       │   └── src
+│       │       └── lib.rs
+│       ├── utils
+│       │   ├── apub.rs
+│       │   ├── Cargo.toml
+│       │   ├── email.rs
+│       │   ├── lib.rs
+│       │   └── utils.rs
+│       └── websocket
+│           ├── Cargo.toml
+│           └── src
+│               ├── lib.rs
+│               └── routes.rs
+├── Cargo.toml
+├── config
+│   ├── config.hjson
+│   └── defaults.hjson
+├── crates
+│   ├── aircraft_api
+│   │   ├── Cargo.toml
+│   │   └── src
+│   │       ├── claims.rs
+│   │       ├── dto
+│   │       │   ├── aircraft.rs
+│   │       │   ├── compare.rs
+│   │       │   └── mod.rs
+│   │       ├── lib.rs
+│   │       ├── middleware
+│   │       │   ├── mod.rs
+│   │       │   └── rate_limit
+│   │       │       ├── mod.rs
+│   │       │       └── rate_limiter.rs
+│   │       └── routes
+│   │           ├── aircraft.rs
+│   │           ├── compare.rs
+│   │           ├── health.rs
+│   │           ├── images.rs
+│   │           ├── manufacturers.rs
+│   │           └── mod.rs
+│   ├── aircraft_app
+│   │   ├── Cargo.toml
+│   │   └── src
+│   │       ├── lib.rs
+│   │       └── services
+│   │           ├── aircraft_search.rs
+│   │           ├── comparison.rs
+│   │           ├── ingestion.rs
+│   │           └── mod.rs
+│   ├── aircraft_config
+│   │   ├── Cargo.toml
+│   │   └── src
+│   │       ├── lib.rs
+│   │       └── settings
+│   │           ├── mod.rs
+│   │           └── structs.rs
+│   ├── aircraft_db
+│   │   ├── Cargo.toml
+│   │   └── src
+│   │       ├── impls
+│   │       │   ├── mod.rs
+│   │       │   └── secret.rs
+│   │       ├── lib.rs
+│   │       ├── models
+│   │       │   ├── aircraft.rs
+│   │       │   └── mod.rs
+│   │       ├── newtypes.rs
+│   │       ├── repositories
+│   │       │   ├── aircraft_repository.rs
+│   │       │   ├── comparison_repository.rs
+│   │       │   └── mod.rs
+│   │       ├── schema
+│   │       │   ├── generated.rs
+│   │       │   └── mod.rs
+│   │       ├── source
+│   │       │   ├── mod.rs
+│   │       │   └── secret.rs
+│   │       └── traits.rs
+│   ├── aircraft_domain
+│   │   ├── Cargo.toml
+│   │   └── src
+│   │       ├── aircraft.rs
+│   │       ├── lib.rs
+│   │       ├── manufacturer.rs
+│   │       ├── mission.rs
+│   │       ├── units.rs
+│   │       └── validation.rs
+│   ├── aircraft_ingest
+│   │   ├── Cargo.toml
+│   │   └── src
+│   │       ├── json_import.rs
+│   │       ├── lib.rs
+│   │       ├── normalization.rs
+│   │       └── validation.rs
+│   └── aircraft_observability
+│       ├── Cargo.toml
+│       └── src
+│           ├── lib.rs
+│           ├── logging.rs
+│           └── version.rs
+├── database
+│   ├── fixtures
+│   │   └── 013_comprehensive_test_harness.sql
+│   ├── install.sql
+│   ├── migrations
+│   │   ├── 001_extensions_schemas_domains_triggers.sql
+│   │   ├── 002_core_reference_tables.sql
+│   │   ├── 003_geography_operators_organizations.sql
+│   │   ├── 004_aircraft_identity_taxonomy.sql
+│   │   ├── 005_certification_operating_approvals.sql
+│   │   ├── 006_dimensions_cabin_cargo_hangar_fit.sql
+│   │   ├── 007_weight_balance_payload_loading.sql
+│   │   ├── 008_performance_metrics_conditions.sql
+│   │   ├── 009_propulsion_engines_rotors_stcs.sql
+│   │   ├── 010_avionics_equipment_systems.sql
+│   │   ├── 011_military_sensors_stores_loadouts.sql
+│   │   ├── 012_ownership_cost_valuation_market.sql
+│   │   ├── 013_maintenance_reliability_supportability.sql
+│   │   ├── 014_sources_provenance_curation_audit.sql
+│   │   ├── 015_mission_profiles_comparison_scoring.sql
+│   │   └── 016_read_models_views_indexes.sql
+│   ├── README.md
+│   ├── scripts
+│   ├── seeds
+│   │   ├── 001_lookup_seed_data.sql
+│   │   ├── 002_reference_units.sql
+│   │   └── 003_mission_profile_seed_data.sql
+│   ├── staging
+│   │   ├── 901_seed_data_staging.sql
+│   │   ├── 902_server_side_json_ingestion.sql
+│   │   └── 903_post_bootstrap_validation.sql
+│   └── validation
+│       ├── 001_extensions_schemas_domains_triggers_validation.sql
+│       ├── 002_core_reference_tables_validation.sql
+│       ├── 003_geography_operators_organizations_validation.sql
+│       ├── 004_aircraft_identity_taxonomy_validation.sql
+│       ├── 005_certification_validation.sql
+│       ├── 006_dimensions_validation.sql
+│       ├── 007_weight_balance_validation.sql
+│       ├── 008_performance_validation.sql
+│       ├── 009_propulsion_avionics_validation.sql
+│       ├── 010_market_valuation_validation.sql
+│       ├── 011_consolidated_view_validation.sql
+│       └── 012_advanced_analytics_validation.sql
+├── diesel.toml
+├── .dockerignore
+├── .env.example
+├── .gitignore
+├── migrate.sh
+├── .rgignore
+├── .rustfmt.toml
+├── src
+│   └── .idea
+│       ├── modules.xml
+│       ├── src.iml
+│       ├── vcs.xml
+│       └── workspace.xml
+├── tests
+│   ├── comparison_scoring_tests.rs
+│   ├── health_check_tests.rs
+│   └── migration_smoke_tests.rs
+└── xtask
+    ├── Cargo.toml
+    └── src
+        └── main.rs
+
+57 directories, 149 files

@@ -1,0 +1,1 @@
+// Aircraft domain types.

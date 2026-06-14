@@ -1,0 +1,27 @@
+[workspace]
+resolver = "3"
+members = [
+    "apps/server",
+    "crates/aircraft_api",
+    "crates/aircraft_app",
+    "crates/aircraft_config",
+    "crates/aircraft_db",
+    "crates/aircraft_domain",
+    "crates/aircraft_ingest",
+    "crates/aircraft_observability",
+    "xtask",
+]
+
+[workspace.package]
+edition = "2024"
+version = "0.1.0"
+license = "UNLICENSED"
+publish = false
+
+[workspace.dependencies]
+anyhow = "1"
+thiserror = "2"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter", "fmt"] }

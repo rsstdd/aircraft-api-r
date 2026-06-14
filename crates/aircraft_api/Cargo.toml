@@ -1,0 +1,27 @@
+[package]
+name = "aircraft_api"
+edition.workspace = true
+rust-version.workspace = true
+version.workspace = true
+license.workspace = true
+publish.workspace = true
+
+[lints]
+workspace = true
+
+[dependencies]
+aircraft_app.workspace = true
+aircraft_config.workspace = true
+aircraft_domain.workspace = true
+aircraft_observability.workspace = true
+
+anyhow.workspace = true
+axum.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+thiserror.workspace = true
+tokio.workspace = true
+tower.workspace = true
+tower-http.workspace = true
+tracing.workspace = true
+validator.workspace = true

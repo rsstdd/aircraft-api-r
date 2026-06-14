@@ -1,0 +1,1 @@
+// Mission profile domain types.

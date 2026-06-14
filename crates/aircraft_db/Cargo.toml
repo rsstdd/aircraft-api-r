@@ -1,0 +1,25 @@
+[package]
+name = "aircraft_db"
+edition.workspace = true
+rust-version.workspace = true
+version.workspace = true
+license.workspace = true
+publish.workspace = true
+
+[lints]
+workspace = true
+
+[dependencies]
+aircraft_domain.workspace = true
+
+anyhow.workspace = true
+bigdecimal.workspace = true
+chrono.workspace = true
+diesel.workspace = true
+diesel_migrations.workspace = true
+r2d2.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+thiserror.workspace = true
+tracing.workspace = true
+uuid.workspace = true

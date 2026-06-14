@@ -1,0 +1,18 @@
+[package]
+name = "aircraft_domain"
+edition.workspace = true
+rust-version.workspace = true
+version.workspace = true
+license.workspace = true
+publish.workspace = true
+
+[lints]
+workspace = true
+
+[dependencies]
+bigdecimal.workspace = true
+chrono.workspace = true
+serde.workspace = true
+thiserror.workspace = true
+uuid.workspace = true
+validator.workspace = true

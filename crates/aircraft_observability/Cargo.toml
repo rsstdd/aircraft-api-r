@@ -1,0 +1,15 @@
+[package]
+name = "aircraft_observability"
+edition.workspace = true
+rust-version.workspace = true
+version.workspace = true
+license.workspace = true
+publish.workspace = true
+
+[lints]
+workspace = true
+
+[dependencies]
+tracing.workspace = true
+tracing-error.workspace = true
+tracing-subscriber.workspace = true
