@@ -1,5 +1,38 @@
-tab_spaces = 2
-edition="2018"
-imports_layout="HorizontalVertical"
-imports_granularity="Crate"
-reorder_imports=true
+# =============================================================================
+# Rustfmt
+# =============================================================================
+# Keep this file conservative and stable-channel friendly.
+#
+# Avoid unstable options such as:
+# - group_imports
+# - imports_granularity
+# - reorder_impl_items
+# unless the project intentionally formats with nightly rustfmt.
+# =============================================================================
+
+edition = "2024"
+style_edition = "2024"
+
+max_width = 100
+newline_style = "Unix"
+
+# More compact idiomatic Rust:
+#
+# Struct initialization:
+#   Config { host: host, port: port }
+# becomes:
+#   Config { host, port }
+use_field_init_shorthand = true
+
+# Converts:
+#   try!(some_result)
+# to:
+#   some_result?
+use_try_shorthand = true
+
+# Keep rustfmt responsible for deterministic import/module ordering where stable.
+reorder_imports = true
+reorder_modules = true
+
+# Uses the full width budget more aggressively before wrapping.
+use_small_heuristics = "Max"

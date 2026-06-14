@@ -1,1 +1,134 @@
-*.sqldump
+# =============================================================================
+# ripgrep search exclusions
+# =============================================================================
+# Purpose:
+# - Keep source, migrations, SQL, Cargo files, and config searchable.
+# - Exclude generated artifacts, dumps, local database files, caches, logs,
+#   and dependency/build output.
+#
+# This file affects `rg`, not Git.
+# =============================================================================
+
+
+# =============================================================================
+# Rust build output
+# =============================================================================
+
+target/
+**/target/
+
+# Rust coverage / profiling
+coverage/
+coverage-*/
+tarpaulin-report.html
+cobertura.xml
+lcov.info
+*.profraw
+*.profdata
+
+# Criterion benchmark output
+criterion/
+**/criterion/
+
+
+# =============================================================================
+# Local environment / secrets
+# =============================================================================
+
+.env
+.env.*
+!.env.example
+!.env.sample
+
+secrets/
+.secret/
+.local-secrets/
+
+*.pem
+*.key
+*.crt
+*.p12
+*.pfx
+
+
+# =============================================================================
+# Logs
+# =============================================================================
+
+logs/
+log/
+*.log
+
+
+# =============================================================================
+# Database generated / local-only content
+# =============================================================================
+
+database/data/
+database/tmp/
+database/temp/
+database/cache/
+database/backups/
+database/dumps/
+database/exports/
+database/imports/
+database/generated/
+database/postgres-data/
+database/pgdata/
+
+# Large seed/raw import payloads. Keep this only if these files are noisy.
+database/seeds/raw/
+database/ingest/raw/
+
+# Database runtime files
+*.db
+*.sqlite
+*.sqlite3
+*.db-journal
+*.sqlite-journal
+*.sqlite-wal
+*.sqlite-shm
+
+# PostgreSQL dumps / compressed backups
+*.dump
+*.backup
+*.bak
+*.sql.gz
+*.sql.zip
+*.pgdump
+
+
+# =============================================================================
+# Dependency / package manager output
+# =============================================================================
+
+node_modules/
+vendor/
+
+# Keep Cargo files searchable.
+!Cargo.toml
+!Cargo.lock
+
+
+# =============================================================================
+# Generated documentation / reports
+# =============================================================================
+
+dist/
+build/
+site/
+public/docs/generated/
+docs/generated/
+
+
+# =============================================================================
+# IDE / OS noise
+# =============================================================================
+
+.idea/
+.vscode/
+.DS_Store
+Thumbs.db
+*.swp
+*.swo
+*~
