@@ -47,7 +47,7 @@ thiserror = "2.0"
 tokio = { version = "1.40", features = ["full"] }
 axum = "0.8"
 tower = "0.5"
-tower-http = { version = "0.6", features = ["cors", "trace", "timeout", "limit", "request-id"] }
+tower-http = { version = "0.7", features = ["cors", "trace", "timeout", "limit", "request-id"] }
 hyper = "1.0"
 
 # Serialization
@@ -96,9 +96,10 @@ unused_imports = "warn"
 unused_must_use = "deny"
 
 [workspace.lints.clippy]
-all = "warn"
-pedantic = "warn"
-nursery = "warn"
+all = { level = "warn", priority = -3 }
+pedantic = { level = "warn", priority = -2 }
+nursery = { level = "warn", priority = -2 }
+
 unwrap_used = "deny"
 expect_used = "warn"
 panic = "warn"
@@ -106,6 +107,7 @@ todo = "warn"
 dbg_macro = "deny"
 print_stdout = "warn"
 print_stderr = "warn"
+
 module_name_repetitions = "allow"
 missing_errors_doc = "allow"
 missing_panics_doc = "allow"
