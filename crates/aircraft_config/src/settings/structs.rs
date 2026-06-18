@@ -3,7 +3,7 @@ use serde::Deserialize;
 
 #[derive(Clone, Debug, Deserialize)]
 pub struct Settings {
-    pub http: HttpSettings, 
+    pub http: HttpSettings,
 }
 
 #[derive(Clone, Debug, Deserialize)]
@@ -21,7 +21,7 @@ impl Settings {
             .build()?
             .try_deserialize()
     }
-    
+
     pub fn bind_address(&self) -> String {
         format!("{}:{}", self.http.host, self.http.port)
     }
