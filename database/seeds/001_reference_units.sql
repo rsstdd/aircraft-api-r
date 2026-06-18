@@ -1,7 +1,7 @@
 -- =============================================================================
--- File: database/seeds/001_lookup_seed_data.sql
+-- File: database/seeds/002_lookup_seed_data.sql
 -- Phase 2 — seed rows for all aircraft_ref lookup tables EXCEPT
--- unit_categories and measurement_units (see seeds/002_reference_units.sql).
+-- unit_categories and measurement_units (see seeds/001_reference_units.sql).
 --
 -- Dependency order within this file:
 --   Group 2  (taxonomy)         → no intra-file FKs
@@ -196,7 +196,7 @@ INSERT INTO aircraft_ref.landing_gear_types (code, label, description, sort_orde
 -- -----------------------------------------------------------------------------
 -- aircraft_ref.propulsion_categories (11 rows)
 -- primary_power_unit FK to measurement_units (already committed via
--- seeds/002_reference_units.sql); constraint is DEFERRABLE.
+-- seeds/001_reference_units.sql); constraint is DEFERRABLE.
 -- -----------------------------------------------------------------------------
 INSERT INTO aircraft_ref.propulsion_categories
 (code, label, description, is_jet, is_rotating, primary_power_unit, sort_order)
@@ -566,11 +566,15 @@ VALUES
     ON CONFLICT (code) DO NOTHING;
 
 -- -----------------------------------------------------------------------------
--- aircraft_ref.cost_item_types (18 rows)
+-- aircraft_ref.cost_item_types (21 rows: 18 components + 3 aggregates)
 -- is_fixed TRUE = annual fixed cost; FALSE = per flight-hour variable cost.
+-- is_aggregate TRUE = source-provided pre-computed total (routed to
+--   aircraft_market.cost_snapshot_totals, never inserted into cost_line_items).
+-- NOTE: column is is_aggregate (migration 002), NOT the removed is_fuel.
+-- Fuel is identified by code = 'FUEL', not a boolean column.
 -- -----------------------------------------------------------------------------
 INSERT INTO aircraft_ref.cost_item_types
-(code, label, description, is_fixed, is_fuel, sort_order)
+(code, label, description, is_fixed, is_aggregate, sort_order)
 VALUES
     -- Fixed annual costs
     ('ANNUAL_INSPECTION',  'Annual Inspection',
@@ -593,7 +597,7 @@ VALUES
      'Loan interest or equivalent finance charges.',                 TRUE,  FALSE, 18),
     -- Per-hour variable costs
     ('FUEL',               'Fuel',
-     'Direct fuel cost per flight hour.',                            FALSE, TRUE,  30),
+     'Direct fuel cost per flight hour.',                            FALSE, FALSE, 30),
     ('OIL',                'Oil',
      'Engine oil consumption per flight hour.',                      FALSE, FALSE, 31),
     ('HOURLY_MAINTENANCE', 'Scheduled Maintenance',
@@ -609,7 +613,17 @@ VALUES
     ('LANDING_FEES',       'Landing / Navigation Fees',
      'Airport landing fees averaged per flight hour.',               FALSE, FALSE, 37),
     ('MISC_VARIABLE',      'Miscellaneous Variable',
-     'Catering, ground handling, parking, and sundry costs.',        FALSE, FALSE, 38)
+     'Catering, ground handling, parking, and sundry costs.',        FALSE, FALSE, 38),
+    -- Pre-computed aggregate totals provided by the source. is_aggregate = TRUE
+    -- routes these to aircraft_market.cost_snapshot_totals; they are PROHIBITED
+    -- from cost_line_items (trg_cli_reject_aggregate) and must never be summed
+    -- with component rows. is_fixed = FALSE to satisfy chk_cit_aggregate_not_typed.
+    ('TOTAL_COST_ANNUAL',   'Total Annual Cost (source-provided)',
+     'Pre-computed total annual ownership cost from the source.',     FALSE, TRUE,  90),
+    ('TOTAL_FIXED_COST',    'Total Fixed Cost (source-provided)',
+     'Pre-computed total annual fixed cost from the source.',         FALSE, TRUE,  91),
+    ('TOTAL_VARIABLE_COST', 'Total Variable Cost (source-provided)',
+     'Pre-computed total per-hour variable cost from the source.',    FALSE, TRUE,  92)
     ON CONFLICT (code) DO NOTHING;
 
 -- -----------------------------------------------------------------------------

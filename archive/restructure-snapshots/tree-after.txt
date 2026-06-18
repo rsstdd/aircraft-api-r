@@ -163,8 +163,8 @@
 │   ├── README.md
 │   ├── scripts
 │   ├── seeds
-│   │   ├── 001_lookup_seed_data.sql
-│   │   ├── 002_reference_units.sql
+│   │   ├── 002_lookup_seed_data.sql
+│   │   ├── 001_reference_units.sql
 │   │   └── 003_mission_profile_seed_data.sql
 │   ├── staging
 │   │   ├── 901_seed_data_staging.sql

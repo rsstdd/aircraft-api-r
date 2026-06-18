@@ -93,8 +93,8 @@
 │   │   ├── 015_mission_profiles_comparison_scoring.sql
 │   │   └── 016_read_models_views_indexes.sql
 │   ├── seeds
-│   │   ├── 001_lookup_seed_data.sql
-│   │   ├── 002_reference_units.sql
+│   │   ├── 002_lookup_seed_data.sql
+│   │   ├── 001_reference_units.sql
 │   │   ├── 003_mission_profile_seed_data.sql
 │   │   └── 013_comprehensive_test_harness.sql
 │   ├── staging

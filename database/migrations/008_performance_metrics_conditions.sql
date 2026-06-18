@@ -1,127 +1,319 @@
--- ============================================================================
--- FILE: 008_performance_metrics.sql
--- DESCRIPTION: Establishes speed profiles, airfield runway needs, and cruise curves.
--- ============================================================================
+-- =============================================================================
+-- File: database/migrations/008_performance_metrics_conditions.sql
+-- Phase 8 — aircraft_specs: performance metrics with test conditions,
+-- runway limitations, and additional V-speed lookup types.
+--
+-- Design departure from Phases 6–7:
+--   performance_metrics does NOT carry a general UNIQUE constraint per
+--   (variant, metric_type). Multiple rows per metric type are expected —
+--   one from each source and one for each test condition set.
+--   The is_canonical flag (partial UNIQUE index) marks the single row per
+--   (variant, metric_type) used for cross-fleet comparison queries.
+--
+-- Spec coverage (requirement 3):
+--   max/cruise/stall/Mach speeds     → performance_metrics + metric types
+--   V-speeds (Vx,Vy,Va,Vno,Vfe…)    → additional metric type rows (below)
+--   climb metrics                    → performance_metrics
+--   ceilings, range, endurance       → performance_metrics
+--   runway distances                 → performance_metrics + runway_limitations
+--   test conditions / atmosphere     → condition_* columns
+--   runway surface limitations       → runway_limitations.approved_surfaces
+--   hot-and-high, density-altitude   → runway_limitations.*_notes
+-- =============================================================================
 
 BEGIN;
 
-SET search_path TO aircraft_perf, aircraft_core, public;
+-- =============================================================================
+-- Additional aircraft_ref.performance_metric_types rows (V-speeds)
+-- Added here (Phase 8) rather than Phase 2 because they are first consumed
+-- by this table. ON CONFLICT DO NOTHING makes the insert idempotent.
+-- =============================================================================
 
--- ----------------------------------------------------------------------------
--- 1. STRUCTURAL AIRSPEED V-SPEED PRIMITIVES (Canonical standard: KTAS)
--- ----------------------------------------------------------------------------
-CREATE TABLE speed_limits (
-                              configuration_id BIGINT PRIMARY KEY REFERENCES aircraft_core.aircraft_configurations(id) ON DELETE CASCADE,
+INSERT INTO aircraft_ref.performance_metric_types
+    (code, label, description, canonical_unit_code,
+     is_higher_better, is_speed, sort_order)
+VALUES
+    ('SPEED_VX',     'Best Angle of Climb (Vx)',
+     'Speed for maximum altitude gain per unit of distance.',
+     'KNOTS', NULL,  TRUE,  22),
+    ('SPEED_VY',     'Best Rate of Climb (Vy)',
+     'Speed for maximum altitude gain per unit of time.',
+     'KNOTS', NULL,  TRUE,  23),
+    ('SPEED_VA',     'Maneuvering Speed (Va)',
+     'Maximum speed at which full deflection of any one control is permitted. '
+     'Weight-dependent; store at MTOW and at light weight separately.',
+     'KNOTS', NULL,  TRUE,  24),
+    ('SPEED_VNO',    'Max Structural Cruising Speed (Vno)',
+     'Maximum speed in normal operations (green arc upper limit).',
+     'KNOTS', FALSE, TRUE,  25),
+    ('SPEED_VFE',    'Max Flaps Extended Speed (Vfe)',
+     'Maximum speed with flaps in specified extended position.',
+     'KNOTS', FALSE, TRUE,  26),
+    ('SPEED_VLE',    'Max Landing Gear Extended Speed (Vle)',
+     'Maximum speed with landing gear in extended position.',
+     'KNOTS', FALSE, TRUE,  27),
+    ('SPEED_VLO',    'Max Landing Gear Operating Speed (Vlo)',
+     'Maximum speed for extending or retracting landing gear.',
+     'KNOTS', FALSE, TRUE,  28),
+    ('SPEED_VMC',    'Min Control Speed, Multi-Engine (Vmc)',
+     'Minimum airspeed at which directional control can be maintained '
+     'with one engine inoperative at max thrust.',
+     'KNOTS', FALSE, TRUE,  29),
+    ('SPEED_VYSE',   'Best Rate of Climb, Single Engine (Vyse)',
+     'Speed for best rate of climb with one engine inoperative.',
+     'KNOTS', NULL,  TRUE,  32),
+    ('SPEED_VAPP',   'Reference Approach Speed (Vref / Vapp)',
+     'Stabilised approach speed (typically 1.3 × Vs0 or aircraft-specific Vref).',
+     'KNOTS', NULL,  TRUE,  35),
+    ('SPEED_ROTATE', 'Rotation Speed (Vr)',
+     'Speed at which the pilot initiates nose-up rotation during takeoff roll.',
+     'KNOTS', NULL,  TRUE,  36)
+ON CONFLICT (code) DO NOTHING;
 
-    -- Stall Airspeeds
-                              vs0_stall_flaps_down_ktas public.aircraft_speed_knots NOT NULL, -- Stall speed in landing config
-                              vs1_stall_clean_ktas public.aircraft_speed_knots NOT NULL,      -- Stall speed specified clean
+-- =============================================================================
+-- aircraft_specs.performance_metrics
+-- Metric-fact table for all named performance measurements.
+-- Multiple rows per (variant, metric_type) are allowed and expected:
+--   - same metric reported by different sources with different values
+--   - same metric measured at different altitude / weight / power conditions
+-- is_canonical = TRUE marks the single row per (variant, metric_type) used
+-- for cross-fleet comparison queries and Phase 16 read models.
+--
+-- Test condition columns capture the measurement assumptions; all are nullable
+-- because sources vary in how much condition detail they publish. Free-text
+-- conditions_notes captures any remaining context that doesn't fit columns.
+--
+-- condition_power_setting and condition_surface_type use TEXT CHECK (small,
+-- stable, definitionally complete sets). Other condition columns are free
+-- NUMERIC or TEXT to accommodate all published source formats.
+-- =============================================================================
 
-    -- Maneuvering and Operational Safety Speeds
-                              vx_best_angle_climb_ktas public.aircraft_speed_knots,
-                              vy_best_rate_climb_ktas public.aircraft_speed_knots,
-                              va_maneuvering_speed_ktas public.aircraft_speed_knots,
-                              vfe_max_flaps_extended_ktas public.aircraft_speed_knots,
-                              vlo_max_gear_operating_ktas public.aircraft_speed_knots,
-                              vle_max_gear_extended_ktas public.aircraft_speed_knots,
+CREATE TABLE aircraft_specs.performance_metrics (
+    id               BIGINT GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
+    variant_id       BIGINT NOT NULL
+                         REFERENCES aircraft_core.variants(id) ON DELETE CASCADE,
+    metric_type_code aircraft_ref.lookup_code NOT NULL
+                         REFERENCES aircraft_ref.performance_metric_types(code),
 
-    -- Structural Structural Redlines
-                              vno_max_structural_cruise_ktas public.aircraft_speed_knots,
-                              vne_never_exceed_ktas public.aircraft_speed_knots NOT NULL,
+    -- ── Source-fidelity columns ───────────────────────────────────────────────
+    raw_value        NUMERIC,
+    raw_unit_code    aircraft_ref.lookup_code
+                         REFERENCES aircraft_ref.measurement_units(code),
 
-    -- Multi-Engine Structural Safeguards
-                              vmca_minimum_control_air_ktas public.aircraft_speed_knots,
-                              vsse_intentional_one_engine_inop_ktas public.aircraft_speed_knots,
+    -- ── Canonical comparison column ───────────────────────────────────────────
+    -- Unit determined by performance_metric_types.canonical_unit_code.
+    -- e.g., KNOTS for speeds, FT for ceilings, NM for range, GPH for fuel burn.
+    -- Populated by: aircraft_ref.to_canonical(raw_value, raw_unit_code).
+    canonical_value  NUMERIC,
 
-                              created_at public.aircraft_timestamp NOT NULL DEFAULT CLOCK_TIMESTAMP(),
-                              updated_at public.aircraft_timestamp NOT NULL DEFAULT CLOCK_TIMESTAMP(),
+    -- ── Aircraft configuration when measured ─────────────────────────────────
+    -- Descriptive label for the aircraft state during the test.
+    -- Common values: 'CLEAN', 'FLAPS_10', 'FLAPS_APPROACH', 'LANDING_CONFIG',
+    --   'GEAR_UP', 'GEAR_DOWN', 'WITH_EXTERNAL_TANKS', 'FERRY_CONFIG'.
+    configuration    TEXT,
 
-                              CONSTRAINT chk_stalls CHECK (vs1_stall_clean_ktas >= vs0_stall_flaps_down_ktas),
-                              CONSTRAINT chk_never_exceed CHECK (vne_never_exceed_ktas > vs1_stall_clean_ktas),
-                              CONSTRAINT chk_cruise_redline CHECK (vne_never_exceed_ktas >= COALESCE(vno_max_structural_cruise_ktas, 0.00))
+    -- ── Test condition columns ────────────────────────────────────────────────
+    -- Altitude at which the metric was measured or calculated.
+    condition_altitude_ft   NUMERIC,
+    -- Aircraft gross weight at test conditions (lbs).
+    condition_weight_lbs    NUMERIC,
+    -- Human-readable weight label (e.g., 'MTOW', 'OEW', 'HALF_FUEL').
+    -- Stored separately so 'MTOW' is searchable without knowing the exact lbs.
+    condition_weight_label  TEXT,
+    -- ISA temperature deviation in °C. 0 = standard ISA; +20 = ISA+20°C.
+    condition_isa_dev_c     NUMERIC,
+    -- Engine power or thrust setting during the test.
+    condition_power_setting TEXT,
+    -- Surface type for ground roll / landing distance metrics.
+    condition_surface_type  TEXT,
+    -- Any additional conditions not captured by the columns above.
+    conditions_notes        TEXT,
+
+    -- ── Curation / quality ───────────────────────────────────────────────────
+    -- TRUE = this row is the designated value for cross-fleet comparison.
+    -- At most one is_canonical = TRUE per (variant, metric_type).
+    -- Enforced by partial UNIQUE index uq_perf_canonical.
+    is_canonical    BOOLEAN NOT NULL DEFAULT FALSE,
+    is_estimated    BOOLEAN NOT NULL DEFAULT FALSE,
+    confidence      aircraft_ref.confidence_score,
+    source_notes    TEXT,
+    created_at      TIMESTAMPTZ NOT NULL DEFAULT now(),
+    updated_at      TIMESTAMPTZ NOT NULL DEFAULT now(),
+
+    CONSTRAINT chk_pm_canonical_nonneg CHECK (
+        canonical_value IS NULL OR canonical_value >= 0
+    ),
+    CONSTRAINT chk_pm_power_setting CHECK (
+        condition_power_setting IS NULL
+        OR condition_power_setting IN (
+            'MAX_TAKEOFF',      -- maximum takeoff power/thrust
+            'MAX_CONTINUOUS',   -- maximum continuous power
+            'MAX_CLIMB',        -- maximum climb power
+            '75_PCT',           -- 75% power/thrust
+            '65_PCT',           -- 65% power/thrust
+            '55_PCT',           -- 55% power/thrust
+            'BEST_POWER',       -- best-power fuel mixture
+            'BEST_ECONOMY',     -- best-economy (lean of peak)
+            'LONG_RANGE_CRUISE',-- long-range cruise power setting
+            'IDLE'              -- idle / flight idle
+        )
+    ),
+    CONSTRAINT chk_pm_surface_type CHECK (
+        condition_surface_type IS NULL
+        OR condition_surface_type IN (
+            'PAVED',        -- hard paved surface (asphalt / concrete)
+            'GRASS',        -- mowed grass strip
+            'GRAVEL',       -- gravel / packed aggregate
+            'SOFT',         -- soft or unprepared surface
+            'WATER',        -- water surface (seaplane / amphibian)
+            'CARRIER_DECK'  -- aircraft carrier flight deck
+        )
+    )
 );
 
--- ----------------------------------------------------------------------------
--- 2. RUNWAY FIELD PERFORMANCE SPECIFICATIONS (Canonical standard: Feet)
--- ----------------------------------------------------------------------------
-CREATE TABLE field_performance (
-                                   configuration_id BIGINT PRIMARY KEY REFERENCES aircraft_core.aircraft_configurations(id) ON DELETE CASCADE,
+COMMENT ON TABLE aircraft_specs.performance_metrics IS
+    'Metric-fact table for aircraft performance data with full test-condition context. '
+    'Multiple rows per (variant, metric_type) are normal: '
+    'different sources report different values; the same metric is valid at '
+    'different altitudes, weights, and power settings. '
+    'is_canonical = TRUE marks the single designated comparison value per '
+    '(variant, metric_type), enforced by the partial UNIQUE index. '
+    'Phase 16 comparison queries filter WHERE is_canonical for efficiency.';
+COMMENT ON COLUMN aircraft_specs.performance_metrics.is_canonical IS
+    'TRUE = this row is the designated cross-fleet comparison value '
+    'for this (variant, metric_type) pair. At most one TRUE per pair '
+    '(enforced by uq_perf_canonical partial UNIQUE index). '
+    'Phase 17 ingestion sets is_canonical = TRUE for the first value; '
+    'curators resolve conflicts from additional sources.';
+COMMENT ON COLUMN aircraft_specs.performance_metrics.condition_power_setting IS
+    'Engine power / thrust setting at test conditions. TEXT CHECK '
+    '(10 stable values). NULL when power setting is not published by the source.';
+COMMENT ON COLUMN aircraft_specs.performance_metrics.condition_surface_type IS
+    'Runway or water surface type for takeoff/landing distance metrics. '
+    'NULL for airborne metrics (speeds, ceilings, range). '
+    'TEXT CHECK (6 stable surface type values).';
+COMMENT ON COLUMN aircraft_specs.performance_metrics.configuration IS
+    'Descriptive aircraft configuration at time of measurement. '
+    'Common values: ''CLEAN'', ''FLAPS_APPROACH'', ''LANDING_CONFIG'', ''GEAR_DOWN''. '
+    'For V-speeds, identifies the specific flap/gear state used in the test.';
 
-    -- Takeoff Field Requirements (Calculated at Max Takeoff Weight, Sea Level, ISA)
-                                   takeoff_ground_roll_ft public.aircraft_dim_feet,
-                                   takeoff_total_clear_50ft_obstacle_ft public.aircraft_dim_feet NOT NULL,
-                                   v1_takeoff_decision_speed_ktas public.aircraft_speed_knots,
-                                   vr_rotation_speed_ktas public.aircraft_speed_knots,
-                                   v2_takeoff_safety_speed_ktas public.aircraft_speed_knots,
+-- =============================================================================
+-- aircraft_specs.runway_limitations
+-- 1:1 extension of aircraft_core.variants (UNIQUE on variant_id).
+-- Captures approved surface types, crosswind limits, and the qualitative
+-- hot-and-high / density-altitude / unpaved-surface notes from the POH.
+-- These are narrative/configuration constraints that don't fit the
+-- performance_metrics numeric fact model.
+-- approved_surfaces TEXT[] enables: WHERE approved_surfaces @> ARRAY['GRASS']
+-- =============================================================================
 
-    -- Landing Field Requirements (Calculated at Max Landing Weight, Sea Level, ISA)
-                                   landing_ground_roll_ft public.aircraft_dim_feet,
-                                   landing_total_clear_50ft_obstacle_ft public.aircraft_dim_feet NOT NULL,
-                                   vref_landing_approach_speed_ktas public.aircraft_speed_knots,
-
-                                   created_at public.aircraft_timestamp NOT NULL DEFAULT CLOCK_TIMESTAMP(),
-                                   updated_at public.aircraft_timestamp NOT NULL DEFAULT CLOCK_TIMESTAMP(),
-
-                                   CONSTRAINT chk_to_obstacle CHECK (takeoff_total_clear_50ft_obstacle_ft >= COALESCE(takeoff_ground_roll_ft, 0.00)),
-                                   CONSTRAINT chk_ld_obstacle CHECK (landing_total_clear_50ft_obstacle_ft >= COALESCE(landing_ground_roll_ft, 0.00))
+CREATE TABLE aircraft_specs.runway_limitations (
+    id                    BIGINT GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
+    variant_id            BIGINT NOT NULL UNIQUE
+                              REFERENCES aircraft_core.variants(id) ON DELETE CASCADE,
+    -- Array of approved surface types. Values mirror condition_surface_type
+    -- on performance_metrics: 'PAVED','GRASS','GRAVEL','SOFT','WATER','CARRIER_DECK'.
+    -- NULL = not yet curated.
+    approved_surfaces     TEXT[],
+    -- Maximum demonstrated crosswind component in knots (from POH Section 5).
+    max_crosswind_ktas    NUMERIC,
+    -- Minimum runway length (ft) for operations at MTOW, sea level, ISA.
+    min_runway_length_ft  NUMERIC,
+    -- Free-text notes from the POH on hot-and-high performance degradation.
+    hot_high_notes        TEXT,
+    -- Free-text density altitude performance notes.
+    density_alt_notes     TEXT,
+    -- Soft-field, grass, or unpaved surface operational notes.
+    unpaved_surface_notes TEXT,
+    confidence            aircraft_ref.confidence_score,
+    notes                 TEXT,
+    created_at            TIMESTAMPTZ NOT NULL DEFAULT now(),
+    updated_at            TIMESTAMPTZ NOT NULL DEFAULT now(),
+    CONSTRAINT chk_rl_crosswind_nonneg CHECK (
+        max_crosswind_ktas IS NULL OR max_crosswind_ktas >= 0
+    ),
+    CONSTRAINT chk_rl_runway_length CHECK (
+        min_runway_length_ft IS NULL OR min_runway_length_ft > 0
+    )
 );
 
--- ----------------------------------------------------------------------------
--- 3. CRUISE FLIGHT ENVELOPE PROFILE MODELS
--- ----------------------------------------------------------------------------
-CREATE TABLE cruise_envelopes (
-                                  configuration_id BIGINT PRIMARY KEY REFERENCES aircraft_core.aircraft_configurations(id) ON DELETE CASCADE,
+COMMENT ON TABLE aircraft_specs.runway_limitations IS
+    '1:1 extension of aircraft_core.variants for runway and surface limitations. '
+    'approved_surfaces (TEXT array) lists surface types certified for operations; '
+    'GIN-indexed for efficient "find all aircraft approved for grass" queries. '
+    'Qualitative POH notes (hot-high, density altitude, soft-field) are stored '
+    'as free-text because they do not reduce to a single numeric comparand.';
+COMMENT ON COLUMN aircraft_specs.runway_limitations.approved_surfaces IS
+    'Array of approved surface type codes. Valid values mirror '
+    'performance_metrics.condition_surface_type: '
+    '''PAVED'',''GRASS'',''GRAVEL'',''SOFT'',''WATER'',''CARRIER_DECK''. '
+    'Query: WHERE approved_surfaces @> ARRAY[''GRASS''] '
+    'finds variants approved for grass-strip operations.';
+COMMENT ON COLUMN aircraft_specs.runway_limitations.max_crosswind_ktas IS
+    'Maximum demonstrated crosswind component in knots from the POH. '
+    '"Demonstrated" is a flight-test figure, not a certificated limit, '
+    'unless the POH states otherwise. Source context is in notes.';
 
-    -- Maximum Performance Settings
-                                  max_cruise_speed_ktas public.aircraft_speed_knots,
-                                  max_cruise_fuel_flow_gph NUMERIC(5, 1),             -- Gallons per hour burn rate
+-- =============================================================================
+-- TRIGGERS
+-- =============================================================================
 
-    -- Long-Range Economy Performance Benchmarks
-                                  economy_cruise_speed_ktas public.aircraft_speed_knots,
-                                  economy_cruise_fuel_flow_gph NUMERIC(5, 1),
-                                  economy_cruise_altitude_ft public.aircraft_dim_feet,
+CREATE TRIGGER trg_perf_metrics_updated
+    BEFORE UPDATE ON aircraft_specs.performance_metrics
+    FOR EACH ROW EXECUTE FUNCTION aircraft_ref.set_updated_at();
 
-    -- Fleet Logistics Parameters
-                                  max_range_nm INT NOT NULL,                          -- Maximum range with reserves
-                                  ferry_range_nm INT,                                 -- Range stripped of payload with max auxiliary fuel
-                                  service_ceiling_ft public.aircraft_dim_feet NOT NULL,
-                                  combustor_time_to_ceiling_minutes SMALLINT,
+CREATE TRIGGER trg_runway_lim_updated
+    BEFORE UPDATE ON aircraft_specs.runway_limitations
+    FOR EACH ROW EXECUTE FUNCTION aircraft_ref.set_updated_at();
 
-                                  created_at public.aircraft_timestamp NOT NULL DEFAULT CLOCK_TIMESTAMP(),
-                                  updated_at public.aircraft_timestamp NOT NULL DEFAULT CLOCK_TIMESTAMP(),
+-- =============================================================================
+-- INDEXES
+-- =============================================================================
 
-                                  CONSTRAINT chk_range_positive CHECK (max_range_nm > 0),
-                                  CONSTRAINT chk_ferry_range CHECK (COALESCE(ferry_range_nm, max_range_nm) >= max_range_nm)
-);
+-- ── aircraft_specs.performance_metrics ───────────────────────────────────────
 
--- ----------------------------------------------------------------------------
--- 4. CLIMB AND DESCENT PERFORMANCE PRIMITIVES
--- ----------------------------------------------------------------------------
-CREATE TABLE climb_descent_profiles (
-                                        configuration_id BIGINT PRIMARY KEY REFERENCES aircraft_core.aircraft_configurations(id) ON DELETE CASCADE,
+-- PRIMARY COMPARISON INDEX
+-- Enforces at most one canonical value per (variant, metric_type).
+-- Phase 16 comparison views filter exclusively on this index.
+CREATE UNIQUE INDEX uq_perf_canonical
+    ON aircraft_specs.performance_metrics (variant_id, metric_type_code)
+    WHERE is_canonical;
 
-    -- Initial Climb Profiles (Sea Level, MTOW, Flaps Up)
-                                        max_rate_of_climb_fpm INT,                         -- Feet per minute initial climb
-                                        single_engine_climb_rate_fpm INT,                  -- Critical multi-engine benchmark (Vyse)
+-- CROSS-FLEET SORT INDEX
+-- Covers the most frequent comparison query:
+--   "sort all variants by metric X, return canonical value"
+-- Covering index (metric_type, canonical_value) avoids table-heap access.
+CREATE INDEX idx_pm_type_canonical
+    ON aircraft_specs.performance_metrics (metric_type_code, canonical_value)
+    WHERE is_canonical AND canonical_value IS NOT NULL;
 
-    -- Aero Efficiencies
-                                        best_glide_ratio_speed_ktas public.aircraft_speed_knots,
-                                        best_glide_lift_to_drag_ratio NUMERIC(4, 1),        -- L/D Ratio (e.g., 9.2, 11.5)
+-- VARIANT DETAIL PAGE
+-- All performance metrics for one variant (includes non-canonical rows for
+-- display of multiple source values and conditions context).
+CREATE INDEX idx_pm_variant
+    ON aircraft_specs.performance_metrics (variant_id);
 
-                                        created_at public.aircraft_timestamp NOT NULL DEFAULT CLOCK_TIMESTAMP(),
-                                        updated_at public.aircraft_timestamp NOT NULL DEFAULT CLOCK_TIMESTAMP()
-);
+-- SPECIFIC METRIC FOR ONE VARIANT
+-- Get all recorded values (all sources, all conditions) for one metric on one variant.
+CREATE INDEX idx_pm_variant_type
+    ON aircraft_specs.performance_metrics (variant_id, metric_type_code);
 
--- Index optimizations for operational searches
-CREATE INDEX idx_speeds_stall ON speed_limits(vs0_stall_flaps_down_ktas, vs1_stall_clean_ktas);
-CREATE INDEX idx_field_takeoff ON field_performance(takeoff_total_clear_50ft_obstacle_ft);
-CREATE INDEX idx_cruise_range ON cruise_envelopes(max_range_nm);
-CREATE INDEX idx_cruise_speed ON cruise_envelopes(max_cruise_speed_ktas);
+-- ALTITUDE CONDITION FILTER
+-- "Show only metrics measured at or above 10,000 ft" (high-altitude aircraft research).
+CREATE INDEX idx_pm_altitude
+    ON aircraft_specs.performance_metrics (condition_altitude_ft)
+    WHERE condition_altitude_ft IS NOT NULL;
 
--- Triggers for record updates
-CREATE TRIGGER trg_speed_limits_updated BEFORE UPDATE ON speed_limits FOR EACH ROW EXECUTE FUNCTION public.fn_update_timestamp_column();
-CREATE TRIGGER trg_field_performance_updated BEFORE UPDATE ON field_performance FOR EACH ROW EXECUTE FUNCTION public.fn_update_timestamp_column();
-CREATE TRIGGER trg_cruise_envelopes_updated BEFORE UPDATE ON cruise_envelopes FOR EACH ROW EXECUTE FUNCTION public.fn_update_timestamp_column();
-CREATE TRIGGER trg_climb_descent_profiles_updated BEFORE UPDATE ON climb_descent_profiles FOR EACH ROW EXECUTE FUNCTION public.fn_update_timestamp_column();
+-- ── aircraft_specs.runway_limitations ────────────────────────────────────────
+
+-- GIN on approved_surfaces for containment queries (@>)
+CREATE INDEX idx_rl_surfaces
+    ON aircraft_specs.runway_limitations USING gin (approved_surfaces)
+    WHERE approved_surfaces IS NOT NULL;
+
+-- Crosswind filter — buyer search "I need > 20 kt demonstrated crosswind"
+CREATE INDEX idx_rl_crosswind
+    ON aircraft_specs.runway_limitations (max_crosswind_ktas)
+    WHERE max_crosswind_ktas IS NOT NULL;
 
 COMMIT;
