@@ -1,0 +1,111 @@
+services:
+  postgres:
+    image: ${POSTGRES_IMAGE:-postgres:17.10-trixie.10-trixie}
+    container_name: aircraft-postgres
+    restart: unless-stopped
+    ports:
+      - "${POSTGRES_HOST_PORT:-5432}:${POSTGRES_CONTAINER_PORT:-5432}"
+    environment:
+      POSTGRES_DB: ${POSTGRES_DB:-aircraft_dev}
+      POSTGRES_USER: ${POSTGRES_USER:-aircraft}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-aircraft_dev_password}
+    volumes:
+      - aircraft_postgres_data:/var/lib/postgresql/data
+      - ./database:/workspace/database:ro
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U $${POSTGRES_USER} -d $${POSTGRES_DB}"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+      start_period: 10s
+
+  db-migrate:
+    image: ${POSTGRES_IMAGE:-postgres:17.10-trixie}
+    depends_on:
+      postgres:
+        condition: service_healthy
+    environment:
+      DATABASE_URL: ${DOCKER_DATABASE_URL:-postgresql://aircraft:aircraft_dev_password@postgres:5432/aircraft_dev}
+    volumes:
+      - ./database:/database:ro
+    command: >
+      sh -c '
+        set -eu
+
+        for migration in /database/migrations/*.sql; do
+          [ -e "$$migration" ] || continue
+          echo "Applying $$migration"
+          psql -v ON_ERROR_STOP=1 "$$DATABASE_URL" -f "$$migration"
+        done
+      '
+
+  db-seed:
+    image: ${POSTGRES_IMAGE:-postgres:17.10-trixie}
+    depends_on:
+      postgres:
+        condition: service_healthy
+    environment:
+      DATABASE_URL: ${DOCKER_DATABASE_URL:-postgresql://aircraft:aircraft_dev_password@postgres:5432/aircraft_dev}
+    volumes:
+      - ./database:/database:ro
+    command: >
+      sh -c '
+        set -eu
+
+        for seed in /database/seeds/*.sql; do
+          [ -e "$$seed" ] || continue
+          echo "Applying $$seed"
+          psql -v ON_ERROR_STOP=1 "$$DATABASE_URL" -f "$$seed"
+        done
+      '
+
+  db-validate:
+    image: ${POSTGRES_IMAGE:-postgres:17.10-trixie}
+    depends_on:
+      postgres:
+        condition: service_healthy
+    environment:
+      DATABASE_URL: ${DOCKER_DATABASE_URL:-postgresql://aircraft:aircraft_dev_password@postgres:5432/aircraft_dev}
+    volumes:
+      - ./database:/database:ro
+    command: >
+      sh -c '
+        set -eu
+
+        for validation in /database/validation/*.sql; do
+          [ -e "$$validation" ] || continue
+          echo "Running $$validation"
+          psql -v ON_ERROR_STOP=1 "$$DATABASE_URL" -f "$$validation"
+        done
+      '
+
+volumes:
+  aircraft_postgres_data:
+
+
+
+#services:
+#
+#  postgres:
+#    image: ${POSTGRES_IMAGE:-postgres:17.10-trixie.10-trixie}
+#    container_name: aircraft-postgres
+#    restart: always
+#
+#    environment:
+#      POSTGRES_DB: ${POSTGRES_DB}
+#      POSTGRES_USER: ${POSTGRES_USER}
+#      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
+#
+#    ports:
+#      - "${POSTGRES_PORT:-15432}:5432"
+#
+#    volumes:
+#      - db:/var/lib/postgresql/data
+#      - ./database:/workspace/database:ro
+#
+#    healthcheck:
+#      test: ["CMD-SHELL", "pg_isready -U $${POSTGRES_USER} -d $${POSTGRES_DB}"]
+#      interval: 10s
+#      timeout: 5s
+#      retries: 5
+#      start_period: 15s
