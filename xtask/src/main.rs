@@ -1,5 +1,8 @@
+#![allow(clippy::print_stdout, clippy::print_stderr)]
+
 // xtask/src/main.rs
 use clap::{Parser, Subcommand};
+use sqlx::postgres::PgPoolOptions;
 
 #[derive(Parser)]
 #[command(name = "cargo xtask")]
@@ -26,35 +29,33 @@ async fn main() -> anyhow::Result<()> {
     match cli.command {
         Commands::DbMigrate => {
             println!("Executing database migrations...");
-            // Real logic: Ingest settings via aircraft_config, connect via aircraft_db, execute sql files
-            execute_migrations().await?;
+            // Real logic: Ingest settings via aircraft_config, connect via aircraft_db, execute
+            // SQL files
+            execute_migrations();
         }
         Commands::DbReset => {
             println!("Resetting database to pristine state...");
-            execute_db_reset().await?;
+            execute_db_reset();
         }
         Commands::GenerateDocs => {
             println!("Generating OpenAPI JSON specification...");
-            execute_docs_generation()?;
+            execute_docs_generation();
         }
     }
 
     Ok(())
 }
 
-async fn execute_migrations() -> anyhow::Result<()> {
+const fn execute_migrations() {
     // You can call your real configuration management crate here:
     // let settings = aircraft_config::load_settings()?;
-    // sqlx::migrate!("../database/migrations").run(&settings.db.pool).await?;
-    Ok(())
+    // sqlx::migrate!('../database/migrations').run(&settings.db.pool).await?;
 }
 
-async fn execute_db_reset() -> anyhow::Result<()> {
+const fn execute_db_reset() {
     // Logic to drop schemas, recreate, and run seed data scripts
-    Ok(())
 }
 
-fn execute_docs_generation() -> anyhow::Result<()> {
+const fn execute_docs_generation() {
     // Logic to write your Utoipa openapi string to database/openapi.json
-    Ok(())
 }
