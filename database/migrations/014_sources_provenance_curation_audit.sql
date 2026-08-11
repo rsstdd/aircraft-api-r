@@ -195,6 +195,15 @@ COMMENT ON COLUMN aircraft_prov.source_assertions.is_accepted IS
 --   'CONFLICTING_SOURCES', 'IMPLAUSIBLE_VALUE', 'PARSE_FAILURE').
 -- Free-text (not FK) for maximum extensibility without schema changes.
 -- priority: 1 = urgent/blocking, 5 = low/cosmetic.
+--
+-- FIX: chk_cf_resolution was originally written as a CHECK constraint with a
+-- subquery against aircraft_ref.curation_flag_statuses. PostgreSQL does not
+-- allow subqueries in CHECK constraints ("cannot use subquery in check
+-- constraint"), so CREATE TABLE would fail outright. Enforcement is now done
+-- with a BEFORE INSERT/UPDATE trigger (see aircraft_prov.enforce_curation_flag_resolution
+-- below and trg_cf_enforce_resolution in the TRIGGERS section), mirroring the
+-- same cross-table-CHECK workaround used in
+-- aircraft_market.reject_aggregate_line_item() (Phase 12).
 -- =============================================================================
 
 CREATE TABLE aircraft_prov.curation_flags (
@@ -219,14 +228,10 @@ CREATE TABLE aircraft_prov.curation_flags (
                             REFERENCES aircraft_prov.source_assertions(id) ON DELETE SET NULL,
     created_at          TIMESTAMPTZ NOT NULL DEFAULT now(),
     updated_at          TIMESTAMPTZ NOT NULL DEFAULT now(),
-    CONSTRAINT chk_cf_priority CHECK (priority BETWEEN 1 AND 5),
-    CONSTRAINT chk_cf_resolution CHECK (
-        -- resolved_at may only be set when status is terminal.
-        resolved_at IS NULL
-        OR status_code IN (
-            SELECT code FROM aircraft_ref.curation_flag_statuses WHERE is_terminal
-        )
-    )
+    CONSTRAINT chk_cf_priority CHECK (priority BETWEEN 1 AND 5)
+    -- chk_cf_resolution removed: enforced instead by trg_cf_enforce_resolution
+    -- (see TRIGGERS section) because Postgres CHECK constraints cannot
+    -- contain subqueries against another table.
 );
 
 COMMENT ON TABLE aircraft_prov.curation_flags IS
@@ -235,6 +240,8 @@ COMMENT ON TABLE aircraft_prov.curation_flags IS
     'priority 1=urgent (blocking), 5=low (cosmetic). '
     'status_code FK to aircraft_ref.curation_flag_statuses governs the lifecycle; '
     'RESOLVED and DISMISSED are terminal states (is_terminal = TRUE). '
+    'resolved_at may only be set when status_code is terminal — enforced by '
+    'trg_cf_enforce_resolution, not a CHECK, because the rule spans two tables. '
     'Replaces the reference schema''s flat curation_flags table, adding polymorphic '
     'entity reference and field-level granularity.';
 COMMENT ON COLUMN aircraft_prov.curation_flags.issue_type IS
@@ -242,9 +249,36 @@ COMMENT ON COLUMN aircraft_prov.curation_flags.issue_type IS
     '''MISSING_VALUE'', ''CONFLICTING_SOURCES'', ''IMPLAUSIBLE_VALUE'', '
     '''PARSE_FAILURE'', ''DESCRIPTION_PARSE_INCOMPLETE'', ''STALE_DATA''. '
     'Not FK-constrained: extensibility over strictness.';
-COMMENT ON COLUMN aircraft_prov.curation_flags.chk_cf_resolution IS
-    'Ensure resolved_at is only set when status is terminal (RESOLVED or DISMISSED). '
-    'Uses a scalar subquery against curation_flag_statuses.is_terminal.';
+COMMENT ON CONSTRAINT chk_cf_priority ON aircraft_prov.curation_flags IS
+    'Priority scale: 1 = urgent/blocking, 5 = low/cosmetic.';
+
+-- Cross-table rule: resolved_at may only be set when status_code is a
+-- terminal aircraft_ref.curation_flag_statuses row. Postgres CHECK
+-- constraints cannot reference another table, so this is enforced here.
+CREATE OR REPLACE FUNCTION aircraft_prov.enforce_curation_flag_resolution()
+RETURNS trigger
+LANGUAGE plpgsql AS $$
+BEGIN
+    IF NEW.resolved_at IS NOT NULL THEN
+        IF NOT EXISTS (
+            SELECT 1
+            FROM aircraft_ref.curation_flag_statuses
+            WHERE code = NEW.status_code
+              AND is_terminal
+        ) THEN
+            RAISE EXCEPTION
+                'aircraft_prov.curation_flags.resolved_at may only be set when status_code (%) is terminal',
+                NEW.status_code;
+        END IF;
+    END IF;
+    RETURN NEW;
+END;
+$$;
+COMMENT ON FUNCTION aircraft_prov.enforce_curation_flag_resolution() IS
+    'BEFORE INSERT/UPDATE trigger function for aircraft_prov.curation_flags: '
+    'ensures resolved_at is only set when status_code references a terminal '
+    'row in aircraft_ref.curation_flag_statuses (RESOLVED, DISMISSED). '
+    'Replaces the invalid chk_cf_resolution CHECK-with-subquery.';
 
 -- =============================================================================
 -- aircraft_prov.audit_log
@@ -294,6 +328,10 @@ COMMENT ON TABLE aircraft_prov.audit_log IS
 CREATE TRIGGER trg_curation_flags_updated
     BEFORE UPDATE ON aircraft_prov.curation_flags
     FOR EACH ROW EXECUTE FUNCTION aircraft_ref.set_updated_at();
+
+CREATE TRIGGER trg_cf_enforce_resolution
+    BEFORE INSERT OR UPDATE ON aircraft_prov.curation_flags
+    FOR EACH ROW EXECUTE FUNCTION aircraft_prov.enforce_curation_flag_resolution();
 
 -- =============================================================================
 -- INDEXES

@@ -498,5 +498,6 @@ VALUES
    616, 151.0, NULL,
    'Self-protection noise and deception jamming pod for tactical aircraft. '
    'Public reference only.')
+ON CONFLICT (slug) DO NOTHING;
 
 COMMIT;
