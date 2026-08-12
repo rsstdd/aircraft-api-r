@@ -319,23 +319,31 @@ tracing::info!(request_id = %id, path = %url.path(), "Processing inbound HTTP tr
 
 ## 10. Development Task Management: `xtask/`
 
-### Scaffold status
+The `xtask` binary provides behaviorally tested development automation through
+root Just recipes:
 
-The `xtask` binary currently compiles, but its execution functions are empty.
-It is not exposed through working Just recipes. Implement and behaviorally test
-each operation before treating it as available automation.
+* `just install-deps` checks the platform prerequisites (`cargo`, `rustup`,
+  Docker Compose, and the PostgreSQL client) and installs missing Rust
+  development tools used by this repository:
+  rustfmt, Clippy, Just, cargo-nextest, cargo-audit, cargo-deny, and SQLx CLI.
+  Use `just install-deps --check` to report missing tools without installing
+  anything.
+* `just deny` runs the tested `xtask deny` wrapper against the locked workspace.
+  The root `deny.toml` enforces the approved license set, rejects wildcard
+  dependencies and unapproved registry or Git sources, and checks RustSec
+  advisories. `just lint` includes the same command.
+* `just generate-docs` compiles the API-owned Utoipa contract and writes
+  `docs/openapi.json`. Use `just generate-docs --check` to fail when the checked
+  artifact is missing or stale, or `just generate-docs --output <path>` to
+  select another local destination.
 
-### Planned command routines
+`prepare-sqlx` remains unavailable while `aircraft_db` is a scaffold without
+compile-time checked SQLx queries. Add the command only after the persistence
+crate is an active workspace member with real queries whose offline metadata can
+be generated and verified.
 
-These are design targets, not implemented commands. Database lifecycle work is
-provided by the verified `db-*` and `db-prod-*` Just recipes above:
-
-* `install-deps` — Checks local environments and provisions missing development tools.
-* `prepare-sqlx` — Executes schema verification routines and updates the offline metadata file tree (`.sqlx/`).
-* `generate-docs` — Compiles core application API endpoints and outputs OpenAPI schema artifacts directly onto local disk targets.
-
-The working Just recipe `just db-reset` is separate from these planned xtask
-commands. It deletes the local Compose PostgreSQL volume and starts an empty
-database container; it does not migrate, seed, or validate. Use the destructive
+The working Just recipe `just db-reset` is separate from these xtask commands.
+It deletes the local Compose PostgreSQL volume and starts an empty database
+container; it does not migrate, seed, or validate. Use the destructive
 `just db-rebuild` recipe when an explicitly disposable local database should be
 reset, migrated, seeded, and validated in one workflow.

@@ -11,9 +11,11 @@ workspace = true
 
 [dependencies]
 anyhow.workspace = true
-tokio = { workspace = true, features = ["macros", "rt-multi-thread"] }
 clap = { version = "4.5", features = ["derive"] }
+serde_json.workspace = true
 
-# Internal workspace crates required for execution logic
-aircraft_config = { path = "../crates/aircraft_config" }
-aircraft_db = { path = "../crates/aircraft_db" }
+# API contracts are compiled into the documentation generator.
+aircraft_api = { path = "../crates/aircraft_api" }
+
+[dev-dependencies]
+tempfile = "3.20"

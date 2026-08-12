@@ -34,17 +34,19 @@ lint:
     cargo fmt --all -- --check
     cargo clippy --workspace --all-targets --all-features -- -D warnings
     cargo audit
-    cargo deny check
+    just deny
+
+deny:
+    cargo run --package xtask -- deny
 
 check-offline:
     SQLX_OFFLINE=true cargo check --workspace --all-targets
 
-# prepare-sqlx:
-#     @echo "Generating SQLx metadata..."
-#     @if [ -z "{{env_var_or_default('MIGRATION_DATABASE_URL', env_var_or_default('DATABASE_URL', ''))}}" ]; then \
-#       echo "DATABASE_URL or MIGRATION_DATABASE_URL must be set"; exit 1; \
-#     fi
-#     DATABASE_URL="{{env_var_or_default('MIGRATION_DATABASE_URL', env_var('DATABASE_URL'))}}" cargo sqlx prepare --workspace -- --all-targets
+install-deps *args:
+    cargo run --package xtask -- install-deps {{ args }}
+
+generate-docs *args:
+    cargo run --package xtask -- generate-docs {{ args }}
 
 # ---------------------------------------------------------------------
 # Local Docker / PostgreSQL

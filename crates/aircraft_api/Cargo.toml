@@ -22,11 +22,9 @@ tower-http = { workspace = true, features = ["limit", "trace", "cors"] }
 # Data Input Boundary Validation & Serialization
 serde.workspace = true
 serde_json.workspace = true
-validator = { workspace = true, features = ["derive"] }
 
 # OpenAPI Specification / Documentation Generation
 utoipa = { workspace = true, features = ["axum_extras", "chrono", "uuid"] }
-utoipa-swagger-ui = { workspace = true, features = ["axum"] }
 
 # Error Management & Diagnostic Spans
 anyhow.workspace = true
@@ -38,6 +36,5 @@ chrono.workspace = true
 uuid.workspace = true
 
 [dev-dependencies]
-# For spinning up short-lived mock transport endpoints during isolation testing
 tokio = { workspace = true, features = ["macros", "rt"] }
-reqwest = { workspace = true, features = ["json"] }
+tower = { workspace = true, features = ["util"] }
