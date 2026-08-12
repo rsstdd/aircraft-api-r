@@ -22,6 +22,7 @@ impl Settings {
             .try_deserialize()
     }
 
+    #[must_use]
     pub fn bind_address(&self) -> String {
         format!("{}:{}", self.http.host, self.http.port)
     }

@@ -69,6 +69,10 @@ log/
 !database/**/*.md
 !database/**/*.json.example
 
+# Raw source datasets are local/private; only sanitized examples are tracked.
+database/staging/*.json
+!database/staging/*.json.example
+
 # Ignore generated/local database files
 database/data/
 database/tmp/
