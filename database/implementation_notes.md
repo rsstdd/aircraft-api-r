@@ -4,128 +4,79 @@
 
 ## 1. Migration Run Order and Dependency Map
 
-### 1.1 Complete Install Sequence
+### 1.1 Canonical Install and Validation
 
-Run from the repository root. All commands use `-v ON_ERROR_STOP=1` so any failure halts the pipeline rather than silently continuing with a broken state.
+Run from the repository root. The installer is a real `psql` script, stops on
+the first error, records each successful migration in
+`public.aircraft_schema_migrations`, and interleaves the seed phases required by
+foreign keys.
 
 ```bash
-# ── Phase 1: Infrastructure ────────────────────────────────────────────────
-psql "$DATABASE_URL" -v ON_ERROR_STOP=1 \
-  -f database/migrations/001_extensions_schemas_domains_triggers.sql
+# Container-backed local workflow
+just db-up
+just db-wait
+just db-migrate
+just db-validate
 
-# ── Phase 2: Lookup tables + seed data ────────────────────────────────────
-psql "$DATABASE_URL" -v ON_ERROR_STOP=1 \
-  -f database/migrations/002_core_reference_tables.sql
-psql "$DATABASE_URL" -v ON_ERROR_STOP=1 \
-  -f database/seeds/001_reference_units.sql       # MUST precede 001
-psql "$DATABASE_URL" -v ON_ERROR_STOP=1 \
-  -f database/seeds/002_lookup_seed_data.sql
-
-# ── Phase 3: Geography + organizations ────────────────────────────────────
-psql "$DATABASE_URL" -v ON_ERROR_STOP=1 \
-  -f database/migrations/003_geography_operators_organizations.sql
-
-# ── Phase 4: Aircraft identity backbone ───────────────────────────────────
-psql "$DATABASE_URL" -v ON_ERROR_STOP=1 \
-  -f database/migrations/004_aircraft_identity_taxonomy.sql
-
-# ── Phase 5: Certification ────────────────────────────────────────────────
-psql "$DATABASE_URL" -v ON_ERROR_STOP=1 \
-  -f database/migrations/005_certification_operating_approvals.sql
-
-# ── Phase 6: Dimensions ───────────────────────────────────────────────────
-psql "$DATABASE_URL" -v ON_ERROR_STOP=1 \
-  -f database/migrations/006_dimensions_cabin_cargo_hangar_fit.sql
-
-# ── Phase 7: Weights ──────────────────────────────────────────────────────
-psql "$DATABASE_URL" -v ON_ERROR_STOP=1 \
-  -f database/migrations/007_weight_balance_payload_loading.sql
-
-# ── Phase 8: Performance metrics ──────────────────────────────────────────
-psql "$DATABASE_URL" -v ON_ERROR_STOP=1 \
-  -f database/migrations/008_performance_metrics_conditions.sql
-
-# ── Phase 9: Propulsion ───────────────────────────────────────────────────
-psql "$DATABASE_URL" -v ON_ERROR_STOP=1 \
-  -f database/migrations/009_propulsion_engines_rotors_stcs.sql
-
-# ── Phase 10: Avionics / systems ──────────────────────────────────────────
-psql "$DATABASE_URL" -v ON_ERROR_STOP=1 \
-  -f database/migrations/010_avionics_equipment_systems.sql
-
-# ── Phase 11: Military reference ──────────────────────────────────────────
-psql "$DATABASE_URL" -v ON_ERROR_STOP=1 \
-  -f database/migrations/011_military_sensors_stores_loadouts.sql
-
-# ── Phase 12: Market data ─────────────────────────────────────────────────
-psql "$DATABASE_URL" -v ON_ERROR_STOP=1 \
-  -f database/migrations/012_ownership_cost_valuation_market.sql
-
-# ── Phase 13: Maintenance / reliability ───────────────────────────────────
-psql "$DATABASE_URL" -v ON_ERROR_STOP=1 \
-  -f database/migrations/013_maintenance_reliability_supportability.sql
-
-# ── Phase 14: Provenance / curation ──────────────────────────────────────
-psql "$DATABASE_URL" -v ON_ERROR_STOP=1 \
-  -f database/migrations/014_sources_provenance_curation_audit.sql
-
-# ── Phase 15: Mission profiles + seed ─────────────────────────────────────
-psql "$DATABASE_URL" -v ON_ERROR_STOP=1 \
-  -f database/migrations/015_mission_profiles_comparison_scoring.sql
-psql "$DATABASE_URL" -v ON_ERROR_STOP=1 \
-  -f database/seeds/003_mission_profile_seed_data.sql
-
-# ── Phase 16: Read models / views / indexes ───────────────────────────────
-psql "$DATABASE_URL" -v ON_ERROR_STOP=1 \
-  -f database/migrations/016_read_models_views_indexes.sql
-
-# ── Phase 17: Ingestion pipeline ──────────────────────────────────────────
-psql "$DATABASE_URL" -v ON_ERROR_STOP=1 \
-  -f database/migrations/901_seed_data_staging.sql
-psql "$DATABASE_URL" -v ON_ERROR_STOP=1 \
-  -v seed_json_path="'/absolute/path/to/aircraft_seed.json'" \
-  -f database/migrations/902_server_side_json_ingestion.sql
-
-# ── Populate materialized views (after promotion completes) ───────────────
-psql "$DATABASE_URL" -c "SELECT aircraft_read.refresh_search_matviews(FALSE);"
-
-# ── Phase 18: Example / smoke-test queries ────────────────────────────────
-psql "$DATABASE_URL" -v ON_ERROR_STOP=1 \
-  -f database/validation/002_comparison_query_smoke_tests.sql
-
-# ── Phase 19: Validation ──────────────────────────────────────────────────
-psql "$DATABASE_URL" -v ON_ERROR_STOP=1 \
-  -f database/validation/001_integrity_checks.sql
-psql "$DATABASE_URL" -v ON_ERROR_STOP=1 \
-  -f database/validation/003_seed_ingestion_validation.sql
-psql "$DATABASE_URL" -v ON_ERROR_STOP=1 \
-  -f database/migrations/903_post_bootstrap_validation.sql
-
-# ── Phases 20–21: Documentation only ─────────────────────────────────────
-# docs/data_dictionary.md and docs/implementation_notes.md — no psql step
+# Direct production workflow
+MIGRATION_DATABASE_URL='postgresql://migration-role@db.example/aircraft' \
+  just db-prod-bootstrap
 ```
+
+`just db-seed` and `just db-prod-seed` reapply only the three canonical seed
+files. They do not execute transient ingestion or validation scripts.
+
+Phase 17 ingestion is explicit because it reads a server-side JSON file. Raw
+datasets are ignored by Git. With the local Compose mount, place the file under
+`database/staging/` and pass its in-container path:
+
+```bash
+just db-ingest /workspace/database/staging/aircraft_seed.json
+```
+
+That recipe installs the staging tables, loads and promotes the JSON, refreshes
+both search materialized views, and runs the post-ingestion invariants.
+
+For production, use `just db-prod-ingest /server/path/file.json`; this is a
+database-server path because the loader uses `pg_read_file`.
+
+The direct recipes prefer `MIGRATION_DATABASE_URL` and fall back to
+`DATABASE_URL`. They require a pre-provisioned database and a migration role
+with permission to create all objects in the migration set. They do not create
+cluster roles or databases because those operations are provider-specific and
+usually require privileges that should not be present in an application
+deployment.
+
 
 ### 1.2 Hard Dependency Rules
 
-The following constraints are **not enforced by Postgres itself** but must be respected or the pipeline will fail with FK errors:
+`database/install.sql` enforces these dependencies:
 
 | Rule | Reason |
 |---|---|
-| `001_reference_units.sql` before `002_lookup_seed_data.sql` | `performance_metric_types`, `weight_metric_types`, and `propulsion_categories` have FK into `measurement_units` |
-| All of Phase 2 before Phase 3 | `org_type_code`, `org_relationship_types` consumed by Phase 3 |
-| Phase 3 before Phase 4 | `aircraft_core.families.manufacturer_org_id` → `aircraft_org.organizations` |
-| Phase 4 before Phases 5–15 | All domain tables FK to `aircraft_core.variants.id` |
-| Phase 14 before Phase 17 promotion | Promotion writes to `aircraft_prov.source_documents` and `source_assertions` |
-| Phase 16 before matview population | `mv_variant_search` and `mv_ownership_cost_summary` must exist before `refresh_search_matviews()` |
-| Matview refresh before Phase 18 smoke tests | Family 4 (mission suitability) queries `mv_variant_search` |
+| `001_reference_units.sql` before `002_lookup_seed_data.sql` | Metric and propulsion lookup rows reference `measurement_units` |
+| Phase 2 seeds before Phase 3 | Geography/organization rows reference organization lookup types |
+| Phase 3 before Phase 4 | Aircraft families reference organizations |
+| Phase 4 before Phases 5-15 | Domain tables reference aircraft_core.variants |
+| Phase 14 before Phase 17 promotion | Promotion writes provenance documents and assertions |
+| Phase 16 before ingestion refresh | The search materialized views must exist before refresh |
 
-### 1.3 Re-running Migrations Safely
+Do not run the migration glob directly; its lexical order cannot express the
+required Phase 2 seed boundary.
 
-Every migration file uses `CREATE TABLE IF NOT EXISTS`, `CREATE OR REPLACE FUNCTION`, `INSERT ... ON CONFLICT DO NOTHING`, and is wrapped in `BEGIN ... COMMIT`. This means:
+### 1.3 Re-running Safely
 
-- Re-running a migration file after a partial failure is safe
-- The seed files are idempotent (all INSERTs use `ON CONFLICT DO NOTHING`)
-- Phase 17 `load_seed_json()` deduplicates on `(run_label)` and `(ingest_run_id, manufacturer_name_raw, aircraft_name_raw)` — running with the same JSON file twice will not create duplicate staged rows
+- Re-running `database/install.sql` skips versions already recorded in
+  `public.aircraft_schema_migrations` and reapplies idempotent canonical seeds.
+- A session-level advisory lock serializes installers targeting the same
+  database.
+- Do not rerun individual migration files: most contain one-time DDL and rely on
+  the installer history table for repeatability.
+- The Phase 17 run label is derived from canonical JSON content. Re-ingesting the
+  same JSON reuses the same run and staging uniqueness constraints; changed
+  content creates a distinct run.
+- Every entrypoint uses `ON_ERROR_STOP=1`; a SQL error cannot be reported as a
+  successful bootstrap.
 
 ---
 
@@ -157,7 +108,12 @@ Every migration file uses `CREATE TABLE IF NOT EXISTS`, `CREATE OR REPLACE FUNCT
 
 ### 2.4 Dimension and Hangar Fit Data
 
-**Current state.** `aircraft_specs.dimension_metrics` and `aircraft_read.v_hangar_fit` are fully defined and indexed. However, PlanePHD does not expose wingspan, length, or height data in the JSON seed format used for Phase 17. The `v_hangar_fit` view will return zero rows until this data is populated from a secondary source.
+**Current state.** `aircraft_specs.dimension_metrics` is defined and indexed,
+and `aircraft_read.v_hangar_fit` is defined over it. However, PlanePHD does not
+expose wingspan, length, or height data in the JSON seed format used for Phase
+17. The view still returns one row per variant because it uses LEFT JOINs; its
+dimension and fit columns remain NULL until a secondary source supplies the
+required measurements.
 
 **Deferred decision.** Identify a secondary source (FAA type certificate data sheets, manufacturer specifications, or a structured Wikipedia/DBpedia extract) and build a Phase 22 ingestion adapter. The `aircraft_prov` pipeline is ready to accept multi-source dimension data with separate confidence scores. Phase reference: Phase 6, Phase 14.
 
@@ -173,31 +129,28 @@ Every migration file uses `CREATE TABLE IF NOT EXISTS`, `CREATE OR REPLACE FUNCT
 
 **Current state.** `aircraft_prov.audit_log` is append-only by convention. The column `COMMENT ON TABLE` documents this, but there is no DDL-level enforcement preventing `UPDATE` or `DELETE`.
 
-**Deferred decision.** Implement a PostgreSQL row-level security (RLS) policy or a `BEFORE UPDATE/DELETE` trigger that raises `EXCEPTION` if any row modification is attempted. Example:
-
-```sql
-CREATE RULE audit_log_no_update AS ON UPDATE TO aircraft_prov.audit_log DO INSTEAD NOTHING;
-CREATE RULE audit_log_no_delete AS ON DELETE TO aircraft_prov.audit_log DO INSTEAD NOTHING;
-```
+**Deferred decision.** Implement a `BEFORE UPDATE OR DELETE` trigger that raises
+an exception, and restrict service-account privileges to INSERT and SELECT as
+defence in depth. Do not use a silent `DO INSTEAD NOTHING` rule: callers must be
+told that an attempted audit-history mutation was rejected.
 
 Phase reference: Phase 14.
 
-### 2.7 `mv_variant_search` ADS-B Column
+### 2.7 Ownership-Cost Read Model
 
-**Current state.** The `has_ads_b_out` column in `mv_variant_search` maps to the `IFR` operating approval type code as a placeholder. This is documented inline in Phase 16. ADS-B equipment is correctly modeled in `aircraft_systems.variant_equipment` (linked to the `ADS-B OUT TRANSPONDER` equipment catalog entry seeded in Phase 10).
+**Current state.** Migration 016 identifies fuel with
+`FUEL_COST_PER_HOUR`, while the Phase 2 seed and Phase 17 mapper use the
+canonical code `FUEL`. As a result, `hourly_fuel_cost_usd` is NULL and fuel is
+included in `hourly_maintenance_reserve_usd`. The computed annual-total
+expression also uses aggregate-level `COALESCE`, which can omit hourly-only
+variable items when another variable item supplies `amount_annual`.
 
-**Deferred decision.** After real equipment data is loaded for a meaningful number of variants, update the `mv_variant_search` definition to use:
+**Required fix.** Change the read model to use the seeded `FUEL` code and
+compute the annual contribution per line item before summing. Add behavioral
+validation containing fuel plus a mix of annual and hourly variable items.
+Until that SQL fix is deployed and validated, treat the affected read-model
+columns as unreliable.
 
-```sql
-EXISTS (
-    SELECT 1 FROM aircraft_systems.variant_equipment ve
-    JOIN aircraft_systems.equipment_catalog ec ON ec.id = ve.equipment_id
-    WHERE ve.variant_id = v.id
-      AND ec.slug = 'ads-b-out-transponder'
-) AS has_ads_b_out
-```
-
-Phase reference: Phase 10, Phase 16.
 
 ---
 
@@ -221,18 +174,19 @@ Run this at the start of each curator session to see what needs attention:
 -- Open flags by type, newest first
 SELECT
     cf.id,
-    cf.flag_type,
+    cf.issue_type,
     cf.entity_type_code,
     cf.entity_id,
-    cf.description,
+    cf.issue_description,
     cf.created_at,
-    v.variant_name,
-    f.family_name AS manufacturer
+    v.name AS variant_name,
+    o.name AS manufacturer
 FROM aircraft_prov.curation_flags cf
 LEFT JOIN aircraft_core.variants v
-       ON cf.entity_type_code = 'VARIANT' AND cf.entity_id = v.id
+       ON cf.entity_type_code = 'AIRCRAFT_VARIANT' AND cf.entity_id = v.id
 LEFT JOIN aircraft_core.models m ON m.id = v.model_id
 LEFT JOIN aircraft_core.families f ON f.id = m.family_id
+LEFT JOIN aircraft_org.organizations o ON o.id = f.manufacturer_org_id
 WHERE cf.status_code = 'OPEN'
 ORDER BY cf.created_at DESC
 LIMIT 50;
@@ -242,54 +196,82 @@ LIMIT 50;
 
 **Scenario:** A variant was flagged because an unmapped performance key appeared in the source JSON (e.g. a future PlanePHD field `glide_ratio`).
 
-**Step 1.** Identify the source assertion:
+**Step 1.** Inspect the flag and any explicitly linked assertion. Current Phase
+17 `INGESTION_WARNING` flags set `source_assertion_id` to NULL, so an unmapped
+field normally has no assertion to accept yet:
+
 ```sql
-SELECT sa.*
-FROM aircraft_prov.source_assertions sa
-JOIN aircraft_prov.curation_flags cf
-     ON cf.entity_id = sa.entity_id
-    AND cf.entity_type_code = sa.entity_type_code
-WHERE cf.id = :flag_id
-  AND sa.status_code = 'PENDING';
+SELECT cf.*, sa.*
+FROM aircraft_prov.curation_flags cf
+LEFT JOIN aircraft_prov.source_assertions sa
+       ON sa.id = cf.source_assertion_id
+WHERE cf.id = :flag_id;
 ```
 
-**Step 2a. Dismiss** if the value is genuinely irrelevant (e.g. a duplicate of a mapped field):
+**Step 2a. Dismiss** if the value is genuinely irrelevant (e.g. a duplicate of
+a mapped field). Reject a linked assertion only when one exists:
+
 ```sql
 UPDATE aircraft_prov.source_assertions
 SET status_code = 'REJECTED', is_accepted = FALSE
-WHERE id = :assertion_id;
+WHERE id = (SELECT source_assertion_id
+            FROM aircraft_prov.curation_flags
+            WHERE id = :flag_id)
+  AND status_code = 'PENDING';
 
 UPDATE aircraft_prov.curation_flags
 SET status_code = 'DISMISSED',
     resolved_at = now(),
-    resolution_notes = 'Field is a duplicate of CRUISE_SPEED; rejected.'
+    resolution_notes = 'Field is a duplicate of SPEED_CRUISE_BEST; rejected.'
 WHERE id = :flag_id;
 ```
 
-**Step 2b. Accept and promote** if the field maps to a known metric type:
-```sql
--- 1. Accept the assertion
-UPDATE aircraft_prov.source_assertions
-SET status_code = 'ACCEPTED', is_accepted = TRUE
-WHERE id = :assertion_id;
+**Step 2b. Promote** only after the field maps to a metric type that has been
+added to the canonical Phase 2 seed and deployed. Perform the canonical write,
+provenance write, flag resolution, and audit write atomically:
 
--- 2. Insert the canonical value (example: glide_ratio → a new metric type)
+```sql
+BEGIN;
+
+-- 1. Insert the canonical value (example: glide_ratio -> a new metric type).
 INSERT INTO aircraft_specs.performance_metrics
     (variant_id, metric_type_code, raw_value, raw_unit_code, canonical_value,
-     is_canonical, confidence, source_document_id)
+     is_canonical, confidence)
 VALUES
     (:variant_id, 'GLIDE_RATIO', :parsed_value, NULL, :parsed_value,
-     TRUE, 0.20, :source_document_id)
-ON CONFLICT DO NOTHING;
+     TRUE, 0.20);
 
--- 3. Resolve the flag
+-- 2. Record the accepted assertion. Phase 17 does not create this row for an
+-- unmapped field, so the curator must supply the source document.
+INSERT INTO aircraft_prov.source_assertions
+    (source_document_id, entity_type_code, entity_id, field_name,
+     raw_value, asserted_value, asserted_numeric, status_code,
+     is_accepted, confidence)
+VALUES
+    (:source_document_id, 'AIRCRAFT_VARIANT', :variant_id,
+     'performance.GLIDE_RATIO', :raw_value, :parsed_value::text,
+     :parsed_value, 'ACCEPTED', TRUE, 0.20);
+
+-- 3. Resolve the flag.
 UPDATE aircraft_prov.curation_flags
 SET status_code = 'RESOLVED', resolved_at = now(),
     resolution_notes = 'Mapped to new GLIDE_RATIO metric type and promoted.'
 WHERE id = :flag_id;
 
--- 4. Refresh search matview to include the new data
-SELECT aircraft_read.refresh_search_matviews();
+-- 4. Record the curator action.
+INSERT INTO aircraft_prov.audit_log
+    (entity_type_code, entity_id, field_name, new_value,
+     change_source, changed_by, change_reason)
+VALUES
+    ('AIRCRAFT_VARIANT', :variant_id, 'performance.GLIDE_RATIO',
+     :parsed_value::text, 'CURATOR', current_user,
+     'Mapped previously unmapped source field to GLIDE_RATIO');
+
+COMMIT;
+
+-- If a read model is extended to expose GLIDE_RATIO, refresh it only after
+-- the transaction commits:
+-- SELECT aircraft_read.refresh_search_matviews();
 ```
 
 ### 3.4 Resolving Conflicting Source Assertions
@@ -305,9 +287,9 @@ BEGIN;
 UPDATE aircraft_prov.source_assertions
 SET status_code = 'SUPERSEDED',
     is_accepted = FALSE
-WHERE entity_type_code = 'VARIANT'
+WHERE entity_type_code = 'AIRCRAFT_VARIANT'
   AND entity_id        = :variant_id
-  AND field_name       = 'performance.CRUISE_SPEED'
+  AND field_name       = 'performance.SPEED_CRUISE_BEST'
   AND is_accepted      = TRUE;
 
 -- Step 2: Accept the new higher-confidence assertion
@@ -321,23 +303,19 @@ UPDATE aircraft_specs.performance_metrics
 SET raw_value       = :new_raw_value,
     raw_unit_code   = :new_unit_code,
     canonical_value = aircraft_ref.to_canonical(:new_raw_value, :new_unit_code),
-    confidence      = :new_confidence,
-    source_document_id = :new_doc_id
+    confidence      = :new_confidence
 WHERE variant_id        = :variant_id
-  AND metric_type_code  = 'CRUISE_SPEED'
+  AND metric_type_code  = 'SPEED_CRUISE_BEST'
   AND is_canonical      = TRUE;
 
 -- Step 4: Log the change
 INSERT INTO aircraft_prov.audit_log
-    (entity_type_code, entity_id, action, old_value, new_value, changed_by)
+    (entity_type_code, entity_id, field_name, old_value, new_value,
+     change_source, changed_by, change_reason)
 VALUES (
-    'VARIANT', :variant_id,
-    'CANONICAL_VALUE_CHANGED',
-    jsonb_build_object('field', 'performance.CRUISE_SPEED',
-                       'old_value', '72 KIAS', 'old_source', 'PlanePHD'),
-    jsonb_build_object('field', 'performance.CRUISE_SPEED',
-                       'new_value', '75 KIAS', 'new_source', 'POH Rev 3'),
-    current_user
+    'AIRCRAFT_VARIANT', :variant_id, 'performance.SPEED_CRUISE_BEST',
+    '72 KIAS', '75 KIAS',
+    'CURATOR', current_user, 'Accepted higher-confidence POH assertion'
 );
 
 COMMIT;
@@ -353,14 +331,14 @@ SELECT
     ev.manufacturer_name_raw,
     COUNT(ev.id)           AS engine_variants,
     o.id                   AS candidate_org_id,
-    o.org_name             AS candidate_name,
-    similarity(ev.manufacturer_name_raw, o.org_name) AS sim_score
+    o.name             AS candidate_name,
+    similarity(ev.manufacturer_name_raw, o.name) AS sim_score
 FROM aircraft_power.engine_variants ev
 CROSS JOIN aircraft_org.organizations o
 WHERE ev.manufacturer_org_id IS NULL
   AND o.org_type_code IN ('MANUFACTURER', 'DESIGN_BUREAU')
-  AND similarity(ev.manufacturer_name_raw, o.org_name) > 0.3
-GROUP BY ev.manufacturer_name_raw, o.id, o.org_name
+  AND similarity(ev.manufacturer_name_raw, o.name) > 0.3
+GROUP BY ev.manufacturer_name_raw, o.id, o.name
 ORDER BY ev.manufacturer_name_raw, sim_score DESC;
 ```
 
@@ -403,53 +381,66 @@ ON CONFLICT (code) DO NOTHING;
 | `aircraft_core.families` | `name_tsv` | GIN | Full-text search |
 | `aircraft_core.variant_aliases` | `alias_text` | `gin_trgm_ops` | Fuzzy alias search |
 | `aircraft_org.organizations` | `name_aliases` | GIN | Array `@>` alias resolution |
-| `aircraft_specs.performance_metrics` | `(variant_id, metric_type_code) WHERE is_canonical` | B-tree partial | Canonical comparison queries |
-| `aircraft_specs.performance_metrics` | `(variant_id, metric_type_code) WHERE is_canonical` | B-tree partial | Named `idx_pm_variant_canonical_all` — feeds `mv_variant_search` FILTER aggregation |
+| `aircraft_specs.performance_metrics` | `(variant_id, metric_type_code) WHERE is_canonical` | Unique B-tree partial | `uq_perf_canonical`; enforces one canonical metric |
+| `aircraft_specs.performance_metrics` | `(variant_id, metric_type_code) WHERE is_canonical` | B-tree partial | `idx_pm_variant_canonical_all`; supports read-model aggregation |
 | `aircraft_read.mv_variant_search` | `search_vector` | GIN | Full-text search on matview |
-| `aircraft_read.mv_variant_search` | 20 B-tree columns | B-tree | Faceted filter combinations |
-| `aircraft_prov.source_assertions` | `(entity_type, entity_id, field_name) WHERE is_accepted` | B-tree partial | Canonical assertion lookup |
+| `aircraft_read.mv_variant_search` | 20 indexes total | GIN and B-tree | Three GIN/trigram indexes and 17 B-tree/partial indexes |
+| `aircraft_prov.source_assertions` | `(entity_type_code, entity_id, field_name) WHERE is_accepted` | Unique B-tree partial | `uq_assertion_accepted`; canonical assertion lookup |
 | `aircraft_power.engine_variants` | `name_aliases` | GIN | Ingestion alias resolution |
 
 ### 4.2 Query Plans to Watch
 
-**Faceted search on `mv_variant_search`:** Postgres will often choose a bitmap index scan combining multiple partial indexes. If the query planner falls back to a sequential scan on the matview, check that `enable_seqscan = TRUE` (it should be the default) and that `ANALYZE aircraft_read.mv_variant_search` has been run after the last refresh. The matview has approximately 45 columns; a seqscan on a large dataset (>50,000 rows) will be significantly slower than the bitmap scan.
+**Faceted search on `mv_variant_search`:** Postgres will often choose a bitmap index scan combining multiple partial indexes. If the query planner falls back to a sequential scan on the matview, check that `enable_seqscan = TRUE` (it should be the default) and that `ANALYZE aircraft_read.mv_variant_search` has been run after the last refresh. The matview has 48 columns; a seqscan on a large dataset (>50,000 rows) will be significantly slower than the bitmap scan.
 
 **`to_canonical()` in WHERE clauses:** The function is `STABLE`, meaning Postgres can fold constant-unit calls into index expressions. However, using `aircraft_ref.to_canonical(pm.raw_value, pm.raw_unit_code) > 100` in a WHERE clause will not use an index on `canonical_value`. Always filter on the stored `canonical_value` column:
 ```sql
 -- Correct (uses index on canonical_value)
-WHERE pm.canonical_value > 100 AND pm.metric_type_code = 'CRUISE_SPEED' AND pm.is_canonical
+WHERE pm.canonical_value > 100 AND pm.metric_type_code = 'SPEED_CRUISE_BEST' AND pm.is_canonical
 
 -- Wrong (function call prevents index use)
 WHERE aircraft_ref.to_canonical(pm.raw_value, pm.raw_unit_code) > 100
 ```
 
-**JSONB `extra_attributes` queries:** Avoid `WHERE extra_attributes @> '{"key": "value"}'` on large tables without a GIN index. `aircraft_core.variants`, `aircraft_market.cost_snapshots`, and `aircraft_power.engine_variants` all have GIN indexes on their JSONB columns. Other tables do not. Add targeted GIN indexes before running JSONB-based analytics queries on tables added in Phase 22+.
+**JSONB `extra_attributes` queries:** Avoid containment queries such as
+`WHERE extra_attributes @> '{"key": "value"}'` on large tables without a GIN
+index. Of the three commonly queried `extra_attributes` columns, only
+`aircraft_core.variants` currently has a GIN index. `aircraft_market.cost_snapshots` and
+`aircraft_power.engine_variants` do not. Add a targeted GIN index only after a
+measured query requirement justifies it.
 
 ### 4.3 Materialized View Refresh Performance
 
-`mv_variant_search` is the most expensive object in the schema to refresh because it joins 14 tables and aggregates metrics across potentially millions of rows. Benchmark observations from the design session:
+`mv_variant_search` is expected to be the most expensive object in the schema to
+refresh because it joins many normalized sources and aggregates metrics. The
+repository contains no recorded refresh benchmark, so refresh-time ratios and
+production thresholds must be measured against representative data rather than
+assumed.
 
 - **Initial population** (`FALSE` / non-concurrent): blocks all reads on the matview during refresh. Acceptable only at bootstrap or during a maintenance window.
-- **Concurrent refresh** (`TRUE`): requires a `UNIQUE` index on the matview. Phase 16 creates `uq_mvvs_variant_id` for this purpose. Concurrent refresh takes approximately 2–3× longer than non-concurrent but does not block reads.
+- **Concurrent refresh** (`TRUE`): requires a `UNIQUE` index on the matview. Phase 16 creates `uq_mvvs_variant_id` for this purpose. It avoids blocking reads, but its runtime overhead must be benchmarked with representative data.
 - **Partial refresh (future):** PostgreSQL does not support partial matview refresh natively. If refresh latency becomes a problem at scale, consider splitting `mv_variant_search` into a `mv_variant_core` (stable identity data, refreshed rarely) and `mv_variant_metrics` (spec data, refreshed frequently) and JOINing them in the read layer.
 
 ### 4.4 `aircraft_prov.source_assertions` at Scale
 
-At one assertion per canonical field per variant, with ~40 performance/weight/cost fields per aircraft, 10,000 variants will produce ~400,000 assertion rows. At 100,000 variants, this reaches 4 million rows — well within Postgres capacity, but the following indexes become critical:
+At one assertion per canonical field per variant, with ~40
+performance/weight/cost fields per aircraft, 10,000 variants will produce
+~400,000 assertion rows. At 100,000 variants, this reaches 4 million rows. These
+are planning estimates, not measured production volumes.
+
+Phase 14 already defines:
+
+- `idx_sa_entity (entity_type_code, entity_id)`;
+- `idx_sa_entity_field (entity_type_code, entity_id, field_name)`; and
+- partial unique `uq_assertion_accepted` on the same three columns where
+  `is_accepted` is true.
+
+Do not add another accepted entity/field index; it would duplicate
+`uq_assertion_accepted`. If measured cross-entity queries by `field_name` alone
+become slow, consider the following distinct index:
 
 ```sql
--- Already defined in Phase 14:
-CREATE INDEX idx_sa_entity ON aircraft_prov.source_assertions (entity_type_code, entity_id);
-CREATE INDEX idx_sa_field  ON aircraft_prov.source_assertions (field_name);
+CREATE INDEX idx_sa_field ON aircraft_prov.source_assertions (field_name);
 ```
-
-If provenance queries slow down at scale, consider adding a composite index:
-```sql
-CREATE INDEX idx_sa_entity_field ON aircraft_prov.source_assertions
-    (entity_type_code, entity_id, field_name)
-    WHERE is_accepted = TRUE;
-```
-This directly serves the most common provenance lookup: "what is the accepted assertion for this field on this entity?"
 
 ### 4.5 `pg_trgm` Similarity Search Threshold
 
@@ -482,33 +473,11 @@ ALTER TABLE aircraft_prov.source_assertions SET (
 
 ## Appendix: File Inventory
 
-| File | Phase | Lines | Purpose |
-|---|---|---|---|
-| `001_extensions_schemas_domains_triggers.sql` | 1 | ~130 | Extensions, schemas, domains, utility functions |
-| `002_core_reference_tables.sql` | 2 | 607 | 35 lookup tables |
-| `001_reference_units.sql` (seed) | 2 | 261 | 15 unit categories + 38 units |
-| `002_lookup_seed_data.sql` (seed) | 2 | 953 | ~305 lookup rows across 33 tables |
-| `003_geography_operators_organizations.sql` | 3 | 823 | Countries, regions, organizations + seed |
-| `004_aircraft_identity_taxonomy.sql` | 4 | 543 | 7 identity tables + generated tsvector columns |
-| `005_certification_operating_approvals.sql` | 5 | 410 | 6 certification tables |
-| `006_dimensions_cabin_cargo_hangar_fit.sql` | 6 | 372 | 3 dimension tables + `to_canonical()` |
-| `007_weight_balance_payload_loading.sql` | 7 | 291 | 3 weight/CG tables |
-| `008_performance_metrics_conditions.sql` | 8 | 319 | Performance fact table + runway limits |
-| `009_propulsion_engines_rotors_stcs.sql` | 9 | 453 | 7 propulsion tables |
-| `010_avionics_equipment_systems.sql` | 10 | 377 | 5 systems tables + 18 catalog seed rows |
-| `011_military_sensors_stores_loadouts.sql` | 11 | 502 | 7 military tables + 17 weapons seed rows |
-| `012_ownership_cost_valuation_market.sql` | 12 | 313 | 3 market tables |
-| `013_maintenance_reliability_supportability.sql` | 13 | 394 | 6 maintenance tables |
-| `014_sources_provenance_curation_audit.sql` | 14 | 436 | 5 provenance tables + 3 source seed rows |
-| `015_mission_profiles_comparison_scoring.sql` | 15 | ~290 | 4 comparison tables |
-| `003_mission_profile_seed_data.sql` (seed) | 15 | ~180 | 15 profiles + 27 criteria |
-| `016_read_models_views_indexes.sql` | 16 | ~420 | 3 views + 2 matviews + 25 indexes |
-| `901_seed_data_staging.sql` | 17a | 192 | 3 staging tables |
-| `902_server_side_json_ingestion.sql` | 17b | 1,148 | 11 parsers + load + promote functions |
-| `903_post_bootstrap_validation.sql` | 17c/19 | 553 | 10 validation blocks + 7 invariants |
-| `002_comparison_query_smoke_tests.sql` (val) | 18 | ~310 | 5 query families, 17 queries |
-| `001_integrity_checks.sql` (val) | 19 | ~180 | Structural integrity monitoring |
-| `003_seed_ingestion_validation.sql` (val) | 19 | ~200 | Known-value spot checks |
-| `data_dictionary.md` | 20 | — | This document's companion |
-| `implementation_notes.md` | 21 | — | This document |
-| **Total migration lines** | | **~8,725** | |
+| Area | Files | Purpose |
+|---|---|---|
+| Installer | database/install.sql | Dependency-aware migration and canonical-seed orchestration |
+| Migrations | database/migrations/001_*.sql through 016_*.sql | Canonical ordered schema history |
+| Canonical seeds | database/seeds/001_*.sql through 003_*.sql | Units, lookup data, and mission profiles |
+| Ingestion | database/staging/901_*.sql through 903_*.sql | Staging DDL, JSON promotion, and post-ingestion invariants |
+| Verification | database/validation/*.sql | Phase-specific structural and behavioral checks |
+| Documentation | database/README.md, data_dictionary.md, implementation_notes.md | Lifecycle, schema meaning, and operational guidance |

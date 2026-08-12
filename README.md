@@ -49,32 +49,48 @@ To guarantee architectural safety, structural data boundaries are strictly mappe
 Bring up development containers, execute canonical schema evolutions, run semantic data validations, and compile the workspace tree:
 
 ```bash
-just bootstrap
+just db-bootstrap
 just build
 ```
 
 ### 2. Execution of Test Suites
 
-Run unit testing pipelines alongside container-backed database verification sweeps simultaneously:
+Run the enabled workspace test suite:
 
 ```bash
 just test
 ```
 
+`just test` currently runs `cargo nextest run --workspace`; it does not run the
+database validation scripts. Use `just db-validate` separately for the
+container-backed database verification suite.
+
 ### 3. Schema Management and Offline Compilation Verification
 
-When modifying SQL query profiles inside `aircraft_db`, update your offline cache layers to safeguard continuous integration checkouts against external live infrastructure requirements:
+After modifying SQL query profiles inside `aircraft_db`, verify the existing
+offline metadata when that crate and its metadata are enabled:
 
 ```bash
 # Execute local schema evolution steps
-just migrate
-
-# Re-generate compile-time query cache layers
-just prepare-sqlx
+just db-migrate
 
 # Ensure compliance with strict offline compilation assertions
 just check-offline
 ```
+
+
+## Production Database Workflow
+
+Provision the target database and migration role through the deployment
+platform, set `MIGRATION_DATABASE_URL`, then run:
+
+```bash
+just db-prod-bootstrap
+```
+
+This uses the host `psql` client, installs all migrations and canonical
+seeds, and runs database validation. See `database/README.md` for individual
+commands, required privileges, and server-side JSON ingestion.
 
 ---
 
@@ -295,15 +311,18 @@ tracing::info!(request_id = %id, path = %url.path(), "Processing inbound HTTP tr
 
 ---
 
-## 10. Development Task Management: `xtask/README.md`
+## 10. Development Task Management: `xtask/`
 
-# Internal Task Automation Engine: `xtask`
+### Scaffold status
 
-A typed, Rust-driven automation toolset for workspace maintenance and developer workflows. This binary bypasses erratic shell variations by keeping maintenance tasks cross-platform and compile-checked.
+The `xtask` binary currently compiles, but its execution functions are empty.
+It is not exposed through working Just recipes. Implement and behaviorally test
+each operation before treating it as available automation.
 
-## Available Command Routines
+### Planned command routines
 
-Execute automation tasks via `cargo xtask <command>` or matching `just` entries:
+These are design targets, not implemented commands. Database lifecycle work is
+provided by the verified `db-*` and `db-prod-*` Just recipes above:
 
 * `install-deps` — Checks local environments and provisions missing development tools.
 * `db-reset` — Drops existing local schemas, recreates working containers, runs migrations, and injects reference data.
