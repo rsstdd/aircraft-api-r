@@ -181,6 +181,10 @@ fn cargo_tool(
     }
 }
 
+pub fn deny(runner: &impl Runner, workspace_root: &Path) -> Result<()> {
+    runner.run(&CommandSpec::new("cargo", &["deny", "--locked", "check"]).in_dir(workspace_root))
+}
+
 pub fn prepare_sqlx(runner: &impl Runner, workspace_root: &Path) -> Result<()> {
     let database_url = env::var("MIGRATION_DATABASE_URL")
         .or_else(|_| env::var("DATABASE_URL"))
@@ -327,6 +331,21 @@ mod tests {
         assert!(!runner.commands.borrow().iter().any(|command| {
             command.program == "cargo" && command.args.first().is_some_and(|arg| arg == "install")
         }));
+        Ok(())
+    }
+
+    #[test]
+    fn deny_checks_the_locked_workspace_from_its_root() -> Result<()> {
+        let temp = tempfile::tempdir()?;
+        let runner = FakeRunner::default();
+
+        deny(&runner, temp.path())?;
+
+        let commands = runner.commands.borrow();
+        assert_eq!(commands.len(), 1);
+        assert_eq!(commands[0].program, "cargo");
+        assert_eq!(commands[0].args, ["deny", "--locked", "check"]);
+        assert_eq!(commands[0].current_dir.as_deref(), Some(temp.path()));
         Ok(())
     }
 

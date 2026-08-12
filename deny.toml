@@ -1,0 +1,38 @@
+[graph]
+all-features = true
+
+[advisories]
+ignore = []
+
+[licenses]
+allow = [
+    "Apache-2.0",
+    "Apache-2.0 WITH LLVM-exception",
+    "BSD-3-Clause",
+    "BSL-1.0",
+    "MIT",
+    "Unicode-3.0",
+    "Unlicense",
+]
+confidence-threshold = 0.8
+exceptions = [
+    { allow = ["LGPL-2.1-or-later"], crate = "r-efi" },
+]
+
+[licenses.private]
+ignore = true
+
+[bans]
+multiple-versions = "warn"
+wildcards = "deny"
+allow-wildcard-paths = true
+highlight = "all"
+skip = [
+    { crate = "wit-bindgen", reason = "getrandom currently resolves separate WASI preview 2 and preview 3 support trees" },
+]
+
+[sources]
+unknown-registry = "deny"
+unknown-git = "deny"
+allow-registry = ["https://github.com/rust-lang/crates.io-index"]
+allow-git = []

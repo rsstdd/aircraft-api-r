@@ -15,6 +15,8 @@ struct Cli {
 enum Commands {
     /// Check and install the development tools used by repository recipes
     InstallDeps(InstallDepsArgs),
+    /// Check dependency advisories, licenses, bans, and sources
+    Deny,
     /// Validate the configured schema and refresh offline query metadata
     PrepareSqlx,
     /// Compile API contracts and write an API schema document
@@ -48,6 +50,7 @@ fn main() -> anyhow::Result<()> {
         Commands::InstallDeps(args) => {
             xtask::install_deps(&runner, InstallDepsOptions { check_only: args.check })
         }
+        Commands::Deny => xtask::deny(&runner, &workspace_root),
         Commands::PrepareSqlx => xtask::prepare_sqlx(&runner, &workspace_root),
         Commands::GenerateDocs(args) => xtask::generate_docs(
             &workspace_root,

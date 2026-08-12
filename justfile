@@ -34,7 +34,10 @@ lint:
     cargo fmt --all -- --check
     cargo clippy --workspace --all-targets --all-features -- -D warnings
     cargo audit
-    cargo deny check
+    just deny
+
+deny:
+    cargo run --package xtask -- deny
 
 check-offline:
     SQLX_OFFLINE=true cargo check --workspace --all-targets

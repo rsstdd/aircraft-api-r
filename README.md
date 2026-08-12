@@ -328,6 +328,10 @@ root Just recipes:
   rustfmt, Clippy, Just, cargo-nextest, cargo-audit, cargo-deny, and SQLx CLI.
   Use `just install-deps --check` to report missing tools without installing
   anything.
+* `just deny` runs the tested `xtask deny` wrapper against the locked workspace.
+  The root `deny.toml` enforces the approved license set, rejects wildcard
+  dependencies and unapproved registry or Git sources, and checks RustSec
+  advisories. `just lint` includes the same command.
 * `just prepare-sqlx` requires `MIGRATION_DATABASE_URL` or `DATABASE_URL`. It
   runs every canonical `database/validation/*.sql` file in filename order
   against that already-migrated database, then runs `cargo sqlx prepare` to
