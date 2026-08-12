@@ -95,6 +95,7 @@ db-psql:
       -U "{{ POSTGRES_USER }}" \
       -d "{{ POSTGRES_DB }}"
 
+# Destructive: deletes the local PostgreSQL volume and starts an empty DB.
 db-reset:
     docker compose down -v
     docker compose up -d {{ DB_SERVICE }}
@@ -103,11 +104,13 @@ db-reset:
 # Local database migrations / seeds / validation
 # ---------------------------------------------------------------------
 
+# Local-only compatibility reconciliation runs before the canonical installer.
 db-migrate:
     docker compose exec -T {{ DB_SERVICE }} \
       psql -X -v ON_ERROR_STOP=1 \
         -U "{{ POSTGRES_USER }}" \
         -d "{{ POSTGRES_DB }}" \
+        -f "/workspace/database/reconcile_local_legacy.sql" \
         -f "/workspace/database/install.sql"
 
 db-seed:
@@ -159,6 +162,7 @@ db-ingest container_json_path:
 
 db-bootstrap: db-up db-wait db-migrate db-validate
 
+# Destructive full local rebuild: reset, install/seeds, then validate.
 db-rebuild: db-reset db-wait db-migrate db-validate
 
 # ---------------------------------------------------------------------
@@ -176,6 +180,7 @@ db-prod-ready:
     psql -X -v ON_ERROR_STOP=1 "$db_url" \
       -c "SELECT current_database() AS database, current_user AS migration_role;"
 
+# Production intentionally does not auto-adopt untracked legacy schemas.
 db-prod-migrate:
     db_url="${MIGRATION_DATABASE_URL:-${DATABASE_URL:-}}"; \
     if [ -z "$db_url" ]; then \

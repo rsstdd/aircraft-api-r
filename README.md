@@ -53,6 +53,12 @@ just db-bootstrap
 just build
 ```
 
+`just db-bootstrap` is safe to rerun. For local volumes created before the
+migration ledger was introduced, it verifies and adopts only a complete legacy
+Phase 1/2 prefix before applying the remaining migrations. A partial legacy
+schema is rejected with recovery guidance instead of being marked as migrated.
+See `database/local_setup_and_testing.md` for the complete workflow.
+
 ### 2. Execution of Test Suites
 
 Run the enabled workspace test suite:
@@ -325,6 +331,11 @@ These are design targets, not implemented commands. Database lifecycle work is
 provided by the verified `db-*` and `db-prod-*` Just recipes above:
 
 * `install-deps` — Checks local environments and provisions missing development tools.
-* `db-reset` — Drops existing local schemas, recreates working containers, runs migrations, and injects reference data.
 * `prepare-sqlx` — Executes schema verification routines and updates the offline metadata file tree (`.sqlx/`).
 * `generate-docs` — Compiles core application API endpoints and outputs OpenAPI schema artifacts directly onto local disk targets.
+
+The working Just recipe `just db-reset` is separate from these planned xtask
+commands. It deletes the local Compose PostgreSQL volume and starts an empty
+database container; it does not migrate, seed, or validate. Use the destructive
+`just db-rebuild` recipe when an explicitly disposable local database should be
+reset, migrated, seeded, and validated in one workflow.

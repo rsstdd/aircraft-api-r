@@ -11,6 +11,14 @@ the first error, records each successful migration in
 `public.aircraft_schema_migrations`, and interleaves the seed phases required by
 foreign keys.
 
+The local `just db-migrate` recipe first runs
+`database/reconcile_local_legacy.sql`. This compatibility check handles Compose
+volumes that applied the original transactional Phase 1 or Phase 2 files before
+the migration ledger existed. It records a phase only after every expected
+object is present, repairs the later-added Phase 1 array helper, and rejects
+partial legacy states. Direct/production recipes intentionally skip automatic
+legacy adoption.
+
 ```bash
 # Container-backed local workflow
 just db-up
@@ -475,9 +483,10 @@ ALTER TABLE aircraft_prov.source_assertions SET (
 
 | Area | Files | Purpose |
 |---|---|---|
+| Local legacy reconciliation | database/reconcile_local_legacy.sql | Verify and adopt complete pre-ledger Phase 1/2 local schemas; reject partial states |
 | Installer | database/install.sql | Dependency-aware migration and canonical-seed orchestration |
 | Migrations | database/migrations/001_*.sql through 016_*.sql | Canonical ordered schema history |
 | Canonical seeds | database/seeds/001_*.sql through 003_*.sql | Units, lookup data, and mission profiles |
 | Ingestion | database/staging/901_*.sql through 903_*.sql | Staging DDL, JSON promotion, and post-ingestion invariants |
-| Verification | database/validation/*.sql | Phase-specific structural and behavioral checks |
+| Verification | database/validation/000_migration_history_validation.sql and remaining database/validation/*.sql | Exact 001-016 ledger assertion plus phase-specific structural and behavioral checks |
 | Documentation | database/README.md, data_dictionary.md, implementation_notes.md | Lifecycle, schema meaning, and operational guidance |

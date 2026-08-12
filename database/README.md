@@ -10,7 +10,11 @@ This directory owns the SQL lifecycle for the Aircraft Management Engine.
 - `validation/`: post-install schema and behavioral verification.
 - `fixtures/`: test-only data.
 - `docker/init/`: optional database-level initialization for an empty volume.
+- `reconcile_local_legacy.sql`: local-only compatibility check for complete
+  Phase 1/2 schemas created before migration tracking existed.
 - `install.sql`: the canonical dependency-aware `psql` installer.
+- `validation/000_migration_history_validation.sql`: asserts that migration
+  history contains exactly versions `001` through `016`.
 - `data_dictionary.md`: detailed reference for principal tables and read models;
   migrations remain authoritative for the complete schema.
 - `implementation_notes.md`: dependency rules, curator workflows, known
@@ -23,12 +27,28 @@ just db-bootstrap
 ```
 
 `db-bootstrap` starts and waits for the Compose database, then installs and
-validates it. `db-migrate` uses `install.sql`, which tracks migrations in
+validates it. Before `db-migrate` uses `install.sql`, the local-only
+`reconcile_local_legacy.sql` compatibility check adopts complete migration 001
+and 002 structures created before migration tracking was introduced. It refuses
+partial or ambiguous legacy structures. Production recipes do not perform this
+automatic adoption. The installer tracks migrations in
 `public.aircraft_schema_migrations` and applies required seed phases at their
 foreign-key boundaries. Do not execute `database/migrations/*.sql` as a simple
 glob: Phase 3 requires the Phase 2 lookup seed rows.
 
+The reconciliation step never runs in `db-prod-migrate` or
+`db-prod-bootstrap`. Production legacy databases must be reviewed and baselined
+deliberately.
+
+`db-validate` begins by checking the exact migration ledger before running the
+phase-specific schema and behavioral validations.
+
 To reapply only canonical data, run `just db-seed`.
+
+`just db-reset` deletes the local PostgreSQL volume and starts a fresh empty
+container. `just db-rebuild` performs that destructive reset and then installs,
+seeds, and validates the database. Do not use either command when local data
+must be preserved.
 
 For source JSON ingestion, place the private dataset under
 `database/staging/` (JSON files there are ignored by Git) and run:

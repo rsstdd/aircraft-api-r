@@ -86,12 +86,19 @@ This command performs the following operations in order:
 
 1. Starts PostgreSQL.
 2. Waits until PostgreSQL accepts connections.
-3. Runs the dependency-aware installer.
-4. Applies all 16 schema migrations.
-5. Applies canonical seeds at their required dependency boundaries.
-6. Runs every database validation script.
+3. Reconciles a verified legacy Phase 1/2 prefix when necessary.
+4. Runs the dependency-aware installer.
+5. Applies all 16 schema migrations.
+6. Applies canonical seeds at their required dependency boundaries.
+7. Runs every database validation script, beginning with exact migration-history validation.
 
 A separate `just db-seed` call is not required during initial bootstrap because `database/install.sql` applies the canonical seeds in the correct order.
+
+For local volumes created before migration tracking was introduced,
+`just db-bootstrap` verifies and adopts a complete legacy Phase 1 or Phase 2
+prefix before continuing. It stops with an actionable error if it finds only
+part of either phase. This compatibility behavior is local-only; production
+databases require deliberate baselining.
 
 ## 4. Confirm PostgreSQL is healthy
 
@@ -333,6 +340,10 @@ This executes every SQL file under:
 ```text
 database/validation/
 ```
+
+The first file, `000_migration_history_validation.sql`, requires the ledger to
+contain exactly versions `001` through `016`. This prevents a structurally
+partial or unexpectedly versioned database from passing the broader suite.
 
 The command uses `ON_ERROR_STOP=1`, so any SQL error or failed hard invariant stops the recipe with a nonzero exit code.
 
