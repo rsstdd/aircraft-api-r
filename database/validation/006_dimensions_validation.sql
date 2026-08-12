@@ -1,5 +1,5 @@
 -- =============================================================================
--- File: database/validation/phase6_dimensions_validation.sql
+-- File: database/validation/006_dimensions_validation.sql
 -- Phase 6 — validation for aircraft_specs.dimension_metrics,
 -- cabin_specs, cargo_holds, and aircraft_ref.to_canonical().
 -- =============================================================================

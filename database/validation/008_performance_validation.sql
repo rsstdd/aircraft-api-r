@@ -1,5 +1,5 @@
 -- =============================================================================
--- File: database/validation/phase8_performance_validation.sql
+-- File: database/validation/008_performance_validation.sql
 -- Phase 8 — validation for aircraft_specs.performance_metrics,
 -- runway_limitations, and the additional V-speed metric types.
 -- =============================================================================

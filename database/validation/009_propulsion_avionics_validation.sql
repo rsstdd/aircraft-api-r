@@ -1,5 +1,5 @@
 -- =============================================================================
--- File: database/validation/phase9_propulsion_validation.sql
+-- File: database/validation/009_propulsion_avionics_validation.sql
 -- Phase 9 — validation for aircraft_power tables.
 -- =============================================================================
 

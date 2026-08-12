@@ -1,5 +1,5 @@
 -- =============================================================================
--- File: database/validation/phase14_provenance_validation.sql
+-- File: database/validation/014_sources_provenance_curation_audit_validation.sql
 -- Phase 14 — validation for aircraft_prov tables.
 -- =============================================================================
 

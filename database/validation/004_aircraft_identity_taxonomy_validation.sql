@@ -1,5 +1,5 @@
 -- =============================================================================
--- File: database/validation/phase4_identity_validation.sql
+-- File: database/validation/004_aircraft_identity_taxonomy_validation.sql
 -- Phase 4 — structural validation for aircraft_core tables.
 -- Run after 004_aircraft_identity_taxonomy.sql.
 -- No aircraft data rows exist yet (those arrive via Phase 17 ingestion).

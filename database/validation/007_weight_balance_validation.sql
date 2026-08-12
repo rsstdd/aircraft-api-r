@@ -1,5 +1,5 @@
 -- =============================================================================
--- File: database/validation/phase7_weight_balance_validation.sql
+-- File: database/validation/007_weight_balance_validation.sql
 -- Phase 7 — validation for aircraft_specs weight/loading tables.
 -- =============================================================================
 

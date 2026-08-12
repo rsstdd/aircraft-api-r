@@ -1,5 +1,5 @@
 -- =============================================================================
--- File: database/validation/phase11_military_validation.sql
+-- File: database/validation/011_consolidated_view_validation.sql
 -- Phase 11 — validation for aircraft_military tables.
 -- All data in these tables is public, unclassified reference data only.
 -- =============================================================================
@@ -171,17 +171,13 @@ BEGIN
     -- Retrieve an AIM-9X weapon
     SELECT id INTO v_wep FROM aircraft_military.weapons_catalog WHERE slug = 'aim-9x-sidewinder';
 
-    -- Loadout items
+    -- Loadout items: a generic tank uses the stores-type fallback, while
+    -- the wing station references a catalog weapon.
     INSERT INTO aircraft_military.loadout_items
-        (loadout_id, hardpoint_id, weapon_id, quantity)
+        (loadout_id, hardpoint_id, weapon_id, stores_type_code, quantity)
     VALUES
-        (v_ld, v_hp1, NULL, 1),           -- centreline: fuel tank (stores_type fallback)
-        (v_ld, v_hp2, v_wep, 1);          -- left wing: AIM-9X
-
-    -- Update centreline item to use stores_type fallback
-    UPDATE aircraft_military.loadout_items
-    SET stores_type_code = 'EXT_FUEL_TANK'
-    WHERE loadout_id = v_ld AND hardpoint_id = v_hp1;
+        (v_ld, v_hp1, NULL, 'EXT_FUEL_TANK', 1),
+        (v_ld, v_hp2, v_wep, NULL, 1);
 
     -- Duplicate (loadout, hardpoint) → rejected (PK)
     BEGIN
@@ -192,12 +188,12 @@ BEGIN
     EXCEPTION WHEN unique_violation THEN NULL;
     END;
 
-    -- chk_li_has_store: both weapon_id and stores_type_code NULL → rejected
+    -- chk_li_has_store: clearing both references must be rejected.
     BEGIN
-        INSERT INTO aircraft_military.loadout_items
-            (loadout_id, hardpoint_id, weapon_id, stores_type_code, quantity)
-        VALUES (v_ld, v_hp2, NULL, NULL, 1);
-        RAISE EXCEPTION 'chk_li_has_store should reject row with no weapon or stores_type';
+        UPDATE aircraft_military.loadout_items
+        SET weapon_id = NULL, stores_type_code = NULL
+        WHERE loadout_id = v_ld AND hardpoint_id = v_hp2;
+        RAISE EXCEPTION 'chk_li_has_store should reject a row with no weapon or stores_type';
     EXCEPTION WHEN check_violation THEN NULL;
     END;
 

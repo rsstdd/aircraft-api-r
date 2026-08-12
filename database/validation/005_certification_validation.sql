@@ -1,5 +1,5 @@
 -- =============================================================================
--- File: database/validation/phase5_certification_validation.sql
+-- File: database/validation/005_certification_validation.sql
 -- Phase 5 — validation for aircraft_cert tables and the new
 -- aircraft_ref.operating_approval_types lookup.
 -- Run after 005_certification_operating_approvals.sql.

@@ -1,5 +1,5 @@
 -- =============================================================================
--- File: database/validation/phase3_geo_org_validation.sql
+-- File: database/validation/003_geography_operators_organizations_validation.sql
 -- Phase 3 — validation queries for aircraft_geo and aircraft_org tables.
 -- All queries are SELECT-only.
 -- =============================================================================

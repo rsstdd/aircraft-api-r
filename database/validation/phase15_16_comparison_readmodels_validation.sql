@@ -109,19 +109,27 @@ $$;
 -- -----------------------------------------------------------------------------
 
 -- B1. VIEW EXISTENCE
-SELECT table_schema, table_name, table_type
-FROM information_schema.tables
+SELECT table_schema AS schema_name, table_name AS relation_name, 'VIEW' AS relation_type
+FROM information_schema.views
 WHERE table_schema = 'aircraft_read'
-ORDER BY table_type, table_name;
--- Expect: views (v_current_valuation, v_hangar_fit, v_weight_criteria_validation)
---         and materialized views (mv_ownership_cost_summary, mv_variant_search).
+UNION ALL
+SELECT schemaname, matviewname, 'MATERIALIZED VIEW'
+FROM pg_matviews
+WHERE schemaname = 'aircraft_read'
+ORDER BY relation_name;
 
 -- B2. MATVIEW COLUMN COVERAGE
-SELECT column_name, data_type
-FROM information_schema.columns
-WHERE table_schema = 'aircraft_read'
-  AND table_name   = 'mv_variant_search'
-ORDER BY ordinal_position;
+-- Both materialized views are created WITH NO DATA. The first refresh must be
+-- non-concurrent; subsequent application refreshes may use the default.
+SELECT aircraft_read.refresh_search_matviews(FALSE);
+
+SELECT a.attname AS column_name, pg_catalog.format_type(a.atttypid, a.atttypmod) AS data_type
+FROM pg_attribute a
+JOIN pg_class c ON c.oid = a.attrelid
+JOIN pg_namespace n ON n.oid = c.relnamespace
+WHERE n.nspname = 'aircraft_read' AND c.relname = 'mv_variant_search'
+  AND a.attnum > 0 AND NOT a.attisdropped
+ORDER BY a.attnum;
 -- Expect: ~45 columns including search_tsv, all boolean approval flags,
 --         performance metrics, weight metrics, price, manufacturer info.
 

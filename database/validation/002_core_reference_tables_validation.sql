@@ -1,73 +1,73 @@
 -- =============================================================================
--- File: database/validation/phase2_lookup_validation.sql
+-- File: database/validation/002_core_reference_tables_validation.sql
 -- Phase 2 — validation queries for all aircraft_ref lookup tables.
 -- Run after all three Phase 2 scripts have been applied:
 --   002_core_reference_tables.sql
 --   seeds/001_reference_units.sql
 --   seeds/002_lookup_seed_data.sql
--- All queries are SELECT-only; any unexpected result indicates a problem.
+-- Assertions raise an error immediately when seed invariants are violated.
 -- =============================================================================
 
 -- -----------------------------------------------------------------------------
 -- 1. EXPECTED TABLE ROW COUNTS
--- Run this block; every row should show actual_count = expected_count.
+-- Every listed table must contain the exact canonical seed count.
 -- -----------------------------------------------------------------------------
-WITH expected AS (SELECT *
-                  FROM (VALUES ('aircraft_ref', 'unit_categories', 15),
-                               ('aircraft_ref', 'measurement_units', 38),
-                               ('aircraft_ref', 'aircraft_roles', 54),
-                               ('aircraft_ref', 'service_statuses', 7),
-                               ('aircraft_ref', 'variant_types', 9),
-                               ('aircraft_ref', 'landing_gear_types', 10),
-                               ('aircraft_ref', 'propulsion_categories', 11),
-                               ('aircraft_ref', 'fuel_types', 10),
-                               ('aircraft_ref', 'performance_metric_types', 25),
-                               ('aircraft_ref', 'weight_metric_types', 17),
-                               ('aircraft_ref', 'dimension_metric_types', 17),
-                               ('aircraft_ref', 'certification_authorities', 8),
-                               ('aircraft_ref', 'airworthiness_categories', 9),
-                               ('aircraft_ref', 'pilot_certificate_types', 8),
-                               ('aircraft_ref', 'military_mission_types', 12),
-                               ('aircraft_ref', 'weapon_categories', 9),
-                               ('aircraft_ref', 'hardpoint_position_types', 7),
-                               ('aircraft_ref', 'stores_types', 12),
-                               ('aircraft_ref', 'currencies', 6),
-                               ('aircraft_ref', 'cost_item_types', 18),
-                               ('aircraft_ref', 'aircraft_condition_grades', 5),
-                               ('aircraft_ref', 'ad_types', 5),
-                               ('aircraft_ref', 'sb_compliance_statuses', 6),
-                               ('aircraft_ref', 'availability_grades', 5),
-                               ('aircraft_ref', 'source_types', 8),
-                               ('aircraft_ref', 'source_reliability_grades', 5),
-                               ('aircraft_ref', 'curation_flag_statuses', 5),
-                               ('aircraft_ref', 'curation_entity_types', 11),
-                               ('aircraft_ref', 'assertion_statuses', 5),
-                               ('aircraft_ref', 'mission_profile_types', 15),
-                               ('aircraft_ref', 'comparison_criterion_types', 12),
-                               ('aircraft_ref', 'organization_types', 10),
-                               ('aircraft_ref', 'org_relationship_types', 7),
-                               ('aircraft_ref', 'systems_categories', 15),
-                               ('aircraft_ref', 'equipment_provision_types',
-                                7)) AS t(schema_name, table_name, expected_count)),
-     actuals AS (SELECT n.nspname AS schema_name,
-                        c.relname AS table_name,
-                        c.reltuples::bigint AS actual_count
-                 FROM pg_class c
-                          JOIN pg_namespace n ON n.oid = c.relnamespace
-                 WHERE n.nspname = 'aircraft_ref'
-                   AND c.relkind = 'r')
-SELECT e.table_name,
-       e.expected_count,
-       COALESCE(a.actual_count, -1) AS actual_count,
-       CASE
-           WHEN COALESCE(a.actual_count, -1) = e.expected_count THEN 'OK'
-           ELSE 'MISMATCH ← investigate'
-           END                      AS status
-FROM expected e
-         LEFT JOIN actuals a USING (schema_name, table_name)
-ORDER BY e.table_name;
--- Note: pg_class.reltuples is an estimate; for exact counts use
--- SELECT count(*) FROM aircraft_ref.<table> if reltuples shows MISMATCH.
+DO $validation$
+DECLARE
+    item RECORD;
+    actual_count BIGINT;
+BEGIN
+    FOR item IN
+        SELECT *
+        FROM (VALUES
+            ('unit_categories', 15),
+            ('measurement_units', 38),
+            ('aircraft_roles', 57),
+            ('service_statuses', 7),
+            ('variant_types', 9),
+            ('landing_gear_types', 10),
+            ('propulsion_categories', 11),
+            ('fuel_types', 10),
+            ('performance_metric_types', 36),
+            ('weight_metric_types', 17),
+            ('dimension_metric_types', 17),
+            ('certification_authorities', 8),
+            ('airworthiness_categories', 9),
+            ('pilot_certificate_types', 8),
+            ('operating_approval_types', 14),
+            ('military_mission_types', 12),
+            ('weapon_categories', 9),
+            ('hardpoint_position_types', 7),
+            ('stores_types', 12),
+            ('currencies', 6),
+            ('cost_item_types', 21),
+            ('aircraft_condition_grades', 5),
+            ('ad_types', 5),
+            ('sb_compliance_statuses', 6),
+            ('availability_grades', 5),
+            ('source_types', 8),
+            ('source_reliability_grades', 5),
+            ('curation_flag_statuses', 5),
+            ('curation_entity_types', 11),
+            ('assertion_statuses', 5),
+            ('mission_profile_types', 15),
+            ('comparison_criterion_types', 12),
+            ('organization_types', 10),
+            ('org_relationship_types', 7),
+            ('systems_categories', 15),
+            ('equipment_provision_types', 7)
+        ) AS expected(table_name, expected_count)
+    LOOP
+        EXECUTE format('SELECT count(*) FROM aircraft_ref.%I', item.table_name)
+            INTO actual_count;
+        IF actual_count <> item.expected_count THEN
+            RAISE EXCEPTION 'aircraft_ref.% has % rows; expected %',
+                item.table_name, actual_count, item.expected_count;
+        END IF;
+    END LOOP;
+END
+$validation$;
+-- Counts are exact; this block does not rely on PostgreSQL statistics estimates.
 
 -- -----------------------------------------------------------------------------
 -- 2. MEASUREMENT UNITS: canonical consistency
@@ -87,44 +87,43 @@ FROM aircraft_ref.measurement_units
 ORDER BY unit_category_code, sort_order;
 -- Expect: zero rows with canonical_status = 'INCONSISTENT'
 
--- Identify the canonical unit for each category (one per category expected):
+-- Identify canonical units by category. RUNWAY_DISTANCE intentionally reuses FT,
+-- which is categorized as ALTITUDE because a unit code has one physical category.
 SELECT uc.code AS category, mu.code AS canonical_unit
 FROM aircraft_ref.unit_categories uc
-         LEFT JOIN aircraft_ref.measurement_units mu
-                   ON mu.unit_category_code = uc.code
-                       AND mu.canonical_unit_code IS NULL
+LEFT JOIN aircraft_ref.measurement_units mu
+  ON mu.unit_category_code = uc.code
+ AND mu.canonical_unit_code IS NULL
 ORDER BY uc.sort_order;
--- Expect: each category has exactly one canonical unit row.
-
 -- -----------------------------------------------------------------------------
 -- 3. METRIC TYPE FK INTEGRITY
 -- Ensure all canonical_unit_codes on metric type tables point to real units.
 -- -----------------------------------------------------------------------------
 SELECT 'performance_metric_types' AS tbl,
-       code,
-       canonical_unit_code,
+       pmt.code,
+       pmt.canonical_unit_code,
        CASE
-           WHEN mu.code IS NOT NULL OR canonical_unit_code IS NULL
+           WHEN mu.code IS NOT NULL OR pmt.canonical_unit_code IS NULL
                THEN 'OK'
            ELSE 'BROKEN FK' END   AS status
 FROM aircraft_ref.performance_metric_types pmt
          LEFT JOIN aircraft_ref.measurement_units mu ON mu.code = pmt.canonical_unit_code
 UNION ALL
 SELECT 'weight_metric_types',
-       code,
-       canonical_unit_code,
+       wmt.code,
+       wmt.canonical_unit_code,
        CASE
-           WHEN mu.code IS NOT NULL OR canonical_unit_code IS NULL
+           WHEN mu.code IS NOT NULL OR wmt.canonical_unit_code IS NULL
                THEN 'OK'
            ELSE 'BROKEN FK' END
 FROM aircraft_ref.weight_metric_types wmt
          LEFT JOIN aircraft_ref.measurement_units mu ON mu.code = wmt.canonical_unit_code
 UNION ALL
 SELECT 'dimension_metric_types',
-       code,
-       canonical_unit_code,
+       dmt.code,
+       dmt.canonical_unit_code,
        CASE
-           WHEN mu.code IS NOT NULL OR canonical_unit_code IS NULL
+           WHEN mu.code IS NOT NULL OR dmt.canonical_unit_code IS NULL
                THEN 'OK'
            ELSE 'BROKEN FK' END
 FROM aircraft_ref.dimension_metric_types dmt
@@ -183,7 +182,7 @@ SELECT (SELECT count(*)
         WHERE is_fixed = TRUE)                    AS fixed_cost_items,
        (SELECT count(*)
         FROM aircraft_ref.cost_item_types
-        WHERE is_fuel = TRUE)                     AS fuel_cost_items,
+        WHERE code = 'FUEL')                    AS fuel_cost_items,
        (SELECT count(*)
         FROM aircraft_ref.source_reliability_grades
         WHERE numeric_score = 5)                  AS authoritative_grades,
@@ -199,9 +198,8 @@ SELECT (SELECT count(*)
         FROM aircraft_ref.measurement_units
         WHERE unit_category_code = 'THRUST'
           AND canonical_unit_code IS NULL)        AS thrust_canonical_unit;
--- Expect: 23 military FW roles, 7 civilian GA roles, 9 fixed costs,
+-- Expect: 26 military FW roles, 7 civilian GA roles, 9 fixed costs,
 --         1 fuel cost, 1 authoritative grade, KNOTS, LBS, LBF.
-
 -- -----------------------------------------------------------------------------
 -- 8. UNIT CONVERSION SMOKE TEST
 -- Verify key canonical_factors are plausible (not NULL or negative).
@@ -250,4 +248,4 @@ SELECT count(*) FILTER (WHERE table_name IN (
 FROM information_schema.tables
 WHERE table_schema = 'aircraft_ref'
   AND table_type = 'BASE TABLE';
--- Expect: 2, 3, 3, 3, 35 (total 35 lookup tables in aircraft_ref).
+-- Expect: 2, 3, 3, 3, 36 (total 36 lookup tables in aircraft_ref).

@@ -1,32 +1,33 @@
 -- =============================================================================
--- File: database/validation/phase12_market_validation.sql
+-- File: database/validation/012_advanced_analytics_validation.sql
 -- Phase 12 — validation for aircraft_market tables.
 -- =============================================================================
 
 -- -----------------------------------------------------------------------------
--- 1. TABLE EXISTENCE (3 tables expected)
+-- 1. TABLE EXISTENCE (4 tables expected)
 -- -----------------------------------------------------------------------------
 SELECT table_schema, table_name
 FROM information_schema.tables
 WHERE table_schema = 'aircraft_market'
 ORDER BY table_name;
--- Expect: cost_line_items, cost_snapshots, valuations
+-- Expect: cost_line_items, cost_snapshot_totals, cost_snapshots, valuations
 
 -- -----------------------------------------------------------------------------
 -- 2. COST ITEM TYPE COVERAGE
--- Verify all 18 Phase 2 cost_item_types are available for line items.
+-- Verify 18 component types and 3 source-provided aggregate totals.
 -- -----------------------------------------------------------------------------
-SELECT code, label, is_fixed, is_fuel, sort_order
+SELECT code, label, is_fixed, is_aggregate, sort_order
 FROM aircraft_ref.cost_item_types
 ORDER BY sort_order;
--- Expect: 18 rows covering annual fixed (9) and per-hour variable (9) cost types.
+-- Expect: 21 rows: 9 fixed, 9 variable, and 3 aggregate types.
 
 SELECT count(*) FILTER (WHERE is_fixed) AS annual_fixed_types,
-       count(*) FILTER (WHERE NOT is_fixed) AS hourly_variable_types,
-       count(*) FILTER (WHERE is_fuel) AS fuel_types,
+       count(*) FILTER (WHERE NOT is_fixed AND NOT is_aggregate) AS hourly_variable_types,
+       count(*) FILTER (WHERE is_aggregate) AS aggregate_types,
+       count(*) FILTER (WHERE code = 'FUEL') AS fuel_types,
        count(*) AS total
 FROM aircraft_ref.cost_item_types;
--- Expect: 9 fixed, 9 variable, 1 fuel, 18 total.
+-- Expect: 9 fixed, 9 variable, 3 aggregate, 1 fuel, 21 total.
 
 -- -----------------------------------------------------------------------------
 -- 3. FK CHAINS
