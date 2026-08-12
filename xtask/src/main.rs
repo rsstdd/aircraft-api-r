@@ -1,7 +1,7 @@
-#![allow(clippy::print_stdout, clippy::print_stderr)]
+use std::path::PathBuf;
 
-// xtask/src/main.rs
-use clap::{Parser, Subcommand};
+use clap::{Args, Parser, Subcommand};
+use xtask::{GenerateDocsOptions, InstallDepsOptions, SystemRunner};
 
 #[derive(Parser)]
 #[command(name = "cargo xtask")]
@@ -13,48 +13,45 @@ struct Cli {
 
 #[derive(Subcommand)]
 enum Commands {
-    /// Run canonical database schema migrations
-    DbMigrate,
-    /// Wipe database, re-apply schemas, and inject reference seed data
-    DbReset,
-    /// Scan route macros and output openapi.json file to disk
-    GenerateDocs,
+    /// Check and install the development tools used by repository recipes
+    InstallDeps(InstallDepsArgs),
+    /// Validate the configured schema and refresh offline query metadata
+    PrepareSqlx,
+    /// Compile API contracts and write an API schema document
+    GenerateDocs(GenerateDocsArgs),
 }
 
-#[tokio::main]
-async fn main() -> anyhow::Result<()> {
+#[derive(Debug, Args)]
+struct InstallDepsArgs {
+    /// Report missing tools without installing them
+    #[arg(long)]
+    check: bool,
+}
+
+#[derive(Debug, Args)]
+struct GenerateDocsArgs {
+    /// Destination for the generated API schema JSON document
+    #[arg(long, default_value = "docs/openapi.json")]
+    output: PathBuf,
+
+    /// Fail when the destination is missing or stale instead of writing it
+    #[arg(long)]
+    check: bool,
+}
+
+fn main() -> anyhow::Result<()> {
     let cli = Cli::parse();
+    let workspace_root = xtask::workspace_root()?;
+    let runner = SystemRunner;
 
     match cli.command {
-        Commands::DbMigrate => {
-            println!("Executing database migrations...");
-            // Real logic: Ingest settings via aircraft_config, connect via aircraft_db, execute
-            // SQL files
-            execute_migrations();
+        Commands::InstallDeps(args) => {
+            xtask::install_deps(&runner, InstallDepsOptions { check_only: args.check })
         }
-        Commands::DbReset => {
-            println!("Resetting database to pristine state...");
-            execute_db_reset();
-        }
-        Commands::GenerateDocs => {
-            println!("Generating OpenAPI JSON specification...");
-            execute_docs_generation();
-        }
+        Commands::PrepareSqlx => xtask::prepare_sqlx(&runner, &workspace_root),
+        Commands::GenerateDocs(args) => xtask::generate_docs(
+            &workspace_root,
+            GenerateDocsOptions { output: args.output, check: args.check },
+        ),
     }
-
-    Ok(())
-}
-
-const fn execute_migrations() {
-    // You can call your real configuration management crate here:
-    // let settings = aircraft_config::load_settings()?;
-    // sqlx::migrate!('../database/migrations').run(&settings.db.pool).await?;
-}
-
-const fn execute_db_reset() {
-    // Logic to drop schemas, recreate, and run seed data scripts
-}
-
-const fn execute_docs_generation() {
-    // Logic to write your Utoipa openapi string to database/openapi.json
 }
