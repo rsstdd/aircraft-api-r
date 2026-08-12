@@ -1,0 +1,35 @@
+[package]
+name = "aircraft_db"
+edition.workspace = true
+rust-version.workspace = true
+version.workspace = true
+license.workspace = true
+publish.workspace = true
+
+[lints]
+workspace = true
+
+[dependencies]
+# Internal Pure Domain Primitives
+aircraft_domain.workspace = true
+
+# Error Handling & Diagnostics
+anyhow.workspace = true
+thiserror.workspace = true
+tracing.workspace = true
+
+# Asynchronous Database Infrastructure (Swapped out Diesel/R2D2)
+sqlx.workspace = true
+
+# Storage Model Primitives & Serialization
+bigdecimal.workspace = true
+chrono.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+uuid.workspace = true
+
+[dev-dependencies]
+# Required for running containerized repository integration tests via Just/Xtask
+tokio = { workspace = true, features = ["macros", "rt-multi-thread"] }
+testcontainers.workspace = true
+pretty_assertions.workspace = true

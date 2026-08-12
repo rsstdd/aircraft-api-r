@@ -1,0 +1,31 @@
+[package]
+name = "aircraft_app"
+edition.workspace = true
+rust-version.workspace = true
+version.workspace = true
+license.workspace = true
+publish.workspace = true
+
+[lints]
+workspace = true
+
+[dependencies]
+# The Architectural Core
+aircraft_domain.workspace = true
+
+# Coordination Error Mechanics & Diagnostics
+anyhow.workspace = true
+thiserror.workspace = true
+tracing.workspace = true
+
+# Domain Type Support for Operations Execution
+chrono.workspace = true
+serde.workspace = true
+uuid.workspace = true
+
+# Async Synchronization Tools (for managing internal channels/use-case orchestration)
+tokio = { workspace = true, features = ["sync"] }
+
+[dev-dependencies]
+# Allows testing coordinate sequences with full async execution trees
+tokio = { workspace = true, features = ["macros", "rt"] }

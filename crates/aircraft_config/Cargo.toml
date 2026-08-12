@@ -1,0 +1,29 @@
+[package]
+name = "aircraft_config"
+edition.workspace = true
+rust-version.workspace = true
+version.workspace = true
+license.workspace = true
+publish.workspace = true
+
+[lints]
+workspace = true
+
+[dependencies]
+# Error Tracking & Infrastructure Diagnostics
+anyhow.workspace = true
+thiserror.workspace = true
+tracing.workspace = true
+
+# Strongly-Typed Serialization Management
+serde = { workspace = true, features = ["derive"] }
+
+# Multi-Tiered Configuration Aggregator (Files + Environment Variables)
+config = { workspace = true}
+
+# Secret Hygiene & Zeroization Protection
+secrecy = { workspace = true, features = ["serde"] }
+
+[dev-dependencies]
+# For asserting correct parsing cascades across mock environment spaces
+serial_test.workspace = true

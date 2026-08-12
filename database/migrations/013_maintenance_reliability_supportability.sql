@@ -1,216 +1,394 @@
--- ============================================================================
--- FILE: 013_comprehensive_test_harness.sql
--- DESCRIPTION: High-fidelity transactional population of 10 validation airframes.
--- ============================================================================
+-- =============================================================================
+-- File: database/migrations/013_maintenance_reliability_supportability.sql
+-- Phase 13 — aircraft_maint: ADs, service bulletins, life-limited parts,
+-- and overall supportability assessments.
+--
+-- Design principle: ADs and SBs are modelled as catalog-level records
+-- linked to variants via M:N junctions. One AD often applies to multiple
+-- variants (e.g., all Cessna 172 variants fitted with Lycoming O-320).
+-- The M:N model preserves this reality while keeping the AD record
+-- deduplicated. Support assessments are 1:1 per variant.
+--
+-- Phase 2 lookups consumed here:
+--   aircraft_ref.ad_types              (5 rows: RECURRING, ONE_TIME, …)
+--   aircraft_ref.sb_compliance_statuses(6 rows: MANDATORY, RECOMMENDED, …)
+--   aircraft_ref.availability_grades   (5 rows: EXCELLENT → CRITICAL)
+--
+-- Spec coverage (requirement 10):
+--   airworthiness directives           → airworthiness_directives + variant_ads
+--   service bulletins                  → service_bulletins + variant_sbs
+--   life-limited parts, overhaul ivls  → life_limited_parts
+--   parts availability                 → support_assessments.parts_availability_grade_code
+--   maintenance network                → support_assessments.maintenance_network_grade_code
+--   common failure points              → support_assessments.common_issues_notes
+--   corrosion risk                     → support_assessments.corrosion_risk_level
+--   dispatch reliability               → support_assessments.dispatch_reliability_pct
+--   fleet size                         → support_assessments.fleet_size_estimate
+--   OEM support status                 → support_assessments.oem_support_status
+--   mod/STC ecosystem                  → support_assessments.mod_stc_ecosystem_notes
+--   owner community                    → support_assessments.owner_community_notes
+-- =============================================================================
 
 BEGIN;
 
--- Establish target namespaces for clean insertion resolution
-SET search_path TO aircraft_core, aircraft_org, aircraft_ref, aircraft_cert, aircraft_specs, aircraft_perf, aircraft_prop, aircraft_avionics, aircraft_market, aircraft_geo, public;
+-- =============================================================================
+-- aircraft_maint.airworthiness_directives
+-- AD catalog: one row per unique AD issued by a regulatory authority.
+-- ADs target type certificates and may apply to multiple variants;
+-- variant applicability is captured in variant_ads (M:N).
+-- UNIQUE (ad_number, authority_code) prevents duplicate AD entries.
+-- compliance_interval_hours: hours between inspections (RECURRING ADs).
+-- compliance_interval_months: calendar interval (months between inspections).
+-- =============================================================================
 
--- ----------------------------------------------------------------------------
--- STEP 1: EXTEND CORPORATE LOGISTICS DIRECTORY
--- ----------------------------------------------------------------------------
-INSERT INTO aircraft_org.organizations (name, slug, org_type_code, headquarters_country_code) VALUES
-                                                                                                  ('Cirrus Aircraft Corporation', 'cirrus-aircraft', 'OEM', 'USA'),
-                                                                                                  ('The Boeing Company', 'boeing', 'OEM', 'USA'),
-                                                                                                  ('Lockheed Martin Corporation', 'lockheed-martin', 'OEM', 'USA'),
-                                                                                                  ('Robinson Helicopter Company', 'robinson-helicopter', 'OEM', 'USA'),
-                                                                                                  ('Airbus SE', 'airbus-se', 'OEM', 'FRA'),
-                                                                                                  ('Continental Aerospace Technologies', 'continental-aerospace', 'OEM', 'USA'),
-                                                                                                  ('Pratt & Whitney', 'pratt-whitney', 'OEM', 'USA'),
-                                                                                                  ('CFM International', 'cfm-international', 'OEM', 'FRA'),
-                                                                                                  ('Garmin International, Inc.', 'garmin', 'OEM', 'USA'),
-                                                                                                  ('General Electric Aerospace', 'ge-aerospace', 'OEM', 'USA'),
-                                                                                                  ('Ivchenko-Progress', 'ivchenko-progress', 'OEM', 'UKR'),
-                                                                                                  ('Lycoming Engines', 'lycoming', 'OEM', 'USA');
+CREATE TABLE aircraft_maint.airworthiness_directives (
+    id                          BIGINT GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
+    ad_number                   TEXT NOT NULL,    -- e.g., '2023-19-04', 'AD 2022-0196R1'
+    authority_code              aircraft_ref.lookup_code NOT NULL
+                                    REFERENCES aircraft_ref.certification_authorities(code),
+    ad_type_code                aircraft_ref.lookup_code
+                                    REFERENCES aircraft_ref.ad_types(code),
+    subject                     TEXT NOT NULL,    -- brief subject from the AD title
+    description                 TEXT,             -- fuller public description
+    effective_date              DATE,
+    -- For RECURRING ADs: compliance interval.
+    compliance_interval_hours   NUMERIC,          -- e.g., 100 hours
+    compliance_interval_months  SMALLINT,         -- e.g., 24 months
+    -- For ONE_TIME ADs: initial compliance deadline.
+    initial_compliance_date     DATE,
+    -- Supersession chain: if this AD is replaced by a newer AD.
+    superseded_by_ad_number     TEXT,             -- AD number that supersedes this one
+    -- Link to official regulatory document.
+    reference_url               TEXT,
+    -- FALSE when this AD has been fully superseded and is no longer enforceable.
+    is_active                   BOOLEAN NOT NULL DEFAULT TRUE,
+    created_at                  TIMESTAMPTZ NOT NULL DEFAULT now(),
+    UNIQUE (ad_number, authority_code),
+    CONSTRAINT chk_ad_interval CHECK (
+        (compliance_interval_hours  IS NULL OR compliance_interval_hours  > 0)
+        AND (compliance_interval_months IS NULL OR compliance_interval_months > 0)
+    )
+);
 
-INSERT INTO aircraft_org.organization_aliases (organization_id, alias_name, slug, is_primary_trade_name) VALUES
-                                                                                                             ((SELECT id FROM aircraft_org.organizations WHERE slug = 'cirrus-aircraft'), 'CIRRUS', 'cirrus', TRUE),
-                                                                                                             ((SELECT id FROM aircraft_org.organizations WHERE slug = 'boeing'), 'BOEING', 'boeing', TRUE),
-                                                                                                             ((SELECT id FROM aircraft_org.organizations WHERE slug = 'lockheed-martin'), 'LOCKHEED MARTIN', 'lockheed-martin', TRUE),
-                                                                                                             ((SELECT id FROM aircraft_org.organizations WHERE slug = 'robinson-helicopter'), 'ROBINSON', 'robinson', TRUE),
-                                                                                                             ((SELECT id FROM aircraft_org.organizations WHERE slug = 'airbus-se'), 'AIRBUS', 'airbus', TRUE);
+COMMENT ON TABLE aircraft_maint.airworthiness_directives IS
+    'Airworthiness Directive catalog. One row per AD issued by a regulatory authority. '
+    'ADs may apply to many variants; variant applicability is in variant_ads (M:N). '
+    'UNIQUE (ad_number, authority_code) deduplicates across issuing bodies. '
+    'is_active = FALSE when the AD has been fully superseded.';
+COMMENT ON COLUMN aircraft_maint.airworthiness_directives.compliance_interval_hours IS
+    'Repeat inspection interval in flight hours (RECURRING ADs). '
+    'NULL for ONE_TIME ADs where compliance is a single event.';
+COMMENT ON COLUMN aircraft_maint.airworthiness_directives.superseded_by_ad_number IS
+    'AD number of the replacement (newer revision). '
+    'Free text since the replacement may not yet be in the database.';
 
--- ----------------------------------------------------------------------------
--- STEP 2: TRANSACTIONAL INJECTION PIPELINE FOR THE 10 VALIDATION FLEET ENTRIES
--- ----------------------------------------------------------------------------
+-- =============================================================================
+-- aircraft_maint.variant_ads
+-- M:N junction: which ADs apply to which variants.
+-- applicability_notes: free-text noting any sub-model or serial restrictions
+--   from the AD applicability section (e.g., "S/N 12000-15000 only").
+-- is_significant: curator flag for ADs considered notable in buyer research
+--   (major structural concern, grounding-type compliance requirement).
+-- =============================================================================
 
--- ============================================================================
--- AIRFRAME 1: CESSNA 172S SKYHAWK SP
--- ============================================================================
-DO $$
-DECLARE
-v_oem BIGINT := (SELECT id FROM aircraft_org.organizations WHERE slug = 'textron-aviation-inc');
-    v_fam BIGINT; v_mdl BIGINT; v_vrt BIGINT; v_cfg BIGINT; v_eng BIGINT; v_avx BIGINT;
-BEGIN
-SELECT id INTO v_fam FROM aircraft_families WHERE slug = 'cessna-172' AND manufacturer_id = v_oem;
-SELECT id INTO v_mdl FROM aircraft_models WHERE slug = '172-skyhawk-series' AND family_id = v_fam;
-SELECT id INTO v_vrt FROM aircraft_variants WHERE slug = '172s' AND model_id = v_mdl;
+CREATE TABLE aircraft_maint.variant_ads (
+    variant_id           BIGINT NOT NULL
+                             REFERENCES aircraft_core.variants(id)                      ON DELETE CASCADE,
+    ad_id                BIGINT NOT NULL
+                             REFERENCES aircraft_maint.airworthiness_directives(id)    ON DELETE RESTRICT,
+    applicability_notes  TEXT,   -- serial/sub-model restrictions from AD text
+    -- TRUE for ADs curators consider notably significant for buyer research.
+    is_significant       BOOLEAN NOT NULL DEFAULT FALSE,
+    notes                TEXT,
+    PRIMARY KEY (variant_id, ad_id)
+);
 
-INSERT INTO aircraft_configurations (variant_id, name, slug, passenger_capacity_standard, passenger_capacity_max, pilot_capacity_required, landing_gear_code)
-VALUES (v_vrt, 'Garmin G1000 Factory Standard', 'g1000-factory-standard', 3, 3, 1, 'FIXED_TRICYCLE') RETURNING id INTO v_cfg;
+COMMENT ON TABLE aircraft_maint.variant_ads IS
+    'M:N junction between aircraft variants and airworthiness directives. '
+    'applicability_notes records serial number or sub-model restrictions. '
+    'is_significant is a curator flag for ADs worth highlighting in buyer '
+    'research (e.g., major structural ADs, frequent recurring inspections).';
 
-INSERT INTO aircraft_cert.operating_approvals (variant_id, has_fiki_approval, has_ifr_approval, max_operating_altitude_ft, limit_load_factor_flaps_up_positive, limit_load_factor_flaps_up_negative)
-VALUES (v_vrt, FALSE, TRUE, 14000.00, 3.80, -1.52);
+-- =============================================================================
+-- aircraft_maint.service_bulletins
+-- Service bulletin catalog: manufacturer recommendations/advisories.
+-- One row per unique SB (sb_number + issuer).
+-- compliance_status_code captures the overall classification of this SB
+--   (MANDATORY = effectively regulatory even if issued by manufacturer;
+--    RECOMMENDED = strongly advised; OPTIONAL = elective improvement).
+-- =============================================================================
 
-INSERT INTO aircraft_cert.pilot_requirements (variant_id, minimum_crew_count, required_license_level, is_type_rating_required)
-VALUES (v_vrt, 1, 'PRIVATE', FALSE);
+CREATE TABLE aircraft_maint.service_bulletins (
+    id                       BIGINT GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
+    sb_number                TEXT NOT NULL,
+    issuer_org_id            BIGINT
+                                 REFERENCES aircraft_org.organizations(id) ON DELETE SET NULL,
+    issuer_name_raw          TEXT,     -- fallback when issuer not in organizations
+    compliance_status_code   aircraft_ref.lookup_code
+                                 REFERENCES aircraft_ref.sb_compliance_statuses(code),
+    subject                  TEXT NOT NULL,
+    description              TEXT,
+    issued_date              DATE,
+    -- Supersession tracking
+    supersedes_sb_number     TEXT,     -- this SB supersedes the named earlier SB
+    superseded_by_sb_number  TEXT,     -- this SB is superseded by the named newer SB
+    reference_url            TEXT,
+    is_active                BOOLEAN NOT NULL DEFAULT TRUE,
+    created_at               TIMESTAMPTZ NOT NULL DEFAULT now()
+);
 
-INSERT INTO aircraft_specs.external_dimensions (configuration_id, wingspan_raw, wingspan_ft, length_raw, length_ft, height_raw, height_ft, wing_area_sqft, aspect_ratio)
-VALUES (v_cfg, '36 ft 1 in', 36.08, '27 ft 2 in', 27.17, '8 ft 11 in', 8.92, 174.00, 7.48);
+COMMENT ON TABLE aircraft_maint.service_bulletins IS
+    'Service Bulletin catalog from aircraft and component manufacturers. '
+    'SBs are manufacturer recommendations; compliance_status_code notes '
+    'whether a specific SB has been elevated to effectively mandatory '
+    '(e.g., when required by a subsequent AD that references the SB). '
+    'Variant applicability is in variant_sbs (M:N).';
 
-INSERT INTO aircraft_specs.cabin_dimensions (configuration_id, length_ft, width_inches, height_inches, volume_cuft, is_pressurized, has_flat_floor)
-VALUES (v_cfg, 11.80, 39.50, 48.00, 122.00, FALSE, FALSE);
+-- =============================================================================
+-- aircraft_maint.variant_sbs
+-- M:N junction: which SBs apply to which variants.
+-- estimated_compliance_cost_usd: approximate cost to comply, for buyer research.
+--   NULL = cost not published or not estimated.
+-- =============================================================================
 
-INSERT INTO aircraft_specs.weight_limits (configuration_id, basic_empty_weight_lbs, operating_empty_weight_lbs, max_takeoff_weight_lbs, max_landing_weight_lbs, max_zero_fuel_weight_lbs)
-VALUES (v_cfg, 1665.00, 1715.00, 2550.00, 2550.00, 2300.00);
+CREATE TABLE aircraft_maint.variant_sbs (
+    variant_id                  BIGINT NOT NULL
+                                    REFERENCES aircraft_core.variants(id)               ON DELETE CASCADE,
+    sb_id                       BIGINT NOT NULL
+                                    REFERENCES aircraft_maint.service_bulletins(id)     ON DELETE RESTRICT,
+    applicability_notes         TEXT,
+    -- Approximate out-of-pocket cost to comply at a certificated repair station.
+    estimated_compliance_cost_usd NUMERIC(10,2),
+    notes                       TEXT,
+    PRIMARY KEY (variant_id, sb_id),
+    CONSTRAINT chk_vsb_cost CHECK (
+        estimated_compliance_cost_usd IS NULL OR estimated_compliance_cost_usd >= 0
+    )
+);
 
-INSERT INTO aircraft_specs.fuel_mass_capacities (configuration_id, total_capacity_gal, usable_capacity_gal, unusable_capacity_gal, fuel_density_lbs_gal)
-VALUES (v_cfg, 56.00, 53.00, 3.00, 6.01); -- AvGas Density Baseline
+COMMENT ON TABLE aircraft_maint.variant_sbs IS
+    'M:N junction between aircraft variants and service bulletins. '
+    'estimated_compliance_cost_usd supports buyer-research cost modelling '
+    'and is populated from service center estimates or published SB cost data.';
 
-INSERT INTO aircraft_perf.speed_limits (configuration_id, vs0_stall_flaps_down_ktas, vs1_stall_clean_ktas, vx_best_angle_climb_ktas, vy_best_rate_climb_ktas, vne_never_exceed_ktas)
-VALUES (v_cfg, 40.00, 48.00, 62.00, 74.00, 163.00);
+-- =============================================================================
+-- aircraft_maint.life_limited_parts
+-- Parts with certified retirement lives or mandatory overhaul intervals.
+-- life_limit_hours: hard life in hours (must be retired at this TT or SMOH).
+-- life_limit_calendar: calendar limit (e.g., "20 calendar years").
+-- At least one limit must be set (chk_llp_has_limit).
+-- manufacturer_org_id: OEM source for this life limit data.
+-- =============================================================================
 
-INSERT INTO aircraft_perf.field_performance (configuration_id, takeoff_ground_roll_ft, takeoff_total_clear_50ft_obstacle_ft, landing_ground_roll_ft, landing_total_clear_50ft_obstacle_ft)
-VALUES (v_cfg, 960.00, 1630.00, 575.00, 1335.00);
+CREATE TABLE aircraft_maint.life_limited_parts (
+    id                       BIGINT GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
+    variant_id               BIGINT NOT NULL
+                                 REFERENCES aircraft_core.variants(id) ON DELETE CASCADE,
+    part_number              TEXT,
+    part_description         TEXT NOT NULL,  -- e.g., "Tail rotor hub assembly"
+    manufacturer_org_id      BIGINT
+                                 REFERENCES aircraft_org.organizations(id) ON DELETE SET NULL,
+    -- Life limits
+    life_limit_hours         NUMERIC,       -- hard retirement life in flight hours
+    life_limit_calendar      TEXT,          -- calendar limit description
+    -- Overhaul interval (if overhaul extends life rather than retiring the part)
+    overhaul_interval_hours  NUMERIC,
+    -- Source of the life limit (e.g., "CMM Rev 4, Section 5-10")
+    source_reference         TEXT,
+    notes                    TEXT,
+    CONSTRAINT chk_llp_has_limit CHECK (
+        life_limit_hours IS NOT NULL OR life_limit_calendar IS NOT NULL
+    ),
+    CONSTRAINT chk_llp_hours_positive CHECK (
+        (life_limit_hours       IS NULL OR life_limit_hours       > 0)
+        AND (overhaul_interval_hours IS NULL OR overhaul_interval_hours > 0)
+    )
+);
 
-INSERT INTO aircraft_perf.cruise_envelopes (configuration_id, max_cruise_speed_ktas, max_cruise_fuel_flow_gph, max_range_nm, service_ceiling_ft)
-VALUES (v_cfg, 124.00, 10.5, 640, 14000.00);
+COMMENT ON TABLE aircraft_maint.life_limited_parts IS
+    'Parts with certified life limits (hard-time retirement or mandatory overhaul). '
+    'Common in certificated helicopters, turbines, and some high-stress GA components. '
+    'At least one of life_limit_hours or life_limit_calendar must be set. '
+    'life_limited_parts affects buyer research: approaching or exceeded limits '
+    'require replacement before sale/operation.';
+COMMENT ON COLUMN aircraft_maint.life_limited_parts.overhaul_interval_hours IS
+    'Hours between mandatory overhauls if overhaul is permitted instead of retirement. '
+    'NULL when the part is hard-time: must be retired at life_limit_hours '
+    'regardless of condition.';
 
-INSERT INTO aircraft_prop.engine_models (manufacturer_id, name, slug, propulsion_category_code, rated_horsepower, time_between_overhauls_hours)
-VALUES ((SELECT id FROM organizations WHERE slug = 'lycoming-engines'), 'IO-360-L2A', 'io-360-l2a', 'PISTON', 180.00, 2000) RETURNING id INTO v_eng;
+-- =============================================================================
+-- aircraft_maint.support_assessments
+-- Overall supportability profile for a variant.
+-- 1:1 with variants (UNIQUE on variant_id).
+-- Represents an editorial assessment updated periodically (snapshot_date).
+-- Multiple assessment snapshots per variant are NOT supported by this design:
+-- each UPDATE overwrites the prior state; use updated_at for change tracking.
+-- If historical assessment snapshots are needed, remove UNIQUE and track by date.
+-- oem_support_status, corrosion_risk_level: TEXT CHECK (small stable sets).
+-- parts_availability_grade_code and maintenance_network_grade_code both FK to
+-- aircraft_ref.availability_grades — shared grade scale, separate columns.
+-- =============================================================================
 
-INSERT INTO aircraft_prop.propulsion_installations (configuration_id, engine_model_id, engine_count, propeller_model, propeller_blades_count, is_constant_speed_propeller)
-VALUES (v_cfg, v_eng, 1, 'McCauley 1A170E/JHA7660', 2, FALSE);
+CREATE TABLE aircraft_maint.support_assessments (
+    id                              BIGINT GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
+    variant_id                      BIGINT NOT NULL UNIQUE
+                                        REFERENCES aircraft_core.variants(id) ON DELETE CASCADE,
+    snapshot_date                   DATE NOT NULL DEFAULT CURRENT_DATE,
 
-INSERT INTO aircraft_avionics.avionics_suites (manufacturer_id, name, slug)
-VALUES ((SELECT id FROM organizations WHERE slug = 'garmin'), 'Garmin G1000 Legacy', 'garmin-g1000-legacy') RETURNING id INTO v_avx;
+    -- ── Fleet size ────────────────────────────────────────────────────────────
+    fleet_size_estimate             INTEGER,        -- approx units in service
+    fleet_size_source               TEXT,           -- 'FAA Registry', 'GAMA', 'Jane''s'
+    fleet_size_year                 aircraft_ref.year_value,
 
-INSERT INTO aircraft_avionics.avionics_installations (configuration_id, avionics_suite_id, is_glass_cockpit, has_autopilot, autopilot_model)
-VALUES (v_cfg, v_avx, TRUE, TRUE, 'BendixKing KAP 140');
+    -- ── OEM support status ────────────────────────────────────────────────────
+    -- FULL_SUPPORT:      OEM actively supports; new parts available
+    -- LIMITED_SUPPORT:   OEM support limited; some parts discontinued
+    -- PARTS_ONLY:        OEM supplies spares only; no engineering/tech support
+    -- DISCONTINUED:      OEM no longer supports this type
+    oem_support_status              TEXT,
 
-INSERT INTO aircraft_market.operating_cost_estimates (configuration_id, currency_code, estimated_fuel_cost_per_hour, estimated_maintenance_labor_per_hour, estimated_parts_engine_reserve_per_hour)
-VALUES (v_cfg, 'USD', 63.00, 22.00, 18.00);
-END $$;
+    -- ── Availability grades (both FK to aircraft_ref.availability_grades) ─────
+    parts_availability_grade_code   aircraft_ref.lookup_code
+                                        REFERENCES aircraft_ref.availability_grades(code),
+    maintenance_network_grade_code  aircraft_ref.lookup_code
+                                        REFERENCES aircraft_ref.availability_grades(code),
 
--- ============================================================================
--- AIRFRAME 2: AERONCA 11AC CHIEF
--- ============================================================================
-DO $$
-DECLARE
-v_oem BIGINT := (SELECT id FROM aircraft_org.organizations WHERE slug = 'aeronca-aircraft-corporation');
-    v_fam BIGINT; v_mdl BIGINT; v_vrt BIGINT; v_cfg BIGINT; v_eng BIGINT;
-BEGIN
-INSERT INTO aircraft_families (manufacturer_id, name, slug) VALUES (v_oem, 'Aeronca Chief', 'aeronca-chief') RETURNING id INTO v_fam;
-INSERT INTO aircraft_models (family_id, designation, marketing_name, slug) VALUES (v_fam, '11AC', 'Chief', '11ac') RETURNING id INTO v_mdl;
-INSERT INTO aircraft_variants (model_id, variant_suffix, slug, lifecycle_status_code, introduction_year, is_military)
-VALUES (v_mdl, 'Base Model', 'base', 'DISCONTINUED', 1946, FALSE) RETURNING id INTO v_vrt;
+    -- ── Corrosion risk ────────────────────────────────────────────────────────
+    -- Composite of design (aluminium vs steel vs composite), operating environment,
+    -- and known type-specific corrosion issues.
+    corrosion_risk_level            TEXT,
 
-INSERT INTO aircraft_configurations (variant_id, name, slug, passenger_capacity_standard, passenger_capacity_max, pilot_capacity_required, landing_gear_code)
-VALUES (v_vrt, 'Standard Vintage Mechanical', 'standard-vintage', 1, 1, 1, 'FIXED_TAILWHEEL') RETURNING id INTO v_cfg;
+    -- ── Narrative assessments ─────────────────────────────────────────────────
+    common_issues_notes             TEXT,   -- publicly documented common failure points
+    mod_stc_ecosystem_notes         TEXT,   -- available STCs, PMA parts, mod shops
+    owner_community_notes           TEXT,   -- type clubs, online communities, support network
 
-INSERT INTO aircraft_cert.operating_approvals (variant_id, has_fiki_approval, has_ifr_approval, max_operating_altitude_ft, limit_load_factor_flaps_up_positive, limit_load_factor_flaps_up_negative)
-VALUES (v_vrt, FALSE, FALSE, 10800.00, 4.40, -1.76);
+    -- ── Dispatch reliability (where publicly available) ───────────────────────
+    dispatch_reliability_pct        NUMERIC(5,2),  -- % of flights completed without AOG
+    dispatch_reliability_source     TEXT,          -- citation for this figure
 
-INSERT INTO aircraft_cert.pilot_requirements (variant_id, minimum_crew_count, required_license_level, is_type_rating_required, requires_tailwheel_endorsement)
-VALUES (v_vrt, 1, 'SPORT', FALSE, TRUE);
+    confidence                      aircraft_ref.confidence_score,
+    notes                           TEXT,
+    created_at                      TIMESTAMPTZ NOT NULL DEFAULT now(),
+    updated_at                      TIMESTAMPTZ NOT NULL DEFAULT now(),
 
-INSERT INTO aircraft_specs.external_dimensions (configuration_id, wingspan_raw, wingspan_ft, length_raw, length_ft, height_raw, height_ft, wing_area_sqft)
-VALUES (v_cfg, '36 ft 0 in', 36.00, '20 ft 10 in', 20.83, '7 ft 0 in', 7.00, 175.00);
+    CONSTRAINT chk_sa_oem_status CHECK (
+        oem_support_status IS NULL
+        OR oem_support_status IN (
+            'FULL_SUPPORT', 'LIMITED_SUPPORT', 'PARTS_ONLY', 'DISCONTINUED'
+        )
+    ),
+    CONSTRAINT chk_sa_corrosion CHECK (
+        corrosion_risk_level IS NULL
+        OR corrosion_risk_level IN ('LOW', 'MODERATE', 'HIGH', 'VERY_HIGH')
+    ),
+    CONSTRAINT chk_sa_dispatch CHECK (
+        dispatch_reliability_pct IS NULL
+        OR (dispatch_reliability_pct >= 0 AND dispatch_reliability_pct <= 100)
+    ),
+    CONSTRAINT chk_sa_fleet CHECK (
+        fleet_size_estimate IS NULL OR fleet_size_estimate >= 0
+    )
+);
 
-INSERT INTO aircraft_specs.weight_limits (configuration_id, basic_empty_weight_lbs, operating_empty_weight_lbs, max_takeoff_weight_lbs)
-VALUES (v_cfg, 725.00, 750.00, 1250.00);
+COMMENT ON TABLE aircraft_maint.support_assessments IS
+    'Supportability profile for a variant (1:1, UNIQUE on variant_id). '
+    'Combines fleet size, OEM support status, parts/network grade, corrosion risk, '
+    'and narrative assessments into a single curated overview for buyer research. '
+    'oem_support_status TEXT CHECK (4 values): FULL_SUPPORT, LIMITED_SUPPORT, '
+    'PARTS_ONLY, DISCONTINUED. corrosion_risk_level TEXT CHECK (4 levels). '
+    'dispatch_reliability_pct must cite dispatch_reliability_source.';
+COMMENT ON COLUMN aircraft_maint.support_assessments.dispatch_reliability_pct IS
+    'Percentage of scheduled flights completed without an AOG (Aircraft on Ground) '
+    'technical delay. Only available for commercial-operation types with public '
+    'statistical reporting. NULL for most GA types. Must cite dispatch_reliability_source.';
+COMMENT ON COLUMN aircraft_maint.support_assessments.fleet_size_estimate IS
+    'Approximate number of this variant in active service worldwide. '
+    'Source typically FAA Registry (US), GAMA statistics, or Jane''s census. '
+    'Larger fleets generally correlate with better parts and MRO availability.';
 
-INSERT INTO aircraft_specs.fuel_mass_capacities (configuration_id, total_capacity_gal, usable_capacity_gal, unusable_capacity_gal, fuel_density_lbs_gal)
-VALUES (v_cfg, 15.00, 14.00, 1.00, 6.01);
+-- =============================================================================
+-- TRIGGER
+-- =============================================================================
 
-INSERT INTO aircraft_perf.speed_limits (configuration_id, vs0_stall_flaps_down_ktas, vs1_stall_clean_ktas, vne_never_exceed_ktas)
-VALUES (v_cfg, 33.00, 33.00, 112.00); -- Clean stall equal because it lacks structural flap deployment assemblies
+CREATE TRIGGER trg_support_assessments_updated
+    BEFORE UPDATE ON aircraft_maint.support_assessments
+    FOR EACH ROW EXECUTE FUNCTION aircraft_ref.set_updated_at();
 
-INSERT INTO aircraft_perf.field_performance (configuration_id, takeoff_total_clear_50ft_obstacle_ft, landing_total_clear_50ft_obstacle_ft)
-VALUES (v_cfg, 850.00, 900.00);
+-- =============================================================================
+-- INDEXES
+-- =============================================================================
 
-INSERT INTO aircraft_perf.cruise_envelopes (configuration_id, max_cruise_speed_ktas, max_cruise_fuel_flow_gph, max_range_nm, service_ceiling_ft)
-VALUES (v_cfg, 83.00, 4.5, 280, 10800.00);
+-- ── aircraft_maint.airworthiness_directives ───────────────────────────────────
 
-INSERT INTO aircraft_prop.engine_models (manufacturer_id, name, slug, propulsion_category_code, rated_horsepower)
-VALUES ((SELECT id FROM organizations WHERE slug = 'continental-aerospace'), 'Continental A-65', 'continental-a-65', 'PISTON', 65.00) RETURNING id INTO v_eng;
+CREATE INDEX idx_ad_authority
+    ON aircraft_maint.airworthiness_directives (authority_code);
+CREATE INDEX idx_ad_type
+    ON aircraft_maint.airworthiness_directives (ad_type_code);
+-- Identify superseded (inactive) ADs.
+CREATE INDEX idx_ad_inactive
+    ON aircraft_maint.airworthiness_directives (ad_number)
+    WHERE NOT is_active;
+-- AD number search (partial match for docket-number lookups).
+CREATE INDEX idx_ad_number_trgm
+    ON aircraft_maint.airworthiness_directives USING gin (ad_number gin_trgm_ops);
 
-INSERT INTO aircraft_prop.propulsion_installations (configuration_id, engine_model_id, engine_count, propeller_model, propeller_blades_count, is_constant_speed_propeller)
-VALUES (v_cfg, v_eng, 1, 'Sensenich Fixed Wood', 2, FALSE);
+-- ── aircraft_maint.variant_ads ────────────────────────────────────────────────
 
-INSERT INTO aircraft_market.operating_cost_estimates (configuration_id, currency_code, estimated_fuel_cost_per_hour, estimated_maintenance_labor_per_hour, estimated_parts_engine_reserve_per_hour)
-VALUES (v_cfg, 'USD', 27.00, 15.00, 10.00);
+-- "All variants with this AD" — reverse traversal.
+CREATE INDEX idx_va_ad
+    ON aircraft_maint.variant_ads (ad_id);
+-- "Significant ADs for buyer research" — quick filter.
+CREATE INDEX idx_va_significant
+    ON aircraft_maint.variant_ads (variant_id)
+    WHERE is_significant;
 
-INSERT INTO aircraft_core.aircraft_role_mappings (variant_id, role_id, priority_ranking)
-VALUES (v_vrt, (SELECT id FROM aircraft_ref.aircraft_roles WHERE slug = 'light-sport'), 1);
-END $$;
+-- ── aircraft_maint.service_bulletins ─────────────────────────────────────────
 
--- ============================================================================
--- AIRFRAME 3: AERO VODOCHODY L-39C ALBATROS
--- ============================================================================
-DO $$
-DECLARE
-v_oem BIGINT := (SELECT id FROM aircraft_org.organizations WHERE slug = 'aero-vodochody-aerospace');
-    v_fam BIGINT; v_mdl BIGINT; v_vrt BIGINT; v_cfg BIGINT; v_eng BIGINT;
-BEGIN
-SELECT id INTO v_fam FROM aircraft_families WHERE slug = 'l-39 Albatross' AND manufacturer_id = v_oem;
-IF v_fam IS NULL THEN
-        INSERT INTO aircraft_families (manufacturer_id, name, slug) VALUES (v_oem, 'L-39 Albatros', 'l-39-albatros') RETURNING id INTO v_fam;
-END IF;
-INSERT INTO aircraft_models (family_id, designation, slug) VALUES (v_fam, 'L-39C', 'l-39c') RETURNING id INTO v_mdl;
-INSERT INTO aircraft_variants (model_id, variant_suffix, slug, lifecycle_status_code, introduction_year, is_military)
-VALUES (v_mdl, 'Standard Soviet Trainer Config', 'soviet-trainer', 'DISCONTINUED', 1971, TRUE) RETURNING id INTO v_vrt;
+-- Prevent duplicate SBs from the same known issuer.
+CREATE UNIQUE INDEX uq_sb_number_org
+    ON aircraft_maint.service_bulletins (issuer_org_id, sb_number)
+    WHERE issuer_org_id IS NOT NULL;
 
-INSERT INTO aircraft_configurations (variant_id, name, slug, passenger_capacity_standard, passenger_capacity_max, pilot_capacity_required, landing_gear_code)
-VALUES (v_vrt, 'Dual Pilot Tactical Cockpit', 'dual-pilot-tactical', 1, 1, 1, 'RETRACTABLE_TRICYCLE') RETURNING id INTO v_cfg;
+CREATE INDEX idx_sb_compliance
+    ON aircraft_maint.service_bulletins (compliance_status_code);
+CREATE INDEX idx_sb_issuer
+    ON aircraft_maint.service_bulletins (issuer_org_id)
+    WHERE issuer_org_id IS NOT NULL;
+CREATE INDEX idx_sb_active
+    ON aircraft_maint.service_bulletins (sb_number)
+    WHERE is_active;
 
-INSERT INTO aircraft_cert.operating_approvals (variant_id, has_fiki_approval, has_ifr_approval, max_operating_altitude_ft, limit_load_factor_flaps_up_positive, limit_load_factor_flaps_up_negative)
-VALUES (v_vrt, TRUE, TRUE, 36100.00, 8.00, -4.00);
+-- ── aircraft_maint.variant_sbs ────────────────────────────────────────────────
 
-INSERT INTO aircraft_cert.pilot_requirements (variant_id, minimum_crew_count, required_license_level, is_type_rating_required, type_rating_designator)
-VALUES (v_vrt, 1, 'MILITARY_ONLY', TRUE, 'L-39');
+-- "All variants with this SB" — reverse traversal.
+CREATE INDEX idx_vsb_sb
+    ON aircraft_maint.variant_sbs (sb_id);
 
-INSERT INTO aircraft_specs.external_dimensions (configuration_id, wingspan_ft, length_ft, height_ft, wing_area_sqft)
-VALUES (v_cfg, 31.02, 39.75, 15.62, 202.40);
+-- ── aircraft_maint.life_limited_parts ─────────────────────────────────────────
 
-INSERT INTO aircraft_specs.weight_limits (configuration_id, basic_empty_weight_lbs, max_takeoff_weight_lbs, max_landing_weight_lbs)
-VALUES (v_cfg, 7837.00, 10362.00, 9480.00);
+CREATE INDEX idx_llp_variant
+    ON aircraft_maint.life_limited_parts (variant_id);
+CREATE INDEX idx_llp_part_number
+    ON aircraft_maint.life_limited_parts (part_number)
+    WHERE part_number IS NOT NULL;
 
-INSERT INTO aircraft_specs.fuel_mass_capacities (configuration_id, total_capacity_gal, usable_capacity_gal, unusable_capacity_gal, fuel_density_lbs_gal)
-VALUES (v_cfg, 332.00, 324.00, 8.00, 6.74); -- Jet-A Fuel Density Matrix Target
+-- ── aircraft_maint.support_assessments ───────────────────────────────────────
 
-INSERT INTO aircraft_perf.speed_limits (configuration_id, vs0_stall_flaps_down_ktas, vs1_stall_clean_ktas, vne_never_exceed_ktas)
-VALUES (v_cfg, 89.00, 97.00, 491.00);
+-- UNIQUE on variant_id already creates an index — no separate idx needed.
+-- Grade-based buyer filters.
+CREATE INDEX idx_sa_parts
+    ON aircraft_maint.support_assessments (parts_availability_grade_code)
+    WHERE parts_availability_grade_code IS NOT NULL;
+CREATE INDEX idx_sa_network
+    ON aircraft_maint.support_assessments (maintenance_network_grade_code)
+    WHERE maintenance_network_grade_code IS NOT NULL;
+CREATE INDEX idx_sa_oem
+    ON aircraft_maint.support_assessments (oem_support_status)
+    WHERE oem_support_status IS NOT NULL;
+-- Fleet size sort: "largest fleet = best parts support".
+CREATE INDEX idx_sa_fleet
+    ON aircraft_maint.support_assessments (fleet_size_estimate DESC NULLS LAST)
+    WHERE fleet_size_estimate IS NOT NULL;
 
-INSERT INTO aircraft_perf.field_performance (configuration_id, takeoff_total_clear_50ft_obstacle_ft, landing_total_clear_50ft_obstacle_ft)
-VALUES (v_cfg, 2625.00, 2460.00);
-
-INSERT INTO aircraft_perf.cruise_envelopes (configuration_id, max_cruise_speed_ktas, max_range_nm, service_ceiling_ft)
-VALUES (v_cfg, 405.00, 593, 36100.00);
-
-INSERT INTO aircraft_prop.engine_models (manufacturer_id, name, slug, propulsion_category_code, rated_static_thrust_lbf)
-VALUES ((SELECT id FROM organizations WHERE slug = 'ivchenko-progress'), 'Lotarev AI-25TL', 'lotarev-ai-25tl', 'TURBOJET') RETURNING id INTO v_eng;
-
-INSERT INTO aircraft_prop.propulsion_installations (configuration_id, engine_model_id, engine_count)
-VALUES (v_cfg, v_eng, 1);
-
-INSERT INTO aircraft_market.operating_cost_estimates (configuration_id, currency_code, estimated_fuel_cost_per_hour, estimated_maintenance_labor_per_hour, estimated_parts_engine_reserve_per_hour)
-VALUES (v_cfg, 'USD', 950.00, 180.00, 220.00);
-
-INSERT INTO aircraft_core.aircraft_role_mappings (variant_id, role_id, priority_ranking)
-VALUES (v_vrt, (SELECT id FROM aircraft_ref.aircraft_roles WHERE slug = 'trainer'), 1);
-END $$;
-
--- ============================================================================
--- AIRFRAME 4: ANTONOV AN-225 MRIYA
--- ============================================================================
-DO $$
-DECLARE
-v_oem BIGINT := (SELECT id FROM aircraft_org.organizations WHERE slug = 'antonov-astc');
-    v_fam BIGINT; v_mdl BIGINT; v_vrt BIGINT; v_cfg BIGINT; v_eng BIGINT;
-BEGIN
-SELECT id INTO v_fam FROM aircraft_families WHERE slug = 'antonov' AND manufacturer_id = v_oem;
-IF v_fam IS NULL THEN
-        INSERT INTO aircraft_families (manufacturer_id, name, slug) VALUES (
+COMMIT;

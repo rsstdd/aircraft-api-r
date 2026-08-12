@@ -1,0 +1,61 @@
+[package]
+name = "aircraft_server"
+version = "0.1.0"
+edition = "2024"
+description = "Aircraft Server"
+
+[lib]
+doctest = false
+
+[profile.dev]
+debug = 0
+
+[workspace]
+members = [
+  "crates/api_common",
+  "crates/api_crud",
+  "crates/db_schema",
+  "crates/routes",
+  "crates/utils",
+  "crates/websocket",
+]
+
+[dependencies]
+aircraft_api = { version = "=0.1.0", path = "./crates/api" }
+aircraft_api_common = { version = "=0.1.0", path = "./crates/api_common" }
+aircraft_api_crud = { version = "=0.1.0", path = "./crates/api_crud" }
+aircraft_db_schema = { version = "=0.1.0", path = "./crates/db_schema" }
+aircraft_routes = { version = "=0.1.0", path = "./crates/routes" }
+aircraft_utils = { version = "=0.1.0", path = "./crates/utils" }
+aircraft_websocket = { version = "=0.1.0", path = "./crates/websocket" }
+diesel = { version = "2.2.0", features = ["postgres", "r2d2", "chrono"] }
+diesel_migrations = "2.2.0"
+chrono = { version = "0.4.38", features = ["serde"] }
+serde = { version = "1.0.210", features = ["derive"] }
+actix = "0.13.0"
+actix-web = { version = "4.9.0", default-features = false, features = ["rustls-0_23"] }
+tracing = "0.1.40"
+tracing-actix-web = "0.7.0"
+tracing-error = "0.2.0"
+tracing-log = "0.2.0"
+tracing-subscriber = { version = "0.3.18", features = ["env-filter"] }
+strum = { version = "0.26.0", features = ["derive"] }
+url = { version = "2.5.0", features = ["serde"] }
+openssl = "0.10.66"
+http-signature-normalization-actix = { version = "0.10.0", default-features = false, features = ["sha-2"] }
+tokio = { version = "1.40.0", features = ["sync", "rt-multi-thread", "macros"] }
+anyhow = "1.0.89"
+reqwest = { version = "0.11.27", features = ["json"] }
+activitystreams = "0.7.0-alpha.21"
+actix-rt = { version = "2.10.0", default-features = false }
+serde_json = { version = "1.0.128", features = ["preserve_order"] }
+clokwerk = "0.4.0"
+doku = "0.21.0"
+
+[dev-dependencies.cargo-husky]
+version = "1.5.0"
+default-features = false
+features = ["user-hooks"]
+
+[package.metadata.cargo-udeps.ignore]
+development = ["cargo-husky"]

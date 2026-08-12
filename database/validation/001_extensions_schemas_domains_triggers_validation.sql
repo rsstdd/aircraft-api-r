@@ -34,6 +34,6 @@ ORDER BY 1;
 -- expect: normalize_lookup_code, set_updated_at, slugify
 
 -- 5. Functional smoke test
-SELECT aircraft_ref.slugify('North American')        AS slug_example,
+SELECT aircraft_ref.slugify('North American')            AS slug_example,
        aircraft_ref.normalize_lookup_code('Light Sport') AS code_example;
 -- expect: 'north-american' | 'LIGHT_SPORT'

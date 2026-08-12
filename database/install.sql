@@ -1,64 +1,200 @@
-# Phase 1 — infrastructure
-psql "$DATABASE_URL" -v ON_ERROR_STOP=1 -f database/migrations/001_extensions_schemas_domains_triggers.sql
+-- Canonical dependency-aware installer for psql.
+-- Run with: psql -X -v ON_ERROR_STOP=1 "$DATABASE_URL" -f database/install.sql
+\set ON_ERROR_STOP on
 
-# Phase 2 — reference/lookup tables + seed data
-psql "$DATABASE_URL" -v ON_ERROR_STOP=1 -f database/migrations/002_core_reference_tables.sql
-psql "$DATABASE_URL" -v ON_ERROR_STOP=1 -f database/seeds/001_lookup_seed_data.sql
-psql "$DATABASE_URL" -v ON_ERROR_STOP=1 -f database/seeds/002_reference_units.sql
+-- Serialize installers for this database. The advisory lock is held by the
+-- psql session across the per-migration transactions and is released
+-- automatically if the session terminates because a migration fails.
+SELECT pg_advisory_lock(hashtextextended(current_database() || ':aircraft-install', 0));
 
-# Phase 3 — geography, organizations
-psql "$DATABASE_URL" -v ON_ERROR_STOP=1 -f database/migrations/003_geography_operators_organizations.sql
+CREATE TABLE IF NOT EXISTS public.aircraft_schema_migrations (
+    version TEXT PRIMARY KEY,
+    applied_at TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+COMMENT ON TABLE public.aircraft_schema_migrations IS
+    'Records successfully applied Aircraft Management Engine SQL migrations.';
 
-# Phase 4 — aircraft identity/taxonomy
-psql "$DATABASE_URL" -v ON_ERROR_STOP=1 -f database/migrations/004_aircraft_identity_taxonomy.sql
+SELECT NOT EXISTS (
+    SELECT 1 FROM public.aircraft_schema_migrations WHERE version = '001'
+) AS apply_migration \gset
+\if :apply_migration
+\echo 'Applying migration 001: 001_extensions_schemas_domains_triggers.sql'
+\ir migrations/001_extensions_schemas_domains_triggers.sql
+INSERT INTO public.aircraft_schema_migrations(version) VALUES ('001');
+\else
+\echo 'Skipping applied migration 001'
+\endif
 
-# Phase 5 — certification/airworthiness
-psql "$DATABASE_URL" -v ON_ERROR_STOP=1 -f database/migrations/005_certification_operating_approvals.sql
+SELECT NOT EXISTS (
+    SELECT 1 FROM public.aircraft_schema_migrations WHERE version = '002'
+) AS apply_migration \gset
+\if :apply_migration
+\echo 'Applying migration 002: 002_core_reference_tables.sql'
+\ir migrations/002_core_reference_tables.sql
+INSERT INTO public.aircraft_schema_migrations(version) VALUES ('002');
+\else
+\echo 'Skipping applied migration 002'
+\endif
 
-# Phase 6 — dimensions/cabin/cargo
-psql "$DATABASE_URL" -v ON_ERROR_STOP=1 -f database/migrations/006_dimensions_cabin_cargo_hangar_fit.sql
+-- Later schema phases reference these canonical lookup rows.
+\ir seeds/001_reference_units.sql
+\ir seeds/002_lookup_seed_data.sql
 
-# Phase 7 — weight/balance/payload
-psql "$DATABASE_URL" -v ON_ERROR_STOP=1 -f database/migrations/007_weight_balance_payload_loading.sql
+SELECT NOT EXISTS (
+    SELECT 1 FROM public.aircraft_schema_migrations WHERE version = '003'
+) AS apply_migration \gset
+\if :apply_migration
+\echo 'Applying migration 003: 003_geography_operators_organizations.sql'
+\ir migrations/003_geography_operators_organizations.sql
+INSERT INTO public.aircraft_schema_migrations(version) VALUES ('003');
+\else
+\echo 'Skipping applied migration 003'
+\endif
 
-# Phase 8 — performance metrics
-psql "$DATABASE_URL" -v ON_ERROR_STOP=1 -f database/migrations/008_performance_metrics_conditions.sql
+SELECT NOT EXISTS (
+    SELECT 1 FROM public.aircraft_schema_migrations WHERE version = '004'
+) AS apply_migration \gset
+\if :apply_migration
+\echo 'Applying migration 004: 004_aircraft_identity_taxonomy.sql'
+\ir migrations/004_aircraft_identity_taxonomy.sql
+INSERT INTO public.aircraft_schema_migrations(version) VALUES ('004');
+\else
+\echo 'Skipping applied migration 004'
+\endif
 
-# Phase 9 — propulsion/engines
-psql "$DATABASE_URL" -v ON_ERROR_STOP=1 -f database/migrations/009_propulsion_engines_rotors_stcs.sql
+SELECT NOT EXISTS (
+    SELECT 1 FROM public.aircraft_schema_migrations WHERE version = '005'
+) AS apply_migration \gset
+\if :apply_migration
+\echo 'Applying migration 005: 005_certification_operating_approvals.sql'
+\ir migrations/005_certification_operating_approvals.sql
+INSERT INTO public.aircraft_schema_migrations(version) VALUES ('005');
+\else
+\echo 'Skipping applied migration 005'
+\endif
 
-# Phase 10 — avionics/systems
-psql "$DATABASE_URL" -v ON_ERROR_STOP=1 -f database/migrations/010_avionics_equipment_systems.sql
+SELECT NOT EXISTS (
+    SELECT 1 FROM public.aircraft_schema_migrations WHERE version = '006'
+) AS apply_migration \gset
+\if :apply_migration
+\echo 'Applying migration 006: 006_dimensions_cabin_cargo_hangar_fit.sql'
+\ir migrations/006_dimensions_cabin_cargo_hangar_fit.sql
+INSERT INTO public.aircraft_schema_migrations(version) VALUES ('006');
+\else
+\echo 'Skipping applied migration 006'
+\endif
 
-# Phase 11 — military reference data
-psql "$DATABASE_URL" -v ON_ERROR_STOP=1 -f database/migrations/011_military_sensors_stores_loadouts.sql
+SELECT NOT EXISTS (
+    SELECT 1 FROM public.aircraft_schema_migrations WHERE version = '007'
+) AS apply_migration \gset
+\if :apply_migration
+\echo 'Applying migration 007: 007_weight_balance_payload_loading.sql'
+\ir migrations/007_weight_balance_payload_loading.sql
+INSERT INTO public.aircraft_schema_migrations(version) VALUES ('007');
+\else
+\echo 'Skipping applied migration 007'
+\endif
 
-# Phase 12 — ownership cost/valuation
-psql "$DATABASE_URL" -v ON_ERROR_STOP=1 -f database/migrations/012_ownership_cost_valuation_market.sql
+SELECT NOT EXISTS (
+    SELECT 1 FROM public.aircraft_schema_migrations WHERE version = '008'
+) AS apply_migration \gset
+\if :apply_migration
+\echo 'Applying migration 008: 008_performance_metrics_conditions.sql'
+\ir migrations/008_performance_metrics_conditions.sql
+INSERT INTO public.aircraft_schema_migrations(version) VALUES ('008');
+\else
+\echo 'Skipping applied migration 008'
+\endif
 
-# Phase 13 — maintenance/reliability
-psql "$DATABASE_URL" -v ON_ERROR_STOP=1 -f database/migrations/013_maintenance_reliability_supportability.sql
+SELECT NOT EXISTS (
+    SELECT 1 FROM public.aircraft_schema_migrations WHERE version = '009'
+) AS apply_migration \gset
+\if :apply_migration
+\echo 'Applying migration 009: 009_propulsion_engines_rotors_stcs.sql'
+\ir migrations/009_propulsion_engines_rotors_stcs.sql
+INSERT INTO public.aircraft_schema_migrations(version) VALUES ('009');
+\else
+\echo 'Skipping applied migration 009'
+\endif
 
-# Phase 14 — provenance/curation
-psql "$DATABASE_URL" -v ON_ERROR_STOP=1 -f database/migrations/014_sources_provenance_curation_audit.sql
+SELECT NOT EXISTS (
+    SELECT 1 FROM public.aircraft_schema_migrations WHERE version = '010'
+) AS apply_migration \gset
+\if :apply_migration
+\echo 'Applying migration 010: 010_avionics_equipment_systems.sql'
+\ir migrations/010_avionics_equipment_systems.sql
+INSERT INTO public.aircraft_schema_migrations(version) VALUES ('010');
+\else
+\echo 'Skipping applied migration 010'
+\endif
 
-# Phase 15 — mission profiles/comparison
-psql "$DATABASE_URL" -v ON_ERROR_STOP=1 -f database/migrations/015_mission_profiles_comparison_scoring.sql
-psql "$DATABASE_URL" -v ON_ERROR_STOP=1 -f database/seeds/003_mission_profile_seed_data.sql
+SELECT NOT EXISTS (
+    SELECT 1 FROM public.aircraft_schema_migrations WHERE version = '011'
+) AS apply_migration \gset
+\if :apply_migration
+\echo 'Applying migration 011: 011_military_sensors_stores_loadouts.sql'
+\ir migrations/011_military_sensors_stores_loadouts.sql
+INSERT INTO public.aircraft_schema_migrations(version) VALUES ('011');
+\else
+\echo 'Skipping applied migration 011'
+\endif
 
-# Phase 16 — read models/views/indexes
-psql "$DATABASE_URL" -v ON_ERROR_STOP=1 -f database/migrations/016_read_models_views_indexes.sql
+SELECT NOT EXISTS (
+    SELECT 1 FROM public.aircraft_schema_migrations WHERE version = '012'
+) AS apply_migration \gset
+\if :apply_migration
+\echo 'Applying migration 012: 012_ownership_cost_valuation_market.sql'
+\ir migrations/012_ownership_cost_valuation_market.sql
+INSERT INTO public.aircraft_schema_migrations(version) VALUES ('012');
+\else
+\echo 'Skipping applied migration 012'
+\endif
 
-# Phase 17 — JSON seed staging + ingestion
-psql "$DATABASE_URL" -v ON_ERROR_STOP=1 -f database/migrations/901_seed_data_staging.sql
-psql "$DATABASE_URL" -v ON_ERROR_STOP=1 -v seed_json_path="'/absolute/path/to/aircraft_seed.json'" -f database/migrations/902_server_side_json_ingestion.sql
+SELECT NOT EXISTS (
+    SELECT 1 FROM public.aircraft_schema_migrations WHERE version = '013'
+) AS apply_migration \gset
+\if :apply_migration
+\echo 'Applying migration 013: 013_maintenance_reliability_supportability.sql'
+\ir migrations/013_maintenance_reliability_supportability.sql
+INSERT INTO public.aircraft_schema_migrations(version) VALUES ('013');
+\else
+\echo 'Skipping applied migration 013'
+\endif
 
-# Phase 18 — example queries (delivered as docs + executable smoke tests)
-psql "$DATABASE_URL" -v ON_ERROR_STOP=1 -f database/validation/002_comparison_query_smoke_tests.sql
+SELECT NOT EXISTS (
+    SELECT 1 FROM public.aircraft_schema_migrations WHERE version = '014'
+) AS apply_migration \gset
+\if :apply_migration
+\echo 'Applying migration 014: 014_sources_provenance_curation_audit.sql'
+\ir migrations/014_sources_provenance_curation_audit.sql
+INSERT INTO public.aircraft_schema_migrations(version) VALUES ('014');
+\else
+\echo 'Skipping applied migration 014'
+\endif
 
-# Phase 19 — validation
-psql "$DATABASE_URL" -v ON_ERROR_STOP=1 -f database/validation/001_integrity_checks.sql
-psql "$DATABASE_URL" -v ON_ERROR_STOP=1 -f database/validation/003_seed_ingestion_validation.sql
-psql "$DATABASE_URL" -v ON_ERROR_STOP=1 -f database/migrations/903_post_bootstrap_validation.sql
+SELECT NOT EXISTS (
+    SELECT 1 FROM public.aircraft_schema_migrations WHERE version = '015'
+) AS apply_migration \gset
+\if :apply_migration
+\echo 'Applying migration 015: 015_mission_profiles_comparison_scoring.sql'
+\ir migrations/015_mission_profiles_comparison_scoring.sql
+INSERT INTO public.aircraft_schema_migrations(version) VALUES ('015');
+\else
+\echo 'Skipping applied migration 015'
+\endif
 
-# Phases 20-21 — documentation only (docs/data_dictionary.md, docs/implementation_notes.md); no psql step
+\ir seeds/003_mission_profile_seed_data.sql
+
+SELECT NOT EXISTS (
+    SELECT 1 FROM public.aircraft_schema_migrations WHERE version = '016'
+) AS apply_migration \gset
+\if :apply_migration
+\echo 'Applying migration 016: 016_read_models_views_indexes.sql'
+\ir migrations/016_read_models_views_indexes.sql
+INSERT INTO public.aircraft_schema_migrations(version) VALUES ('016');
+\else
+\echo 'Skipping applied migration 016'
+\endif
+
+\echo 'Database schema and canonical seed installation complete.'
+SELECT pg_advisory_unlock(hashtextextended(current_database() || ':aircraft-install', 0));

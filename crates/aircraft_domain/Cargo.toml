@@ -1,0 +1,17 @@
+[package]
+name = "aircraft_domain"
+edition.workspace = true
+rust-version.workspace = true
+version.workspace = true
+license.workspace = true
+publish.workspace = true
+
+[lints]
+workspace = true
+
+[dependencies]
+# Basic serialization, time, and identity primitives only
+chrono.workspace = true
+serde = { workspace = true, features = ["derive"] }
+thiserror.workspace = true
+uuid.workspace = true

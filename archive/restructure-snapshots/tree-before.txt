@@ -1,0 +1,134 @@
+.
+├── archive
+│   └── restructure-snapshots
+│       └── tree-before.txt
+├── Cargo.toml
+├── config
+│   ├── config.hjson
+│   └── defaults.hjson
+├── crates
+│   ├── api
+│   │   ├── Cargo.toml
+│   │   └── src
+│   │       └── lib.rs
+│   ├── api_common
+│   │   ├── Cargo.toml
+│   │   └── src
+│   │       ├── comment.rs
+│   │       ├── lib.rs
+│   │       ├── site.rs
+│   │       └── websocket.rs
+│   ├── api_crud
+│   │   ├── Cargo.toml
+│   │   └── src
+│   │       ├── comment
+│   │       │   ├── create.rs
+│   │       │   ├── delete.rs
+│   │       │   ├── mod.rs
+│   │       │   ├── read.rs
+│   │       │   └── update.rs
+│   │       ├── lib.rs
+│   │       └── user
+│   │           ├── create.rs
+│   │           ├── delete.rs
+│   │           ├── mod.rs
+│   │           ├── read.rs
+│   │           └── update.rs
+│   ├── db_schema
+│   │   ├── Cargo.toml
+│   │   └── src
+│   │       ├── impls
+│   │       │   ├── mod.rs
+│   │       │   └── secret.rs
+│   │       ├── lib.rs
+│   │       ├── newtypes.rs
+│   │       ├── schema.rs
+│   │       ├── source
+│   │       │   ├── mod.rs
+│   │       │   └── secret.rs
+│   │       └── traits.rs
+│   ├── routes
+│   │   ├── Cargo.toml
+│   │   └── src
+│   │       ├── general.rs
+│   │       ├── images.rs
+│   │       └── lib.rs
+│   ├── utils
+│   │   ├── Cargo.toml
+│   │   ├── rate_limit
+│   │   │   ├── mod.rs
+│   │   │   └── rate_limiter.rs
+│   │   ├── settings
+│   │   │   ├── mod.rs
+│   │   │   └── structs.rs
+│   │   └── src
+│   │       ├── apub.rs
+│   │       ├── claims.rs
+│   │       ├── email.rs
+│   │       ├── lib.rs
+│   │       ├── utils.rs
+│   │       └── version.rs
+│   └── websocket
+│       ├── Cargo.toml
+│       └── src
+│           ├── lib.rs
+│           └── routes.rs
+├── database
+│   ├── install.sql
+│   ├── migrations
+│   │   ├── 001_extensions_schemas_domains_triggers.sql
+│   │   ├── 002_core_reference_tables.sql
+│   │   ├── 003_geography_operators_organizations.sql
+│   │   ├── 004_aircraft_identity_taxonomy.sql
+│   │   ├── 005_certification_operating_approvals.sql
+│   │   ├── 006_dimensions_cabin_cargo_hangar_fit.sql
+│   │   ├── 007_weight_balance_payload_loading.sql
+│   │   ├── 008_performance_metrics_conditions.sql
+│   │   ├── 009_propulsion_engines_rotors_stcs.sql
+│   │   ├── 010_avionics_equipment_systems.sql
+│   │   ├── 011_military_sensors_stores_loadouts.sql
+│   │   ├── 012_ownership_cost_valuation_market.sql
+│   │   ├── 013_maintenance_reliability_supportability.sql
+│   │   ├── 014_sources_provenance_curation_audit.sql
+│   │   ├── 015_mission_profiles_comparison_scoring.sql
+│   │   └── 016_read_models_views_indexes.sql
+│   ├── seeds
+│   │   ├── 002_lookup_seed_data.sql
+│   │   ├── 001_reference_units.sql
+│   │   ├── 003_mission_profile_seed_data.sql
+│   │   └── 013_comprehensive_test_harness.sql
+│   ├── staging
+│   │   ├── 901_seed_data_staging.sql
+│   │   ├── 902_server_side_json_ingestion.sql
+│   │   └── 903_post_bootstrap_validation.sql
+│   └── validation
+│       ├── 001_extensions_schemas_domains_triggers_validation.sql
+│       ├── 002_core_reference_tables_validation.sql
+│       ├── 003_geography_operators_organizations_validation.sql
+│       ├── 004_aircraft_identity_taxonomy_validation.sql
+│       ├── 005_certification_validation.sql
+│       ├── 006_dimensions_validation.sql
+│       ├── 007_weight_balance_validation.sql
+│       ├── 008_performance_validation.sql
+│       ├── 009_propulsion_avionics_validation.sql
+│       ├── 010_market_valuation_validation.sql
+│       ├── 011_consolidated_view_validation.sql
+│       └── 012_advanced_analytics_validation.sql
+├── diesel.toml
+├── .dockerignore
+├── .env.example
+├── .gitignore
+├── migrate.sh
+├── .rgignore
+├── .rustfmt.toml
+└── src
+    ├── api_routes.rs
+    ├── .idea
+    │   ├── modules.xml
+    │   ├── src.iml
+    │   ├── vcs.xml
+    │   └── workspace.xml
+    ├── lib.rs
+    └── main.rs
+
+32 directories, 100 files
