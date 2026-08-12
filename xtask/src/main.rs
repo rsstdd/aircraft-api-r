@@ -2,7 +2,6 @@
 
 // xtask/src/main.rs
 use clap::{Parser, Subcommand};
-use sqlx::postgres::PgPoolOptions;
 
 #[derive(Parser)]
 #[command(name = "cargo xtask")]
