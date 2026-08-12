@@ -1,12 +1,12 @@
 #![allow(clippy::print_stdout)]
 
 use std::{
-    env, fs,
+    fs,
     path::{Path, PathBuf},
     process::{Command, Stdio},
 };
 
-use anyhow::{Context, Result, anyhow, bail};
+use anyhow::{Context, Result, bail};
 
 #[derive(Debug, Clone, Copy)]
 pub struct InstallDepsOptions {
@@ -24,7 +24,6 @@ pub struct CommandSpec {
     pub program: String,
     pub args: Vec<String>,
     pub current_dir: Option<PathBuf>,
-    pub env: Vec<(String, String)>,
 }
 
 impl CommandSpec {
@@ -33,17 +32,11 @@ impl CommandSpec {
             program: program.to_owned(),
             args: args.iter().map(|arg| (*arg).to_owned()).collect(),
             current_dir: None,
-            env: Vec::new(),
         }
     }
 
     fn in_dir(mut self, directory: &Path) -> Self {
         self.current_dir = Some(directory.to_path_buf());
-        self
-    }
-
-    fn with_env(mut self, key: &str, value: &str) -> Self {
-        self.env.push((key.to_owned(), value.to_owned()));
         self
     }
 }
@@ -78,7 +71,7 @@ impl Runner for SystemRunner {
 
 fn build_command(spec: &CommandSpec) -> Command {
     let mut command = Command::new(&spec.program);
-    command.args(&spec.args).envs(spec.env.iter().cloned());
+    command.args(&spec.args);
     if let Some(directory) = &spec.current_dir {
         command.current_dir(directory);
     }
@@ -183,50 +176,6 @@ fn cargo_tool(
 
 pub fn deny(runner: &impl Runner, workspace_root: &Path) -> Result<()> {
     runner.run(&CommandSpec::new("cargo", &["deny", "--locked", "check"]).in_dir(workspace_root))
-}
-
-pub fn prepare_sqlx(runner: &impl Runner, workspace_root: &Path) -> Result<()> {
-    let database_url = env::var("MIGRATION_DATABASE_URL")
-        .or_else(|_| env::var("DATABASE_URL"))
-        .context("MIGRATION_DATABASE_URL or DATABASE_URL must be set")?;
-    prepare_sqlx_with_url(runner, workspace_root, &database_url)
-}
-
-fn prepare_sqlx_with_url(
-    runner: &impl Runner,
-    workspace_root: &Path,
-    database_url: &str,
-) -> Result<()> {
-    let validation_dir = workspace_root.join("database/validation");
-    let mut validation_files = fs::read_dir(&validation_dir)
-        .with_context(|| format!("failed to read {}", validation_dir.display()))?
-        .map(|entry| entry.map(|entry| entry.path()))
-        .collect::<std::io::Result<Vec<_>>>()?;
-    validation_files.retain(|path| path.extension().is_some_and(|extension| extension == "sql"));
-    validation_files.sort();
-    if validation_files.is_empty() {
-        bail!("no schema validation files found in {}", validation_dir.display());
-    }
-
-    for path in validation_files {
-        println!("Validating schema with {}...", path.display());
-        let path = path
-            .to_str()
-            .ok_or_else(|| anyhow!("validation path is not valid UTF-8: {}", path.display()))?;
-        runner.run(
-            &CommandSpec::new("psql", &["-X", "-v", "ON_ERROR_STOP=1", "-f", path])
-                .with_env("PGDATABASE", database_url),
-        )?;
-    }
-
-    runner.run(
-        &CommandSpec::new("cargo", &["sqlx", "prepare", "--workspace", "--", "--all-targets"])
-            .in_dir(workspace_root)
-            .with_env("DATABASE_URL", database_url)
-            .with_env("SQLX_OFFLINE", "false"),
-    )?;
-    println!("SQLx offline metadata is up to date.");
-    Ok(())
 }
 
 pub fn generate_docs(workspace_root: &Path, options: GenerateDocsOptions) -> Result<()> {
@@ -346,36 +295,6 @@ mod tests {
         assert_eq!(commands[0].program, "cargo");
         assert_eq!(commands[0].args, ["deny", "--locked", "check"]);
         assert_eq!(commands[0].current_dir.as_deref(), Some(temp.path()));
-        Ok(())
-    }
-
-    #[test]
-    fn prepare_sqlx_validates_sql_files_in_order_then_prepares_metadata() -> Result<()> {
-        let temp = tempfile::tempdir()?;
-        let validation_dir = temp.path().join("database/validation");
-        fs::create_dir_all(&validation_dir)?;
-        fs::write(validation_dir.join("002_second.sql"), "SELECT 2;")?;
-        fs::write(validation_dir.join("001_first.sql"), "SELECT 1;")?;
-        fs::write(validation_dir.join("README.md"), "ignored")?;
-        let runner = FakeRunner::default();
-
-        prepare_sqlx_with_url(&runner, temp.path(), "postgres://test")?;
-
-        let commands = runner.commands.borrow();
-        assert_eq!(commands.len(), 3);
-        assert!(commands[0].args.last().is_some_and(|arg| arg.ends_with("001_first.sql")));
-        assert!(commands[1].args.last().is_some_and(|arg| arg.ends_with("002_second.sql")));
-        assert_eq!(commands[0].env, [("PGDATABASE".to_owned(), "postgres://test".to_owned())]);
-        assert!(!commands[0].args.iter().any(|arg| arg == "postgres://test"));
-        assert_eq!(commands[2].program, "cargo");
-        assert_eq!(commands[2].args, ["sqlx", "prepare", "--workspace", "--", "--all-targets"]);
-        assert_eq!(
-            commands[2].env,
-            [
-                ("DATABASE_URL".to_owned(), "postgres://test".to_owned()),
-                ("SQLX_OFFLINE".to_owned(), "false".to_owned()),
-            ]
-        );
         Ok(())
     }
 

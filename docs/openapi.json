@@ -4,8 +4,7 @@
     "title": "Aircraft Management Engine API",
     "description": "HTTP contracts implemented by the Aircraft Management Engine",
     "license": {
-      "name": "UNLICENSED",
-      "identifier": "UNLICENSED"
+      "name": "Proprietary"
     },
     "version": "0.1.0"
   },

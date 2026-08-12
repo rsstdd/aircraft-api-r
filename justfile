@@ -45,9 +45,6 @@ check-offline:
 install-deps *args:
     cargo run --package xtask -- install-deps {{ args }}
 
-prepare-sqlx:
-    cargo run --package xtask -- prepare-sqlx
-
 generate-docs *args:
     cargo run --package xtask -- generate-docs {{ args }}
 

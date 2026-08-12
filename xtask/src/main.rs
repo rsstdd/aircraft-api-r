@@ -17,8 +17,6 @@ enum Commands {
     InstallDeps(InstallDepsArgs),
     /// Check dependency advisories, licenses, bans, and sources
     Deny,
-    /// Validate the configured schema and refresh offline query metadata
-    PrepareSqlx,
     /// Compile API contracts and write an API schema document
     GenerateDocs(GenerateDocsArgs),
 }
@@ -51,7 +49,6 @@ fn main() -> anyhow::Result<()> {
             xtask::install_deps(&runner, InstallDepsOptions { check_only: args.check })
         }
         Commands::Deny => xtask::deny(&runner, &workspace_root),
-        Commands::PrepareSqlx => xtask::prepare_sqlx(&runner, &workspace_root),
         Commands::GenerateDocs(args) => xtask::generate_docs(
             &workspace_root,
             GenerateDocsOptions { output: args.output, check: args.check },

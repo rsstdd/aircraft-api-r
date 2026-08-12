@@ -9,7 +9,8 @@ use utoipa::OpenApi;
     info(
         title = "Aircraft Management Engine API",
         description = "HTTP contracts implemented by the Aircraft Management Engine",
-        version = "0.1.0"
+        version = "0.1.0",
+        license(name = "Proprietary")
     ),
     paths(routes::health::health),
     components(schemas(routes::health::HealthResponse)),
@@ -28,7 +29,7 @@ pub fn openapi() -> utoipa::openapi::OpenApi {
 
 #[cfg(test)]
 mod tests {
-    use anyhow::Result;
+    use anyhow::{Context, Result};
     use axum::{
         body::{Body, to_bytes},
         http::{Request, StatusCode},
@@ -45,6 +46,15 @@ mod tests {
         assert_eq!(response.status(), StatusCode::OK);
         let body = to_bytes(response.into_body(), 1024).await?;
         assert_eq!(serde_json::from_slice::<serde_json::Value>(&body)?, json!({ "status": "ok" }));
+        Ok(())
+    }
+
+    #[test]
+    fn openapi_uses_a_proprietary_license_without_an_spdx_identifier() -> Result<()> {
+        let license = openapi().info.license.context("OpenAPI license should be present")?;
+
+        assert_eq!(license.name, "Proprietary");
+        assert!(license.identifier.is_none());
         Ok(())
     }
 }

@@ -332,15 +332,15 @@ root Just recipes:
   The root `deny.toml` enforces the approved license set, rejects wildcard
   dependencies and unapproved registry or Git sources, and checks RustSec
   advisories. `just lint` includes the same command.
-* `just prepare-sqlx` requires `MIGRATION_DATABASE_URL` or `DATABASE_URL`. It
-  runs every canonical `database/validation/*.sql` file in filename order
-  against that already-migrated database, then runs `cargo sqlx prepare` to
-  refresh `.sqlx/`. The command does not create, migrate, seed, or reset the
-  target database.
 * `just generate-docs` compiles the API-owned Utoipa contract and writes
   `docs/openapi.json`. Use `just generate-docs --check` to fail when the checked
   artifact is missing or stale, or `just generate-docs --output <path>` to
   select another local destination.
+
+`prepare-sqlx` remains unavailable while `aircraft_db` is a scaffold without
+compile-time checked SQLx queries. Add the command only after the persistence
+crate is an active workspace member with real queries whose offline metadata can
+be generated and verified.
 
 The working Just recipe `just db-reset` is separate from these xtask commands.
 It deletes the local Compose PostgreSQL volume and starts an empty database
