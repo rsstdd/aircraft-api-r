@@ -46,7 +46,7 @@ CREATE TABLE aircraft_core.families (
         to_tsvector('english',
             coalesce(name, '')        || ' ' ||
             coalesce(common_name, '') || ' ' ||
-            array_to_string(coalesce(name_aliases, ARRAY[]::text[]), ' ')
+            aircraft_ref.text_array_to_string(coalesce(name_aliases, ARRAY[]::text[]), ' ')
         )
     ) STORED,
     extra_attributes      JSONB        NOT NULL DEFAULT '{}'::jsonb,

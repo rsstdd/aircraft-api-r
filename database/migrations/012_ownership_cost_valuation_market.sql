@@ -11,10 +11,10 @@
 --     cost_snapshots + cost_line_items — cost estimates with full assumption
 --         sets and one normalised row per cost_item_type (no JSONB overflow).
 --
--- aircraft_ref.cost_item_types (18 rows, Phase 2) maps directly to
--- cost_line_items rows. Phase 17 ingestion reads PlanePHD ownership_costs
--- JSONB and emits one cost_line_item per recognised key.
--- Unrecognised keys → aircraft_prov.source_assertions (Phase 14).
+-- aircraft_ref.cost_item_types contains 18 component rows and 3 aggregate
+-- total rows. Components map to cost_line_items; aggregate totals map to
+-- cost_snapshot_totals. Phase 17 ingestion reads PlanePHD ownership_costs
+-- JSONB and routes each recognized key to the appropriate table.
 --
 -- Spec coverage (requirement 9):
 --   acquisition price / listing prices → valuations

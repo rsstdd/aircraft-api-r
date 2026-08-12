@@ -24,30 +24,6 @@
 
 BEGIN;
 
--- =============================================================================
--- aircraft_ref.operating_approval_types
--- Lookup table for named operating approvals (IFR, FIKI, aerobatic, etc.).
--- Created in aircraft_ref (the canonical schema for all lookups) even though
--- first consumed in Phase 5.  Seed rows are appended to
--- seeds/002_lookup_seed_data.sql per the accumulation pattern; for this
--- phase the INSERT is included inline below for self-containment.
--- =============================================================================
-
-CREATE TABLE aircraft_ref.operating_approval_types (
-    code        aircraft_ref.lookup_code PRIMARY KEY,
-    label       TEXT NOT NULL,
-    description TEXT,
-    -- TRUE = this approval is a binary yes/no;
-    -- FALSE = this approval has graduated levels (e.g., CAT I / II / III ILS).
-    is_positive   BOOLEAN  NOT NULL DEFAULT TRUE,
-    sort_order  SMALLINT NOT NULL DEFAULT 0,
-    is_active   BOOLEAN  NOT NULL DEFAULT TRUE
-);
-COMMENT ON TABLE aircraft_ref.operating_approval_types IS
-    'Named operating approvals tracked per variant '
-    '(e.g., IFR, KNOWN_ICING_FIKI, AEROBATIC, CAT_II_ILS). '
-    'is_positive = FALSE for approvals that have graduated levels '
-    '(the conditions column in variant_operating_approvals carries the detail).';
 
 -- =============================================================================
 -- aircraft_cert.type_certificates
@@ -369,42 +345,5 @@ CREATE INDEX idx_sm_variant
 CREATE INDEX idx_sm_type
     ON aircraft_cert.safety_metrics (metric_type);
 
--- =============================================================================
--- SEED DATA — aircraft_ref.operating_approval_types (14 rows)
--- =============================================================================
-
-INSERT INTO aircraft_ref.operating_approval_types
-    (code, label, description, is_positive, sort_order)
-VALUES
-    ('VFR_DAY',        'VFR Day',
-     'Visual Flight Rules, daytime operations (baseline).',                 TRUE,   10),
-    ('VFR_NIGHT',      'VFR Night',
-     'Visual Flight Rules, night operations.',                              TRUE,   20),
-    ('IFR',            'Instrument Flight Rules',
-     'IFR operations; aircraft and avionics must meet IFR minimums.',       TRUE,   30),
-    ('KNOWN_ICING_FIKI','Flight Into Known Icing (FIKI)',
-     'Approved for flight in known icing conditions per certification.',     TRUE,   40),
-    ('AEROBATIC',      'Aerobatic Operations',
-     'Approved for intentional aerobatic maneuvers.',                       TRUE,   50),
-    ('PRESSURIZED',    'Pressurized Cabin',
-     'Aircraft has a pressurized cabin approved for high-altitude ops.',     TRUE,   60),
-    ('CAT_I_ILS',      'Category I ILS Approach',
-     'CAT I precision approach: DH ≥200 ft, RVR ≥1800 ft.',               TRUE,   70),
-    ('CAT_II_ILS',     'Category II ILS Approach',
-     'CAT II precision approach: DH 100–200 ft, RVR ≥1200 ft.',            TRUE,   71),
-    ('CAT_III_ILS',    'Category III ILS Approach',
-     'CAT III precision approach: DH <100 ft or no DH; RVR <1200 ft.',     FALSE,  72),
-    ('ETOPS_120',      'ETOPS 120 min',
-     'Extended range twin-engine ops approved up to 120 min diversion.',    TRUE,   80),
-    ('ETOPS_180',      'ETOPS 180 min',
-     'Extended range twin-engine ops approved up to 180 min diversion.',    TRUE,   81),
-    ('RVSM',           'Reduced Vertical Separation Minimum (RVSM)',
-     'Approved for FL290–FL410 in RVSM airspace.',                          TRUE,   90),
-    ('STEEP_APPROACH', 'Steep Approach (>5.5°)',
-     'Approved for approach glidepath steeper than standard 3°, '
-     'e.g., London City Airport 5.5°.',                                     TRUE,  100),
-    ('AMPHIBIOUS_OPS', 'Amphibious / Water Operations',
-     'Approved for takeoff and landing on water surfaces.',                  TRUE,  110)
-ON CONFLICT (code) DO NOTHING;
 
 COMMIT;

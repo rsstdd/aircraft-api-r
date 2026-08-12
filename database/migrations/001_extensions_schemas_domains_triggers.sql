@@ -172,4 +172,14 @@ COMMENT
 ON FUNCTION aircraft_ref.normalize_lookup_code(text) IS
   'Converts free text (e.g., a source category string such as "Light Sport") to an upper-snake-case candidate for aircraft_ref.lookup_code (e.g., "LIGHT_SPORT"). Caller must ensure the result begins with a letter before use as a code value.';
 
+
+CREATE OR REPLACE FUNCTION aircraft_ref.text_array_to_string(input TEXT[], delimiter TEXT)
+RETURNS TEXT
+LANGUAGE sql IMMUTABLE PARALLEL SAFE AS $$
+SELECT pg_catalog.array_to_string(input, delimiter);
+$$;
+COMMENT ON FUNCTION aircraft_ref.text_array_to_string(TEXT[], TEXT) IS
+  'Immutable, text-array-specific wrapper used by generated search-vector columns. PostgreSQL marks the polymorphic array_to_string function STABLE even though text-array rendering is deterministic.';
+
+
 COMMIT;

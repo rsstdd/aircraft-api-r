@@ -33,7 +33,7 @@ BEGIN;
 -- =============================================================================
 
 -- -----------------------------------------------------------------------------
--- aircraft_ref.aircraft_roles (54 rows)
+-- aircraft_ref.aircraft_roles (57 rows)
 -- role_group is a non-FK informational grouping for display clustering.
 -- -----------------------------------------------------------------------------
 INSERT INTO aircraft_ref.aircraft_roles (code, label, role_group, sort_order)
@@ -246,7 +246,7 @@ VALUES ('AVGAS_100LL', '100LL Avgas',
 -- =============================================================================
 
 -- -----------------------------------------------------------------------------
--- aircraft_ref.performance_metric_types (25 rows)
+-- aircraft_ref.performance_metric_types (36 rows)
 -- -----------------------------------------------------------------------------
 INSERT INTO aircraft_ref.performance_metric_types
 (code, label, canonical_unit_code,
@@ -284,6 +284,52 @@ VALUES
     -- Fuel consumption
     ('FUEL_BURN_CRUISE', 'Fuel Burn — Best Cruise Setting', 'GPH', FALSE, FALSE, FALSE, TRUE,
      70) ON CONFLICT (code) DO NOTHING;
+-- =============================================================================
+-- aircraft_ref.performance_metric_types V-speed rows
+-- Kept in the canonical Phase 2 seed so later phases only define schema
+-- and do not introduce reference data. ON CONFLICT makes this idempotent.
+-- =============================================================================
+
+INSERT INTO aircraft_ref.performance_metric_types
+    (code, label, description, canonical_unit_code,
+     is_higher_better, is_speed, sort_order)
+VALUES
+    ('SPEED_VX',     'Best Angle of Climb (Vx)',
+     'Speed for maximum altitude gain per unit of distance.',
+     'KNOTS', NULL,  TRUE,  22),
+    ('SPEED_VY',     'Best Rate of Climb (Vy)',
+     'Speed for maximum altitude gain per unit of time.',
+     'KNOTS', NULL,  TRUE,  23),
+    ('SPEED_VA',     'Maneuvering Speed (Va)',
+     'Maximum speed at which full deflection of any one control is permitted. '
+     'Weight-dependent; store at MTOW and at light weight separately.',
+     'KNOTS', NULL,  TRUE,  24),
+    ('SPEED_VNO',    'Max Structural Cruising Speed (Vno)',
+     'Maximum speed in normal operations (green arc upper limit).',
+     'KNOTS', FALSE, TRUE,  25),
+    ('SPEED_VFE',    'Max Flaps Extended Speed (Vfe)',
+     'Maximum speed with flaps in specified extended position.',
+     'KNOTS', FALSE, TRUE,  26),
+    ('SPEED_VLE',    'Max Landing Gear Extended Speed (Vle)',
+     'Maximum speed with landing gear in extended position.',
+     'KNOTS', FALSE, TRUE,  27),
+    ('SPEED_VLO',    'Max Landing Gear Operating Speed (Vlo)',
+     'Maximum speed for extending or retracting landing gear.',
+     'KNOTS', FALSE, TRUE,  28),
+    ('SPEED_VMC',    'Min Control Speed, Multi-Engine (Vmc)',
+     'Minimum airspeed at which directional control can be maintained '
+     'with one engine inoperative at max thrust.',
+     'KNOTS', FALSE, TRUE,  29),
+    ('SPEED_VYSE',   'Best Rate of Climb, Single Engine (Vyse)',
+     'Speed for best rate of climb with one engine inoperative.',
+     'KNOTS', NULL,  TRUE,  32),
+    ('SPEED_VAPP',   'Reference Approach Speed (Vref / Vapp)',
+     'Stabilised approach speed (typically 1.3 × Vs0 or aircraft-specific Vref).',
+     'KNOTS', NULL,  TRUE,  35),
+    ('SPEED_ROTATE', 'Rotation Speed (Vr)',
+     'Speed at which the pilot initiates nose-up rotation during takeoff roll.',
+     'KNOTS', NULL,  TRUE,  36)
+ON CONFLICT (code) DO NOTHING;
 
 -- -----------------------------------------------------------------------------
 -- aircraft_ref.weight_metric_types (17 rows)
@@ -451,6 +497,43 @@ VALUES ('FAA_STUDENT', 'Student Pilot',
         'EASA Part-FCL private pilot licence.', 'EASA', 20) ON CONFLICT (code) DO NOTHING;
 
 -- =============================================================================
+-- SEED DATA — aircraft_ref.operating_approval_types (14 rows)
+-- =============================================================================
+
+INSERT INTO aircraft_ref.operating_approval_types
+    (code, label, description, is_positive, sort_order)
+VALUES
+    ('VFR_DAY',        'VFR Day',
+     'Visual Flight Rules, daytime operations (baseline).',                 TRUE,   10),
+    ('VFR_NIGHT',      'VFR Night',
+     'Visual Flight Rules, night operations.',                              TRUE,   20),
+    ('IFR',            'Instrument Flight Rules',
+     'IFR operations; aircraft and avionics must meet IFR minimums.',       TRUE,   30),
+    ('KNOWN_ICING_FIKI','Flight Into Known Icing (FIKI)',
+     'Approved for flight in known icing conditions per certification.',     TRUE,   40),
+    ('AEROBATIC',      'Aerobatic Operations',
+     'Approved for intentional aerobatic maneuvers.',                       TRUE,   50),
+    ('PRESSURIZED',    'Pressurized Cabin',
+     'Aircraft has a pressurized cabin approved for high-altitude ops.',     TRUE,   60),
+    ('CAT_I_ILS',      'Category I ILS Approach',
+     'CAT I precision approach: DH ≥200 ft, RVR ≥1800 ft.',               TRUE,   70),
+    ('CAT_II_ILS',     'Category II ILS Approach',
+     'CAT II precision approach: DH 100–200 ft, RVR ≥1200 ft.',            TRUE,   71),
+    ('CAT_III_ILS',    'Category III ILS Approach',
+     'CAT III precision approach: DH <100 ft or no DH; RVR <1200 ft.',     FALSE,  72),
+    ('ETOPS_120',      'ETOPS 120 min',
+     'Extended range twin-engine ops approved up to 120 min diversion.',    TRUE,   80),
+    ('ETOPS_180',      'ETOPS 180 min',
+     'Extended range twin-engine ops approved up to 180 min diversion.',    TRUE,   81),
+    ('RVSM',           'Reduced Vertical Separation Minimum (RVSM)',
+     'Approved for FL290–FL410 in RVSM airspace.',                          TRUE,   90),
+    ('STEEP_APPROACH', 'Steep Approach (>5.5°)',
+     'Approved for approach glidepath steeper than standard 3°, '
+     'e.g., London City Airport 5.5°.',                                     TRUE,  100),
+    ('AMPHIBIOUS_OPS', 'Amphibious / Water Operations',
+     'Approved for takeoff and landing on water surfaces.',                  TRUE,  110)
+ON CONFLICT (code) DO NOTHING;
+-- =============================================================================
 -- GROUP 6: MILITARY LOOKUPS
 -- stores_types.weapon_category_code FKs weapon_categories inserted above.
 -- =============================================================================
@@ -534,11 +617,11 @@ VALUES ('USD', 'US Dollar', '$', 2),
        ('CHF', 'Swiss Franc', 'CHF', 2) ON CONFLICT (code) DO NOTHING;
 
 -- -----------------------------------------------------------------------------
--- aircraft_ref.cost_item_types (18 rows)
--- is_fixed TRUE = annual fixed cost; FALSE = per flight-hour variable cost.
+-- aircraft_ref.cost_item_types (21 rows)
+-- is_fixed TRUE = annual fixed cost; is_aggregate TRUE = source-provided total.
 -- -----------------------------------------------------------------------------
 INSERT INTO aircraft_ref.cost_item_types
-    (code, label, description, is_fixed, is_fuel, sort_order)
+    (code, label, description, is_fixed, is_aggregate, sort_order)
 VALUES
     -- Fixed annual costs
     ('ANNUAL_INSPECTION', 'Annual Inspection',
@@ -561,7 +644,7 @@ VALUES
      'Loan interest or equivalent finance charges.', TRUE, FALSE, 18),
     -- Per-hour variable costs
     ('FUEL', 'Fuel',
-     'Direct fuel cost per flight hour.', FALSE, TRUE, 30),
+     'Direct fuel cost per flight hour.', FALSE, FALSE, 30),
     ('OIL', 'Oil',
      'Engine oil consumption per flight hour.', FALSE, FALSE, 31),
     ('HOURLY_MAINTENANCE', 'Scheduled Maintenance',
@@ -577,7 +660,15 @@ VALUES
     ('LANDING_FEES', 'Landing / Navigation Fees',
      'Airport landing fees averaged per flight hour.', FALSE, FALSE, 37),
     ('MISC_VARIABLE', 'Miscellaneous Variable',
-     'Catering, ground handling, parking, and sundry costs.', FALSE, FALSE, 38) ON CONFLICT (code) DO NOTHING;
+     'Catering, ground handling, parking, and sundry costs.', FALSE, FALSE, 38),
+    -- Source-provided aggregate totals; routed to cost_snapshot_totals.
+    ('TOTAL_COST_ANNUAL', 'Total Annual Cost',
+     'Source-provided annual ownership cost total.', FALSE, TRUE, 90),
+    ('TOTAL_FIXED_COST', 'Total Fixed Cost',
+     'Source-provided annual fixed-cost total.', FALSE, TRUE, 91),
+    ('TOTAL_VARIABLE_COST', 'Total Variable Cost',
+     'Source-provided hourly variable-cost total.', FALSE, TRUE, 92)
+    ON CONFLICT (code) DO NOTHING;
 
 -- -----------------------------------------------------------------------------
 -- aircraft_ref.aircraft_condition_grades (5 rows)
@@ -658,8 +749,8 @@ VALUES ('SCRAPED_WEB', 'Scraped Web Page',
         'FAA / EASA TCDS or equivalent official TC data sheet.', 30),
        ('POH_AFM', 'POH / AFM',
         'Pilot Operating Handbook or Airplane Flight Manual.', 40),
-       ('JANES', "Jane's All the World's Aircraft",
-        "IHS Markit / Jane's reference publication.", 50),
+       ('JANES', 'Jane''s All the World''s Aircraft',
+        'IHS Markit / Jane''s reference publication.', 50),
        ('IMPORTED_DATASET', 'Imported Dataset',
         'Third-party dataset batch import.', 60),
        ('MANUAL_ENTRY', 'Manual Entry',
@@ -676,7 +767,7 @@ INSERT INTO aircraft_ref.source_reliability_grades
 VALUES ('AUTHORITATIVE', 'Authoritative',
         'Type certificate, POH/AFM, or regulatory filing.', 5, 10),
        ('HIGH', 'High',
-        "Official manufacturer publication or Jane's-class reference.", 4, 20),
+        'Official manufacturer publication or Jane''s-class reference.', 4, 20),
        ('MEDIUM', 'Medium',
         'Reputable third-party publication or well-curated dataset.', 3, 30),
        ('LOW', 'Low',

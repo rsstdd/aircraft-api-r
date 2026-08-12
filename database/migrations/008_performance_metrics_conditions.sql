@@ -1,7 +1,7 @@
 -- =============================================================================
 -- File: database/migrations/008_performance_metrics_conditions.sql
 -- Phase 8 — aircraft_specs: performance metrics with test conditions,
--- runway limitations, and additional V-speed lookup types.
+-- runway limitations.
 --
 -- Design departure from Phases 6–7:
 --   performance_metrics does NOT carry a general UNIQUE constraint per
@@ -12,7 +12,7 @@
 --
 -- Spec coverage (requirement 3):
 --   max/cruise/stall/Mach speeds     → performance_metrics + metric types
---   V-speeds (Vx,Vy,Va,Vno,Vfe…)    → additional metric type rows (below)
+--   V-speeds (Vx,Vy,Va,Vno,Vfe…)    → metric types seeded in Phase 2
 --   climb metrics                    → performance_metrics
 --   ceilings, range, endurance       → performance_metrics
 --   runway distances                 → performance_metrics + runway_limitations
@@ -23,52 +23,6 @@
 
 BEGIN;
 
--- =============================================================================
--- Additional aircraft_ref.performance_metric_types rows (V-speeds)
--- Added here (Phase 8) rather than Phase 2 because they are first consumed
--- by this table. ON CONFLICT DO NOTHING makes the insert idempotent.
--- =============================================================================
-
-INSERT INTO aircraft_ref.performance_metric_types
-    (code, label, description, canonical_unit_code,
-     is_higher_better, is_speed, sort_order)
-VALUES
-    ('SPEED_VX',     'Best Angle of Climb (Vx)',
-     'Speed for maximum altitude gain per unit of distance.',
-     'KNOTS', NULL,  TRUE,  22),
-    ('SPEED_VY',     'Best Rate of Climb (Vy)',
-     'Speed for maximum altitude gain per unit of time.',
-     'KNOTS', NULL,  TRUE,  23),
-    ('SPEED_VA',     'Maneuvering Speed (Va)',
-     'Maximum speed at which full deflection of any one control is permitted. '
-     'Weight-dependent; store at MTOW and at light weight separately.',
-     'KNOTS', NULL,  TRUE,  24),
-    ('SPEED_VNO',    'Max Structural Cruising Speed (Vno)',
-     'Maximum speed in normal operations (green arc upper limit).',
-     'KNOTS', FALSE, TRUE,  25),
-    ('SPEED_VFE',    'Max Flaps Extended Speed (Vfe)',
-     'Maximum speed with flaps in specified extended position.',
-     'KNOTS', FALSE, TRUE,  26),
-    ('SPEED_VLE',    'Max Landing Gear Extended Speed (Vle)',
-     'Maximum speed with landing gear in extended position.',
-     'KNOTS', FALSE, TRUE,  27),
-    ('SPEED_VLO',    'Max Landing Gear Operating Speed (Vlo)',
-     'Maximum speed for extending or retracting landing gear.',
-     'KNOTS', FALSE, TRUE,  28),
-    ('SPEED_VMC',    'Min Control Speed, Multi-Engine (Vmc)',
-     'Minimum airspeed at which directional control can be maintained '
-     'with one engine inoperative at max thrust.',
-     'KNOTS', FALSE, TRUE,  29),
-    ('SPEED_VYSE',   'Best Rate of Climb, Single Engine (Vyse)',
-     'Speed for best rate of climb with one engine inoperative.',
-     'KNOTS', NULL,  TRUE,  32),
-    ('SPEED_VAPP',   'Reference Approach Speed (Vref / Vapp)',
-     'Stabilised approach speed (typically 1.3 × Vs0 or aircraft-specific Vref).',
-     'KNOTS', NULL,  TRUE,  35),
-    ('SPEED_ROTATE', 'Rotation Speed (Vr)',
-     'Speed at which the pilot initiates nose-up rotation during takeoff roll.',
-     'KNOTS', NULL,  TRUE,  36)
-ON CONFLICT (code) DO NOTHING;
 
 -- =============================================================================
 -- aircraft_specs.performance_metrics
