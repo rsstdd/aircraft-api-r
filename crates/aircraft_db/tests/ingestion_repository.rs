@@ -125,10 +125,43 @@ async fn repository_preserves_ingestion_semantics_and_attempt_history() -> TestR
         "172S",
         json!({
             "description": "second raw document",
-            "performance": {"best_cruise_speed": "125 KIAS"}
+            "performance": {
+                "best_cruise_speed": "125 KIAS",
+                "best_range_i": "640 NM"
+            },
+            "weights": {"gross_weight": "2550 LBS"}
         }),
     );
     import_record(&store, request('b', "1.1.0"), &second_record).await?;
+
+    let imported_weight_is_searchable: bool = query_scalar(
+        "SELECT gross_weight_lb = 2550
+         FROM aircraft_read.mv_variant_search
+         WHERE variant_name = '172S'",
+    )
+    .fetch_one(&pool)
+    .await?;
+    assert!(imported_weight_is_searchable);
+
+    query(
+        "UPDATE aircraft_specs.performance_metrics
+         SET is_canonical = TRUE
+         WHERE metric_type_code IN ('SPEED_CRUISE_BEST', 'RANGE_NORMAL')",
+    )
+    .execute(&pool)
+    .await?;
+    query("SELECT aircraft_read.refresh_search_matviews(FALSE)").execute(&pool).await?;
+
+    let curated_import_values_are_searchable: bool = query_scalar(
+        "SELECT cruise_speed_kias = 125
+                AND range_nm = 640
+                AND gross_weight_lb = 2550
+         FROM aircraft_read.mv_variant_search
+         WHERE variant_name = '172S'",
+    )
+    .fetch_one(&pool)
+    .await?;
+    assert!(curated_import_values_are_searchable);
 
     let document_evidence = query(
         "SELECT count(*) AS document_count,
@@ -242,6 +275,7 @@ async fn import_record(
         warning_count: outcome.warning_count,
         already_imported: false,
     };
+    work.refresh_read_models().await?;
     work.mark_succeeded(&report).await?;
     work.commit().await?;
     Ok(())

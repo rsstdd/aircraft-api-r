@@ -192,6 +192,94 @@ CREATE TABLE IF NOT EXISTS aircraft_ingest.staged_images (
     UNIQUE (staged_aircraft_id, array_position)
 );
 
+-- Phase 16 used metric names from an earlier draft of the lookup catalog.
+-- Rebuild the search matview with the canonical codes seeded by Phase 2 so
+-- refreshes expose imported measurements after their normal curation step.
+DO $migration$
+DECLARE
+    view_definition TEXT;
+BEGIN
+    SELECT pg_get_viewdef('aircraft_read.mv_variant_search'::regclass, TRUE)
+    INTO view_definition;
+    view_definition := regexp_replace(view_definition, ';[[:space:]]*$', '');
+
+    view_definition := replace(view_definition, '''CRUISE_SPEED''', '''SPEED_CRUISE_BEST''');
+    view_definition := replace(view_definition, '''RANGE''', '''RANGE_NORMAL''');
+    view_definition := replace(view_definition, '''SERVICE_CEILING''', '''CEILING_SERVICE''');
+    view_definition := replace(view_definition, '''RATE_OF_CLIMB''', '''CLIMB_RATE_SL''');
+    view_definition := replace(view_definition, '''STALL_SPEED_CLEAN''', '''SPEED_STALL_CLEAN''');
+    view_definition := replace(view_definition, '''TAKEOFF_DISTANCE_50FT''', '''DIST_TO_50FT''');
+    view_definition := replace(view_definition, '''LANDING_DISTANCE_50FT''', '''DIST_LDG_50FT''');
+    view_definition := replace(view_definition, '''WEIGHT_GROSS_MTOW''', '''WEIGHT_MTOW''');
+    view_definition := replace(view_definition, '''FUEL_CAPACITY''', '''FUEL_CAPACITY_USABLE''');
+
+    DROP MATERIALIZED VIEW aircraft_read.mv_variant_search;
+    EXECUTE
+        'CREATE MATERIALIZED VIEW aircraft_read.mv_variant_search AS '
+        || view_definition
+        || ' WITH NO DATA';
+END
+$migration$;
+
+CREATE UNIQUE INDEX uq_mvs_variant
+    ON aircraft_read.mv_variant_search (variant_id);
+CREATE INDEX idx_mvs_fts
+    ON aircraft_read.mv_variant_search USING gin (search_tsv);
+CREATE INDEX idx_mvs_family_trgm
+    ON aircraft_read.mv_variant_search USING gin (family_name gin_trgm_ops);
+CREATE INDEX idx_mvs_variant_name_trgm
+    ON aircraft_read.mv_variant_search USING gin (variant_name gin_trgm_ops);
+CREATE INDEX idx_mvs_propulsion
+    ON aircraft_read.mv_variant_search (propulsion_category_code);
+CREATE INDEX idx_mvs_status
+    ON aircraft_read.mv_variant_search (service_status_code);
+CREATE INDEX idx_mvs_country
+    ON aircraft_read.mv_variant_search (country_of_origin_code);
+CREATE INDEX idx_mvs_role
+    ON aircraft_read.mv_variant_search (primary_role_code);
+CREATE INDEX idx_mvs_gear
+    ON aircraft_read.mv_variant_search (landing_gear_type_code);
+CREATE INDEX idx_mvs_cruise
+    ON aircraft_read.mv_variant_search (cruise_speed_kias)
+    WHERE cruise_speed_kias IS NOT NULL;
+CREATE INDEX idx_mvs_range
+    ON aircraft_read.mv_variant_search (range_nm)
+    WHERE range_nm IS NOT NULL;
+CREATE INDEX idx_mvs_ceiling
+    ON aircraft_read.mv_variant_search (service_ceiling_ft)
+    WHERE service_ceiling_ft IS NOT NULL;
+CREATE INDEX idx_mvs_gross_weight
+    ON aircraft_read.mv_variant_search (gross_weight_lb)
+    WHERE gross_weight_lb IS NOT NULL;
+CREATE INDEX idx_mvs_price
+    ON aircraft_read.mv_variant_search (papi_price_usd)
+    WHERE papi_price_usd IS NOT NULL;
+CREATE INDEX idx_mvs_pax
+    ON aircraft_read.mv_variant_search (passenger_capacity)
+    WHERE passenger_capacity IS NOT NULL;
+CREATE INDEX idx_mvs_total_cost
+    ON aircraft_read.mv_variant_search (total_annual_cost_usd)
+    WHERE total_annual_cost_usd IS NOT NULL;
+CREATE INDEX idx_mvs_ifr
+    ON aircraft_read.mv_variant_search (variant_id)
+    WHERE is_ifr_approved;
+CREATE INDEX idx_mvs_fiki
+    ON aircraft_read.mv_variant_search (variant_id)
+    WHERE is_fiki_approved;
+CREATE INDEX idx_mvs_pressurized
+    ON aircraft_read.mv_variant_search (variant_id)
+    WHERE is_pressurized;
+CREATE INDEX idx_mvs_adsb
+    ON aircraft_read.mv_variant_search (variant_id)
+    WHERE has_ads_b_out;
+
+COMMENT ON MATERIALIZED VIEW aircraft_read.mv_variant_search IS
+    'Primary search and faceted filter surface. '
+    'Populated with NO DATA; call refresh_search_matviews() after ingestion. '
+    'Performance and weight projections use canonical Phase 2 metric codes. '
+    'ADS-B is sourced from aircraft_systems.variant_equipment; operating '
+    'approvals (IFR, FIKI, etc.) are sourced from aircraft_cert.';
+
 ALTER FUNCTION aircraft_read.refresh_search_matviews(BOOLEAN) SECURITY DEFINER;
 ALTER FUNCTION aircraft_read.refresh_search_matviews(BOOLEAN) SET search_path = pg_catalog;
 REVOKE ALL ON FUNCTION aircraft_read.refresh_search_matviews(BOOLEAN) FROM PUBLIC;
