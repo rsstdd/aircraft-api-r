@@ -22,6 +22,7 @@ async-trait.workspace = true
 # Asynchronous Database Infrastructure (Swapped out Diesel/R2D2)
 sqlx-core.workspace = true
 sqlx-postgres.workspace = true
+tokio.workspace = true
 
 # Storage Model Primitives & Serialization
 bigdecimal.workspace = true

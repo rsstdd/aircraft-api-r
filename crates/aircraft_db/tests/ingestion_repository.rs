@@ -1,4 +1,4 @@
-use std::error::Error;
+use std::{error::Error, time::Duration};
 
 use aircraft_app::ingestion::{
     ArtifactDescriptor, ImportReport, ImportRequest, ImportStart, ImportStatus, IngestionStore,
@@ -39,6 +39,42 @@ const SCHEMA_STEPS: &[&str] = &[
 ];
 
 type TestResult<T = ()> = Result<T, Box<dyn Error + Send + Sync>>;
+
+#[tokio::test]
+async fn concurrent_distinct_imports_complete_with_minimum_pool() -> TestResult {
+    let container = Postgres::default().with_tag("16-alpine").start().await?;
+    let host = container.get_host().await?;
+    let port = container.get_host_port_ipv4(5432).await?;
+    let database_url = format!("postgres://postgres:postgres@{host}:{port}/postgres");
+    let pool = PgPoolOptions::new()
+        .max_connections(2)
+        .acquire_timeout(Duration::from_secs(2))
+        .connect(&database_url)
+        .await?;
+    install_schema(&pool).await?;
+
+    let store = SqlxIngestionStore::from_pool(pool.clone());
+    let first_record =
+        normalize_record("CESSNA", "172S", json!({"description": "first concurrent artifact"}));
+    let second_record =
+        normalize_record("PIPER", "PA-28", json!({"description": "second concurrent artifact"}));
+
+    tokio::time::timeout(Duration::from_secs(30), async {
+        tokio::try_join!(
+            import_record(&store, request('d', "1.0.0"), &first_record),
+            import_record(&store, request('e', "1.0.0"), &second_record),
+        )
+    })
+    .await
+    .map_err(|_| std::io::Error::other("concurrent imports did not complete"))??;
+
+    let succeeded: i64 =
+        query_scalar("SELECT count(*) FROM aircraft_ingest.ingest_runs WHERE status = 'SUCCEEDED'")
+            .fetch_one(&pool)
+            .await?;
+    assert_eq!(succeeded, 2);
+    Ok(())
+}
 
 #[tokio::test]
 #[allow(clippy::too_many_lines)]

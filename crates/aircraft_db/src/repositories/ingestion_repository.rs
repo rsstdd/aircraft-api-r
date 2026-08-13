@@ -15,10 +15,12 @@ use sqlx_core::{
     transaction::Transaction,
 };
 use sqlx_postgres::{PgPool, PgPoolOptions, Postgres};
+use tokio::sync::{OwnedSemaphorePermit, Semaphore};
 
 #[derive(Clone, Debug)]
 pub struct SqlxIngestionStore {
     pool: PgPool,
+    import_permits: std::sync::Arc<Semaphore>,
 }
 
 impl SqlxIngestionStore {
@@ -50,12 +52,14 @@ impl SqlxIngestionStore {
             .connect(database_url)
             .await
             .map_err(database_error)?;
-        Ok(Self { pool })
+        Ok(Self::from_pool(pool))
     }
 
     #[must_use]
-    pub const fn from_pool(pool: PgPool) -> Self {
-        Self { pool }
+    pub fn from_pool(pool: PgPool) -> Self {
+        let max_connections = pool.options().get_max_connections();
+        let concurrent_imports = (max_connections / 2).max(1) as usize;
+        Self { pool, import_permits: std::sync::Arc::new(Semaphore::new(concurrent_imports)) }
     }
 
     async fn successful_report(
@@ -115,6 +119,13 @@ impl SqlxIngestionStore {
 impl IngestionStore for SqlxIngestionStore {
     #[allow(clippy::too_many_lines)]
     async fn start_import(&self, request: &ImportRequest) -> Result<ImportStart, PersistenceError> {
+        // Startup temporarily owns the long-running transaction connection and a
+        // second connection for the durable audit transaction. Bound admitted
+        // imports explicitly so pool acquisition cannot deadlock at any supported
+        // pool size.
+        let import_permit = self.import_permits.clone().acquire_owned().await.map_err(|_| {
+            PersistenceError::Invariant("import concurrency gate closed".to_owned())
+        })?;
         let hash_prefix = request.artifact.content_sha256.get(..16).ok_or_else(|| {
             PersistenceError::Invariant("content hash is shorter than 16 characters".to_owned())
         })?;
@@ -218,6 +229,7 @@ impl IngestionStore for SqlxIngestionStore {
             attempt_id,
             unit_of_work: Box::new(SqlxIngestionUnitOfWork {
                 transaction,
+                _import_permit: import_permit,
                 run_id,
                 attempt_id,
                 source: request.source.clone(),
@@ -402,6 +414,7 @@ impl IngestionStore for SqlxIngestionStore {
 
 struct SqlxIngestionUnitOfWork {
     transaction: Transaction<'static, Postgres>,
+    _import_permit: OwnedSemaphorePermit,
     run_id: i64,
     attempt_id: i64,
     source: aircraft_app::ingestion::SourceDescriptor,
