@@ -870,14 +870,30 @@ prevents UPDATE or DELETE. See the deferred decision in
 
 ---
 
-## 14. `aircraft_ingest` — Staging (Transient)
+## 14. `aircraft_ingest` ? Ingestion Audit and Staging
 
-**Purpose.** Transient ETL namespace. Three tables hold the intermediate state of the Phase 17 ingestion pipeline: `ingest_runs` (batch metadata), `staged_aircraft` (flattened JSON rows), and `staged_images` (image array rows). These tables are not part of the canonical data model and are safe to truncate after provenance data has been validated.
+**Purpose.** Migration 017 places Rust-ingestion audit and staging infrastructure
+under canonical migration control. `ingest_runs` stores the logical artifact
+identity (source, full SHA-256, parser name, and parser version);
+`ingest_run_attempts` stores durable retry and failure history. Before a retry
+is created, an earlier `IMPORTING` attempt for the same logical run is closed
+as `FAILED` with `PROCESS_TERMINATED`;
+`staged_aircraft` preserves each normalized record, complete parsed raw JSON,
+stable source-record key, and issue summary; and `staged_images` preserves
+image metadata without downloading image content.
 
-Key columns are documented inline in `901_seed_data_staging.sql` via
-`COMMENT ON COLUMN` statements. The staging DDL and promotion behavior are
-defined by `901_seed_data_staging.sql` and
-`902_server_side_json_ingestion.sql`.
+
+Migration 017 also adds `aircraft_prov.source_documents.ingest_run_id`. Rust
+ingestion creates one immutable source-document row per logical run and stable
+source-record key, so changed raw JSON or parser versions never mutate evidence
+referenced by earlier assertions. Legacy source documents retain a NULL
+`ingest_run_id` and their source-key deduplication behavior.
+These rows support idempotency, provenance inspection, and failure audits. They
+must not be treated as disposable transient data or truncated through routine
+application operations. Migration
+`017_rust_ingestion_adapter.sql` is authoritative. The scripts under
+`database/staging/901_*.sql` through `903_*.sql` remain a temporary parity
+reference for the legacy server-side loader.
 
 ---
 

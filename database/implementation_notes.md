@@ -34,19 +34,22 @@ MIGRATION_DATABASE_URL='postgresql://migration-role@db.example/aircraft' \
 `just db-seed` and `just db-prod-seed` reapply only the three canonical seed
 files. They do not execute transient ingestion or validation scripts.
 
-Phase 17 ingestion is explicit because it reads a server-side JSON file. Raw
-datasets are ignored by Git. With the local Compose mount, place the file under
-`database/staging/` and pass its in-container path:
+The Rust ingestion adapter is the primary operational path. It captures a local
+file or standard input, performs complete preflight validation, and imports
+through the restricted ingestion database role without server-side filesystem
+access:
 
 ```bash
-just db-ingest /workspace/database/staging/aircraft_seed.json
+just ingest-validate ./aircraft_seed.json
+just ingest-import ./aircraft_seed.json
+just ingest-status
 ```
 
-That recipe installs the staging tables, loads and promotes the JSON, refreshes
-both search materialized views, and runs the post-ingestion invariants.
-
-For production, use `just db-prod-ingest /server/path/file.json`; this is a
-database-server path because the loader uses `pg_read_file`.
+The `db-ingest` and `db-prod-ingest` recipes still execute the legacy
+server-side SQL loader and require `pg_read_file`. They remain only as parity
+references until the synthetic SQL-versus-Rust comparison is accepted; they are
+not suitable for Aiven or other managed databases without server filesystem
+access.
 
 The direct recipes prefer `MIGRATION_DATABASE_URL` and fall back to
 `DATABASE_URL`. They require a pre-provisioned database and a migration role
@@ -80,9 +83,9 @@ required Phase 2 seed boundary.
   database.
 - Do not rerun individual migration files: most contain one-time DDL and rely on
   the installer history table for repeatability.
-- The Phase 17 run label is derived from canonical JSON content. Re-ingesting the
-  same JSON reuses the same run and staging uniqueness constraints; changed
-  content creates a distinct run.
+- The Rust run identity is the source, full content SHA-256, parser name, and parser
+  version. Re-importing a successful identity returns its existing report; failed
+  attempts may retry under the same logical run.
 - Every entrypoint uses `ON_ERROR_STOP=1`; a SQL error cannot be reported as a
   successful bootstrap.
 
@@ -485,8 +488,8 @@ ALTER TABLE aircraft_prov.source_assertions SET (
 |---|---|---|
 | Local legacy reconciliation | database/reconcile_local_legacy.sql | Verify and adopt complete pre-ledger Phase 1/2 local schemas; reject partial states |
 | Installer | database/install.sql | Dependency-aware migration and canonical-seed orchestration |
-| Migrations | database/migrations/001_*.sql through 016_*.sql | Canonical ordered schema history |
+| Migrations | database/migrations/001_*.sql through 017_*.sql | Canonical ordered schema history |
 | Canonical seeds | database/seeds/001_*.sql through 003_*.sql | Units, lookup data, and mission profiles |
 | Ingestion | database/staging/901_*.sql through 903_*.sql | Staging DDL, JSON promotion, and post-ingestion invariants |
-| Verification | database/validation/000_migration_history_validation.sql and remaining database/validation/*.sql | Exact 001-016 ledger assertion plus phase-specific structural and behavioral checks |
+| Verification | database/validation/000_migration_history_validation.sql and remaining database/validation/*.sql | Exact 001-017 ledger assertion plus phase-specific structural and behavioral checks |
 | Documentation | database/README.md, data_dictionary.md, implementation_notes.md | Lifecycle, schema meaning, and operational guidance |

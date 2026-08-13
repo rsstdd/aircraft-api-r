@@ -14,7 +14,7 @@ This directory owns the SQL lifecycle for the Aircraft Management Engine.
   Phase 1/2 schemas created before migration tracking existed.
 - `install.sql`: the canonical dependency-aware `psql` installer.
 - `validation/000_migration_history_validation.sql`: asserts that migration
-  history contains exactly versions `001` through `016`.
+  history contains exactly versions `001` through `017`.
 - `data_dictionary.md`: detailed reference for principal tables and read models;
   migrations remain authoritative for the complete schema.
 - `implementation_notes.md`: dependency rules, curator workflows, known
@@ -50,46 +50,18 @@ container. `just db-rebuild` performs that destructive reset and then installs,
 seeds, and validates the database. Do not use either command when local data
 must be preserved.
 
-For source JSON ingestion, place the private dataset under
-`database/staging/` (JSON files there are ignored by Git) and run:
+Use the Rust ingestion adapter for source JSON:
 
 ```bash
-just db-ingest /workspace/database/staging/aircraft_seed.json
+just ingest-validate ./aircraft_seed.json
+just ingest-import ./aircraft_seed.json
+just ingest-status
 ```
 
-This loads staging, promotes records, refreshes materialized views, and executes
-post-ingestion invariants. It fails if the server-side JSON path is unreadable.
-
-
-## Production workflow
-
-Production commands use the host `psql` client and never invoke Compose:
-
-```bash
-export MIGRATION_DATABASE_URL='postgresql://migration-role@db.example/aircraft'
-just db-prod-bootstrap
-```
-
-`MIGRATION_DATABASE_URL` is preferred so the application can retain a
-least-privilege `DATABASE_URL`; the latter is used as a fallback. The target
-database and migration role must already be provisioned by the platform. The
-role needs permission to create the schemas, extensions, tables, functions,
-views, indexes, and triggers defined by the migrations.
-
-`db-prod-bootstrap` first prints the target database and role, then installs
-all migrations and canonical seeds and runs the complete validation suite.
-Individual operations are available as `db-prod-ready`, `db-prod-migrate`,
-`db-prod-seed`, and `db-prod-validate`. The installer serializes concurrent
-runs with a database advisory lock.
-
-Production JSON ingestion is intentionally separate because `pg_read_file`
-reads from the database server's filesystem:
-
-```bash
-just db-prod-ingest /srv/aircraft-data/aircraft_seed.json
-```
-
-The file must exist on the database server and be readable by PostgreSQL.
+It reads a local file or standard input, preserves raw records and audit history,
+and does not require database-server filesystem access. The `db-ingest` and
+`db-prod-ingest` recipes remain temporarily as legacy parity references. They
+use `pg_read_file` and are not the production path for Aiven.
 
 Diesel may generate Rust schema types from PostgreSQL, but SQL files in this
 directory remain the canonical schema history.

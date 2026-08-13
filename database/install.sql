@@ -196,5 +196,17 @@ INSERT INTO public.aircraft_schema_migrations(version) VALUES ('016');
 \echo 'Skipping applied migration 016'
 \endif
 
+SELECT NOT EXISTS (
+    SELECT 1 FROM public.aircraft_schema_migrations WHERE version = '017'
+) AS apply_migration \gset
+\if :apply_migration
+\echo 'Applying migration 017: 017_rust_ingestion_adapter.sql'
+\ir migrations/017_rust_ingestion_adapter.sql
+INSERT INTO public.aircraft_schema_migrations(version) VALUES ('017');
+\else
+\echo 'Skipping applied migration 017'
+\endif
+
+
 \echo 'Database schema and canonical seed installation complete.'
 SELECT pg_advisory_unlock(hashtextextended(current_database() || ':aircraft-install', 0));
