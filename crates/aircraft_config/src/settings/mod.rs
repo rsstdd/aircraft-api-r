@@ -1,3 +1,3 @@
 pub mod structs;
 
-pub use structs::{HttpSettings, Settings};
+pub use structs::{HttpSettings, IngestArtifactSettings, IngestSettings, Settings};

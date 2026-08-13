@@ -24,6 +24,18 @@ build:
 check:
     cargo check --workspace --all-targets
 
+ingest-validate input:
+    cargo run --package aircraft-ingest -- validate --source planephd --input {{ quote(input) }}
+
+ingest-import input:
+    cargo run --package aircraft-ingest -- import --source planephd --input {{ quote(input) }}
+
+ingest-status *args:
+    cargo run --package aircraft-ingest -- status {{ args }}
+
+ingest-status-json *args:
+    cargo run --package aircraft-ingest -- status --format json {{ args }}
+
 test:
     cargo nextest run --workspace
 

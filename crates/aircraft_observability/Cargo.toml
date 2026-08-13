@@ -17,8 +17,3 @@ thiserror.workspace = true
 # Tracing Architecture & JSON Formatters
 tracing.workspace = true
 tracing-subscriber = { workspace = true, features = ["env-filter", "json"] }
-
-# Distributed Telemetry Tracing Links
-tracing-opentelemetry.workspace = true
-opentelemetry.workspace = true
-opentelemetry-otlp.workspace = true

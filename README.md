@@ -10,7 +10,8 @@ root/
 ├── Justfile                    # Human-facing local automation task runner
 ├── .sqlx/                      # Offline database query schema snapshots
 ├── apps/
-│   └── server/                 # Composition root & application entry-point
+│   ├── ingest/                 # PlanePHD ingestion CLI composition root
+│   └── server/                 # HTTP composition root & application entry-point
 ├── crates/
 │   ├── aircraft_api/           # HTTP Transport Layer (Axum & DTOs)
 │   ├── aircraft_app/           # Use-case coordination & driving application services
@@ -37,7 +38,7 @@ To guarantee architectural safety, structural data boundaries are strictly mappe
 ## Core Prerequisites
 
 * **Rust Toolchain:** Version `1.85+` utilizing the **Rust 2024 Edition** compiler profiles.
-* **Docker Daemon:** Required locally to support containerized database testing passes via `testcontainers`.
+* **Docker Daemon:** Required for the disposable local PostgreSQL workflows.
 * **Just Utility:** Command runner for workspace workflow mechanics (`cargo binstall just`).
 
 ---
@@ -96,7 +97,40 @@ just db-prod-bootstrap
 
 This uses the host `psql` client, installs all migrations and canonical
 seeds, and runs database validation. See `database/README.md` for individual
-commands, required privileges, and server-side JSON ingestion.
+commands, required privileges, and database administration guidance.
+
+## Aircraft Data Ingestion
+
+The candidate ingestion path is the Rust `aircraft-ingest` CLI. It is not yet
+approved as the production path; the deployment gates in the architecture
+document must pass first. PlanePHD JSON is currently the supported source
+format. Input may be a local file or `-` for standard input.
+
+Validate an artifact without connecting to PostgreSQL:
+
+```bash
+just ingest-validate tests/fixtures/planephd_minimal.json
+```
+
+Import it atomically using the dedicated ingestion database user:
+
+```bash
+export APP__INGEST__DATABASE_URL='postgresql://...?...sslmode=verify-full'
+just ingest-import tests/fixtures/planephd_minimal.json
+just ingest-status --limit 20
+```
+
+The import preserves raw records, provenance, assertions, and curation flags.
+A hard validation or persistence failure rolls back all aircraft-data changes;
+reimporting the same source/hash/parser identity is idempotent. Database
+credentials are supplied only through configuration, never CLI arguments.
+
+Before importing into Aiven, apply the canonical migrations with the migration
+owner and have an administrator apply
+`database/roles/ingest_grants.sql` to a dedicated ingestion role. The complete
+architecture, command surface, configuration, transaction semantics, Aiven role
+boundary, and retirement criteria for the legacy SQL loader are documented in
+[`docs/architecture/rust_ingestion_adapter.md`](docs/architecture/rust_ingestion_adapter.md).
 
 ---
 
@@ -221,30 +255,22 @@ Small, pure utility tools are declared selectively when their usage is justified
 
 # Persistence Subsystem: `aircraft_db`
 
-The infrastructure data-access package. This library bridges domain layer requests to physical storage systems using asynchronous, compile-time verified SQL execution pipelines.
+The infrastructure data-access package. It implements application ports with
+parameterized SQLx queries and keeps database rows and transactions out of the
+domain and application layers.
 
 ## Implementation Blueprint
 
-* **Compile-Time Query Guarantees:** Database interactions execute through `sqlx` query macros, verifying SQL formatting patterns against target engine definitions during compilation blocks.
-* **Separation of Models:** Database rows are represented via local target models, keeping table layout tracking decoupled from domain transformations.
+* **Explicit transaction ownership:** ingestion staging, promotion, provenance,
+  curation, run completion, and read-model refresh commit or roll back together.
+* **Parameterized SQL:** runtime-checked SQLx queries bind all source-controlled
+  values; source JSON and names are never interpolated into SQL.
+* **Separation of models:** database layout remains inside `aircraft_db` and does
+  not leak into application inputs or domain values.
 
-## Integration Testing Profiles
-
-Integration tracking hooks up to live engine lifecycles using `testcontainers`:
-
-```rust
-#[tokio::test]
-async fn verify_asset_persistence_lifecycle() {
-    let container = Postgres::default().start().await;
-    // Executes isolated validation tasks against clean database states
-}
-```
-
-To maintain continuous integration performance and permit offline verification, query meta-footprints must be snapshotted to disk prior to deployment pushes:
-
-```bash
-cargo sqlx prepare --workspace
-```
+Migration behavior is verified against disposable PostgreSQL instances using the
+canonical installer and SQL validation scripts. This ingestion slice does not use
+SQLx compile-time query macros, so it does not require `.sqlx` metadata.
 
 ---
 
@@ -252,19 +278,32 @@ cargo sqlx prepare --workspace
 
 # Processing & Integration Engine: `crates/aircraft_ingest`
 
-The asynchronous background processing engine. This crate handles high-volume ingestion flows, unpacks incoming payload streams, validates formats, and coordinates structural normalization passes.
+This crate is the source boundary for PlanePHD JSON. It securely captures file or
+standard-input bytes, computes artifact identity, parses the two-level source
+shape, normalizes supported values, and emits source-independent prepared
+records. It performs no SQL.
 
 ## Architectural Flow Matrix
 
 ```text
-[External Data Pipeline] -> [Raw Schema Parsing] -> [Structural Invariant Processing] -> [Persistence Pipeline]
+[file or stdin] -> [immutable artifact] -> [preflight] -> [prepared record stream]
 ```
 
 ## System Constraints
 
-* **Memory Efficiency:** Processing streams manage large payloads incrementally using memory-bounded iteration blocks.
-* **Idempotence Protections:** Processing loops assert operational run states at the storage perimeter to prevent redundant evaluations of matching datasets.
-* **Fault Tolerance:** Processing tasks isolate structural format failures, allowing valid sub-records to process cleanly while logging parsing faults for audit inspection.
+* **Two-pass validation:** the complete artifact passes structural and domain
+  preflight before the database import transaction begins.
+* **Atomic hard failures:** malformed structure or invariant errors reject the
+  entire batch; valid siblings are not partially committed.
+* **Explicit curation:** optional ambiguous values are preserved in raw JSON and
+  emitted as stable warnings that become curation flags during import.
+* **Idempotence:** exact input bytes, source identity, parser name, and parser
+  version form the logical import identity.
+* **Bounded record flow:** normalized records stream through a bounded channel;
+  the full normalized dataset is never retained in memory.
+
+See [`docs/architecture/rust_ingestion_adapter.md`](docs/architecture/rust_ingestion_adapter.md)
+for the complete contract and Aiven deployment boundary.
 
 ---
 

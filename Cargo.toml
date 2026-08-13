@@ -1,25 +1,25 @@
 [workspace]
 resolver = "3"
 members = [
+    "apps/ingest",
 #    "apps/server",
 #    "crates/aircraft_api",
-#    "crates/aircraft_app",
-#    "crates/aircraft_config",
-#    "crates/aircraft_db",
-#    "crates/aircraft_domain",
-#    "crates/aircraft_ingest",
-#    "crates/aircraft_observability",
+    "crates/aircraft_app",
+    "crates/aircraft_config",
+    "crates/aircraft_db",
+    "crates/aircraft_domain",
+    "crates/aircraft_ingest",
+    "crates/aircraft_observability",
     "xtask",
 ]
 default-members = [
-#    "apps/server",
-#    "crates/aircraft_api",
-#    "crates/aircraft_app",
-#    "crates/aircraft_config",
-#    "crates/aircraft_db",
-#    "crates/aircraft_domain",
-#    "crates/aircraft_ingest",
-#    "crates/aircraft_observability",
+    "apps/ingest",
+    "crates/aircraft_app",
+    "crates/aircraft_config",
+    "crates/aircraft_db",
+    "crates/aircraft_domain",
+    "crates/aircraft_ingest",
+    "crates/aircraft_observability",
 ]
 
 [workspace.package]
@@ -45,6 +45,8 @@ thiserror = "2.0"
 
 # Async runtime & HTTP networking infrastructure
 tokio = { version = "1.40", features = ["full"] }
+async-trait = "0.1"
+futures = "0.3"
 axum = "0.8"
 tower = "0.5"
 tower-http = { version = "0.7", features = ["cors", "trace", "timeout", "limit", "request-id"] }
@@ -55,11 +57,12 @@ serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"
 
 # Configuration layers
-config = "0.15"
+config = { version = "0.15", default-features = false, features = ["json5"] }
 dotenvy = "0.15"
 
 # Database Engine (SQLx Async Blueprint Replacement)
-sqlx = { version = "0.9.0", features = ["postgres", "runtime-tokio", "tls-rustls", "chrono", "uuid", "bigdecimal", "macros"] }
+sqlx-core = { version = "=0.8.6", features = ["_rt-tokio", "_tls-rustls-ring-webpki", "chrono", "uuid", "bigdecimal", "json"] }
+sqlx-postgres = { version = "=0.8.6", features = ["chrono", "uuid", "bigdecimal", "json"] }
 
 # Secret Hygiene & Memory Defenses
 secrecy = { version = "0.10", features = ["serde"] }
@@ -73,18 +76,22 @@ utoipa-swagger-ui = { version = "9.0.2", features = ["axum"] }
 chrono = { version = "0.4", features = ["serde"] }
 bigdecimal = { version = "0.4", features = ["serde"] }
 uuid = { version = "1.10", features = ["serde", "v4"] }
+testcontainers-modules = { version = "0.13", features = ["postgres"] }
 
 # Structured Diagnostic Observability
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter", "fmt", "json"] }
 tracing-error = "0.2"
 
+sha2 = "0.10"
+url = "2.5"
+tempfile = "3.20"
+clap = { version = "4.5", features = ["derive"] }
 # Perimeter Invariant Validation
 validator = { version = "0.20", features = ["derive"] }
 
 # Testing Infrastructure & Verification Engines
 pretty_assertions = "1.4"
-testcontainers = "0.27.3"
 insta = { version = "1.40", features = ["json"] }
 proptest = "1.5"
 serial_test = "3.5"
