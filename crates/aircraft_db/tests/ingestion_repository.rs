@@ -1,4 +1,8 @@
-use std::{error::Error, time::Duration};
+use std::{
+    error::Error,
+    process::{Command, Stdio},
+    time::Duration,
+};
 
 use aircraft_app::ingestion::{
     ArtifactDescriptor, ImportReport, ImportRequest, ImportStart, ImportStatus, IngestionStore,
@@ -10,10 +14,6 @@ use chrono::Utc;
 use serde_json::json;
 use sqlx_core::{query::query, query_scalar::query_scalar, raw_sql::raw_sql, row::Row};
 use sqlx_postgres::{PgPool, PgPoolOptions};
-use testcontainers_modules::{
-    postgres::Postgres,
-    testcontainers::{ImageExt, runners::AsyncRunner},
-};
 
 const SCHEMA_STEPS: &[&str] = &[
     include_str!("../../../database/migrations/001_extensions_schemas_domains_triggers.sql"),
@@ -42,15 +42,7 @@ type TestResult<T = ()> = Result<T, Box<dyn Error + Send + Sync>>;
 
 #[tokio::test]
 async fn concurrent_distinct_imports_complete_with_minimum_pool() -> TestResult {
-    let container = Postgres::default().with_tag("16-alpine").start().await?;
-    let host = container.get_host().await?;
-    let port = container.get_host_port_ipv4(5432).await?;
-    let database_url = format!("postgres://postgres:postgres@{host}:{port}/postgres");
-    let pool = PgPoolOptions::new()
-        .max_connections(2)
-        .acquire_timeout(Duration::from_secs(2))
-        .connect(&database_url)
-        .await?;
+    let (_container, pool) = start_postgres(2, Duration::from_secs(2)).await?;
     install_schema(&pool).await?;
 
     let store = SqlxIngestionStore::from_pool(pool.clone());
@@ -79,11 +71,7 @@ async fn concurrent_distinct_imports_complete_with_minimum_pool() -> TestResult 
 #[tokio::test]
 #[allow(clippy::too_many_lines)]
 async fn repository_preserves_ingestion_semantics_and_attempt_history() -> TestResult {
-    let container = Postgres::default().with_tag("16-alpine").start().await?;
-    let host = container.get_host().await?;
-    let port = container.get_host_port_ipv4(5432).await?;
-    let database_url = format!("postgres://postgres:postgres@{host}:{port}/postgres");
-    let pool = PgPoolOptions::new().max_connections(5).connect(&database_url).await?;
+    let (_container, pool) = start_postgres(5, Duration::from_secs(30)).await?;
     install_schema(&pool).await?;
 
     let store = SqlxIngestionStore::from_pool(pool.clone());
@@ -251,6 +239,82 @@ async fn repository_preserves_ingestion_semantics_and_attempt_history() -> TestR
         .mark_failed(run_id, current_attempt_id, "TEST_CLEANUP", "integration test cleanup")
         .await?;
     Ok(())
+}
+
+struct DockerPostgres {
+    container_id: String,
+}
+
+impl Drop for DockerPostgres {
+    fn drop(&mut self) {
+        let _ = Command::new("docker")
+            .args(["rm", "--force", &self.container_id])
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .status();
+    }
+}
+
+async fn start_postgres(
+    max_connections: u32,
+    acquire_timeout: Duration,
+) -> TestResult<(DockerPostgres, PgPool)> {
+    let output = Command::new("docker")
+        .args([
+            "run",
+            "--detach",
+            "--rm",
+            "--publish",
+            "127.0.0.1::5432",
+            "--env",
+            "POSTGRES_PASSWORD=postgres",
+            "postgres:16-alpine",
+        ])
+        .output()?;
+    if !output.status.success() {
+        return Err(std::io::Error::other(format!(
+            "docker run failed: {}",
+            String::from_utf8_lossy(&output.stderr).trim()
+        ))
+        .into());
+    }
+
+    let container =
+        DockerPostgres { container_id: String::from_utf8(output.stdout)?.trim().to_owned() };
+    let port_output =
+        Command::new("docker").args(["port", &container.container_id, "5432/tcp"]).output()?;
+    if !port_output.status.success() {
+        return Err(std::io::Error::other(format!(
+            "docker port failed: {}",
+            String::from_utf8_lossy(&port_output.stderr).trim()
+        ))
+        .into());
+    }
+    let port = String::from_utf8(port_output.stdout)?
+        .trim()
+        .rsplit_once(':')
+        .map(|(_, port)| port)
+        .ok_or_else(|| std::io::Error::other("docker returned an invalid PostgreSQL port"))?
+        .parse::<u16>()?;
+    let database_url = format!("postgres://postgres:postgres@127.0.0.1:{port}/postgres");
+
+    let pool = tokio::time::timeout(Duration::from_secs(30), async {
+        loop {
+            match PgPoolOptions::new()
+                .max_connections(max_connections)
+                .acquire_timeout(acquire_timeout)
+                .connect(&database_url)
+                .await
+            {
+                Ok(pool) => break pool,
+                Err(_) => tokio::time::sleep(Duration::from_millis(250)).await,
+            }
+        }
+    })
+    .await
+    .map_err(|_| std::io::Error::other("PostgreSQL container did not become ready"))?;
+
+    Ok((container, pool))
 }
 
 async fn install_schema(pool: &PgPool) -> TestResult {

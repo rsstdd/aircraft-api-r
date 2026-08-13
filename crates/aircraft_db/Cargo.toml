@@ -35,5 +35,4 @@ uuid.workspace = true
 # Required for running containerized repository integration tests via Just/Xtask
 tokio = { workspace = true, features = ["macros", "rt-multi-thread"] }
 aircraft_ingest.workspace = true
-testcontainers-modules.workspace = true
 pretty_assertions.workspace = true

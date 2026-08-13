@@ -76,12 +76,14 @@ utoipa-swagger-ui = { version = "9.0.2", features = ["axum"] }
 chrono = { version = "0.4", features = ["serde"] }
 bigdecimal = { version = "0.4", features = ["serde"] }
 uuid = { version = "1.10", features = ["serde", "v4"] }
-testcontainers-modules = { version = "0.13", features = ["postgres"] }
 
 # Structured Diagnostic Observability
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter", "fmt", "json"] }
 tracing-error = "0.2"
+tracing-opentelemetry = "0.33"
+opentelemetry = "0.32"
+opentelemetry-otlp = "0.32"
 
 sha2 = "0.10"
 url = "2.5"
