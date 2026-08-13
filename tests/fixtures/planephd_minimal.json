@@ -1,0 +1,49 @@
+{
+  "CESSNA": {
+    "172S Skyhawk SP": {
+      "source_link": "/wizard/details/172s",
+      "page_url": "https://planephd.com/wizard/details/172s",
+      "title": "2006 CESSNA 172S Skyhawk SP",
+      "description": "This aircraft seats up to 3 passengers plus 1 pilot.",
+      "papi_price_estimate": "$285,000",
+      "for_sale_count": "12",
+      "start_year": 1998,
+      "end_year": null,
+      "in_production": true,
+      "performance": {
+        "best_cruise_speed": "124 KIAS",
+        "best_range_i": "640 NM",
+        "ceiling": "14000 FT",
+        "fuel_burn_75": "8.5 GPH",
+        "rate_of_climb": "730 FPM",
+        "horsepower": "1 x 180 HP"
+      },
+      "weights": {
+        "empty_weight": "1680 LBS",
+        "gross_weight": "2550 LBS",
+        "fuel_capacity": "56 GAL"
+      },
+      "engine": {
+        "manufacturer": "Lycoming",
+        "model": "IO-360-L2A",
+        "horsepower": "180 HP",
+        "overhaul_ht": "2000 HRS",
+        "years_before_overhaul": "12"
+      },
+      "ownership_costs": {
+        "annual_inspection_cost": "$2,200",
+        "insurance_cost": "$1,800",
+        "fuel_cost_per_hour": "$45.90",
+        "total_fixed_cost_annual": "$12,000"
+      },
+      "images": [
+        {
+          "href": "/static/acftref/172s.jpg",
+          "title": "Cessna 172S",
+          "holder": "Synthetic fixture",
+          "dimensions": "420x280"
+        }
+      ]
+    }
+  }
+}
