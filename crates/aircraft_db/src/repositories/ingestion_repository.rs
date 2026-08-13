@@ -707,8 +707,7 @@ impl SqlxIngestionUnitOfWork {
                         is_canonical,confidence)
                      SELECT $1,$2,$3::numeric,$4,
                         aircraft_ref.to_canonical($3::numeric,$4),
-                        NOT EXISTS(SELECT 1 FROM aircraft_specs.performance_metrics
-                            WHERE variant_id=$1 AND metric_type_code=$2 AND is_canonical),0.20
+                        FALSE,0.20
                      ON CONFLICT DO NOTHING",
                 )
                 .bind(variant_id)
@@ -730,9 +729,6 @@ impl SqlxIngestionUnitOfWork {
                 &metric.raw_value,
                 metric.numeric_value.as_deref(),
                 metric.raw_unit.as_deref(),
-                metric.metric_code.is_some()
-                    && metric.numeric_value.is_some()
-                    && metric.unit_code.is_some(),
             )
             .await?;
         }
@@ -761,9 +757,6 @@ impl SqlxIngestionUnitOfWork {
                 &metric.raw_value,
                 metric.numeric_value.as_deref(),
                 metric.raw_unit.as_deref(),
-                metric.metric_code.is_some()
-                    && metric.numeric_value.is_some()
-                    && metric.unit_code.is_some(),
             )
             .await?;
         }
@@ -931,7 +924,6 @@ impl SqlxIngestionUnitOfWork {
                 &item.raw_value,
                 item.numeric_value.as_deref(),
                 None,
-                item.mapped_code.is_some() && item.is_numeric && item.numeric_value.is_some(),
             )
             .await?;
         }
@@ -989,7 +981,6 @@ impl SqlxIngestionUnitOfWork {
             raw,
             numeric,
             raw_unit,
-            true,
         )
         .await
     }
@@ -1004,7 +995,6 @@ impl SqlxIngestionUnitOfWork {
         raw: &str,
         numeric: Option<&str>,
         raw_unit: Option<&str>,
-        eligible_for_acceptance: bool,
     ) -> Result<(), PersistenceError> {
         query(
             "INSERT INTO aircraft_prov.source_assertions(
@@ -1012,13 +1002,7 @@ impl SqlxIngestionUnitOfWork {
                 raw_value,raw_unit,asserted_value,asserted_numeric,
                 status_code,is_accepted,confidence)
              SELECT $1,$2,$3,$4,$5,$6,$5,$7::numeric,
-                CASE WHEN $8 AND NOT EXISTS(SELECT 1 FROM aircraft_prov.source_assertions
-                    WHERE entity_type_code=$2 AND entity_id=$3
-                      AND field_name=$4 AND is_accepted)
-                     THEN 'ACCEPTED' ELSE 'PENDING' END,
-                $8 AND NOT EXISTS(SELECT 1 FROM aircraft_prov.source_assertions
-                    WHERE entity_type_code=$2 AND entity_id=$3
-                      AND field_name=$4 AND is_accepted),0.20
+                'PENDING',FALSE,0.20
              ON CONFLICT DO NOTHING",
         )
         .bind(document_id)
@@ -1028,7 +1012,6 @@ impl SqlxIngestionUnitOfWork {
         .bind(raw)
         .bind(raw_unit)
         .bind(numeric)
-        .bind(eligible_for_acceptance)
         .execute(&mut *self.transaction)
         .await
         .map_err(database_error)?;

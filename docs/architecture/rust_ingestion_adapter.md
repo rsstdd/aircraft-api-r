@@ -86,10 +86,9 @@ fields map to canonical codes. Unknown measurement fields, units, cost keys,
 invalid image dimensions, and unsupported record fields produce stable warning
 codes. They are retained in staging and become open curation flags.
 
-PlanePHD source confidence is 0.20 and its reliability is `UNVERIFIED`. The first
-assertion for an entity field can be accepted; later assertions remain pending,
-preserving the single-accepted-assertion database invariant. Images are metadata
-only; no binary download occurs.
+PlanePHD source confidence is 0.20 and its reliability is `UNVERIFIED`.
+Measurements are non-canonical and assertions remain pending until curation
+explicitly accepts them. Images are metadata only; no binary download occurs.
 
 Logical run identity is:
 

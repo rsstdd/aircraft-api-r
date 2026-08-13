@@ -56,7 +56,10 @@ async fn repository_preserves_ingestion_semantics_and_attempt_history() -> TestR
         "172S",
         json!({
             "description": "first raw document",
-            "performance": {"best_cruise_speed": "124 FURLONGS"},
+            "performance": {
+                "best_cruise_speed": "124 FURLONGS",
+                "ceiling": "14000 FT"
+            },
             "ownership_costs": {
                 "annual_inspection_cost": "$2,200",
                 "fuel_cost_per_hour": "$45.90"
@@ -83,6 +86,21 @@ async fn repository_preserves_ingestion_semantics_and_attempt_history() -> TestR
     .fetch_one(&pool)
     .await?;
     assert!(unsafe_assertion_is_pending);
+
+    let planephd_known_unit_value_is_pending: bool = query_scalar(
+        "SELECT NOT metric.is_canonical
+                AND assertion.status_code = 'PENDING'
+                AND NOT assertion.is_accepted
+         FROM aircraft_specs.performance_metrics AS metric
+         JOIN aircraft_prov.source_assertions AS assertion
+           ON assertion.entity_type_code = 'AIRCRAFT_VARIANT'
+          AND assertion.entity_id = metric.variant_id
+          AND assertion.field_name = 'performance.CEILING_SERVICE'
+         WHERE metric.metric_type_code = 'CEILING_SERVICE'",
+    )
+    .fetch_one(&pool)
+    .await?;
+    assert!(planephd_known_unit_value_is_pending);
 
     let fuel_is_hourly: bool = query_scalar(
         "SELECT amount_annual IS NULL AND amount_per_hour = 45.90
