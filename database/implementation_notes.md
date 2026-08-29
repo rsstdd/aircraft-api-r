@@ -45,11 +45,9 @@ just ingest-import ./aircraft_seed.json
 just ingest-status
 ```
 
-The `db-ingest` and `db-prod-ingest` recipes still execute the legacy
-server-side SQL loader and require `pg_read_file`. They remain only as parity
-references until the synthetic SQL-versus-Rust comparison is accepted; they are
-not suitable for Aiven or other managed databases without server filesystem
-access.
+The legacy server-side SQL loader (`database/staging/901`-`903`) has been
+retired. Ingestion runs through the `aircraft-ingest` CLI, and
+`cargo xtask snapshots` guards its output against committed golden snapshots.
 
 The direct recipes prefer `MIGRATION_DATABASE_URL` and fall back to
 `DATABASE_URL`. They require a pre-provisioned database and a migration role
@@ -95,11 +93,11 @@ required Phase 2 seed boundary.
 
 ### 2.1 Performance Model: Single Source, Single Condition
 
-**Current state.** Phase 17 ingestion inserts one `performance_metrics` row per metric type per variant with `is_canonical = TRUE` on the first write. The `is_canonical` partial UNIQUE index enforces only one canonical row per `(variant_id, metric_type_code)`.
+**Current state.** The ingestion adapter inserts one `performance_metrics` row per source assertion with `is_canonical = FALSE`. Migration 020 links that row to the exact assertion through `source_assertion_id`; curation therefore changes only the value that its decision backs. `aircraft-ingest curate accept --assertion-id <n>` flips the assertion and measurement in one transaction, then refreshes the read model. Migrations 019 and 020 extended the same gate to weight metrics and market data. The `is_canonical` partial UNIQUE index enforces only one canonical row per `(variant_id, metric_type_code)`.
 
 **Limitation.** PlanePHD provides only one performance figure per metric (e.g. one cruise speed value). The schema supports multiple test conditions and multiple sources per metric, but the ingestion pipeline does not yet populate `condition_weight_lbs`, `condition_altitude_ft`, or `condition_power_setting` because PlanePHD does not expose that data.
 
-**Deferred decision.** When a second source (e.g. the FAA TCDS or a manufacturer POH) is ingested, it may assert different performance values under different conditions. The promotion pipeline's `is_canonical` switching logic will need a curator decision step: either automatically accept the higher-confidence source's value, or surface a `curation_flags` row for manual review. Recommended approach: implement a `promote_assertion(assertion_id BIGINT)` function that atomically flips `is_accepted` and updates the canonical table value. Phase reference: Phase 14 / Phase 17.
+**Resolved.** `SqlxCurationStore::decide` (`crates/aircraft_db/src/repositories/curation_repository.rs`) is the `promote_assertion` step this note anticipated: it flips `is_accepted` and the backing canonical row together, refuses a second accepted assertion for a field with `CURATION_CONFLICT` rather than racing `uq_assertion_accepted`, and supports withdrawal so a decision can be reversed. What remains deferred is *automatic* selection between competing sources by confidence; today a curator chooses.
 
 ### 2.2 Engine Manufacturer Matching
 
@@ -252,8 +250,9 @@ VALUES
     (:variant_id, 'GLIDE_RATIO', :parsed_value, NULL, :parsed_value,
      TRUE, 0.20);
 
--- 2. Record the accepted assertion. Phase 17 does not create this row for an
--- unmapped field, so the curator must supply the source document.
+-- 2. Record the accepted assertion. Ingestion does not create this row for an
+-- unmapped field, so the curator must supply the source document. For a mapped
+-- field, prefer `aircraft-ingest curate accept` over hand-written SQL.
 INSERT INTO aircraft_prov.source_assertions
     (source_document_id, entity_type_code, entity_id, field_name,
      raw_value, asserted_value, asserted_numeric, status_code,
@@ -488,8 +487,8 @@ ALTER TABLE aircraft_prov.source_assertions SET (
 |---|---|---|
 | Local legacy reconciliation | database/reconcile_local_legacy.sql | Verify and adopt complete pre-ledger Phase 1/2 local schemas; reject partial states |
 | Installer | database/install.sql | Dependency-aware migration and canonical-seed orchestration |
-| Migrations | database/migrations/001_*.sql through 017_*.sql | Canonical ordered schema history |
+| Migrations | database/migrations/001_*.sql through 021_*.sql | Canonical ordered schema history; immutable once written, hashed in migrations.lock.json |
 | Canonical seeds | database/seeds/001_*.sql through 003_*.sql | Units, lookup data, and mission profiles |
-| Ingestion | database/staging/901_*.sql through 903_*.sql | Staging DDL, JSON promotion, and post-ingestion invariants |
-| Verification | database/validation/000_migration_history_validation.sql and remaining database/validation/*.sql | Exact 001-017 ledger assertion plus phase-specific structural and behavioral checks |
+| Ingestion | apps/ingest + database/snapshots/ | Rust CLI import, snapshot queries, and committed golden output |
+| Verification | database/validation/000_migration_history_validation.sql and remaining database/validation/*.sql | Exact 001-021 ledger assertion plus phase-specific structural and behavioral checks |
 | Documentation | database/README.md, data_dictionary.md, implementation_notes.md | Lifecycle, schema meaning, and operational guidance |

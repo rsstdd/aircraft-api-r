@@ -6,15 +6,22 @@ This directory owns the SQL lifecycle for the Aircraft Management Engine.
 
 - `migrations/`: ordered, one-time schema migrations.
 - `seeds/`: idempotent canonical reference and mission-profile data only.
-- `staging/`: transient JSON ingestion DDL, promotion, and post-ingestion checks.
 - `validation/`: post-install schema and behavioral verification.
+- `snapshots/`: normalized business snapshot queries, plus the committed golden
+  output in `snapshots/golden/<fixture>/` that `cargo xtask snapshots` diffs the
+  adapter against.
+- `roles/`: role grants applied by an administrator, not by `install.sql`.
 - `fixtures/`: test-only data.
 - `docker/init/`: optional database-level initialization for an empty volume.
 - `reconcile_local_legacy.sql`: local-only compatibility check for complete
   Phase 1/2 schemas created before migration tracking existed.
 - `install.sql`: the canonical dependency-aware `psql` installer.
+- `migrations.lock.json`: SHA-256 of every migration. Migrations are immutable
+  once written; `cargo xtask migrations` fails if a file's contents change, so a
+  correction goes in a new migration and in this documentation, never by editing
+  an applied one.
 - `validation/000_migration_history_validation.sql`: asserts that migration
-  history contains exactly versions `001` through `017`.
+  history contains exactly versions `001` through `021`.
 - `data_dictionary.md`: detailed reference for principal tables and read models;
   migrations remain authoritative for the complete schema.
 - `implementation_notes.md`: dependency rules, curator workflows, known
@@ -59,9 +66,10 @@ just ingest-status
 ```
 
 It reads a local file or standard input, preserves raw records and audit history,
-and does not require database-server filesystem access. The `db-ingest` and
-`db-prod-ingest` recipes remain temporarily as legacy parity references. They
-use `pg_read_file` and are not the production path for Aiven.
+and does not require database-server filesystem access. The legacy
+server-side SQL loader that used to live in `database/staging/` has been
+retired; `database/snapshots/` now holds the snapshot queries and the committed
+golden output that guard the Rust path against regressions.
 
 Diesel may generate Rust schema types from PostgreSQL, but SQL files in this
 directory remain the canonical schema history.

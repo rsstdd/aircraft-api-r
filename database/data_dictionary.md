@@ -250,7 +250,7 @@ aircraft_read   ──▶  views and materialized views over all of the above
 | `propulsion_category_code` | `aircraft_ref.lookup_code` | nullable | &mdash; | aircraft_ref.propulsion_categories(code) ON DELETE NO ACTION | Denormalized for faceted search |
 | `engine_count` | `smallint` | nullable | &mdash; | &mdash; | Denormalized; authoritative value in `aircraft_power.variant_powerplants` |
 | `is_in_production` | `boolean` | nullable | &mdash; | &mdash; |  |
-| `ingest_key` | `text` | nullable | &mdash; | &mdash; | Opaque ingestion deduplication key, e.g. "AERONCA::11AC Chief". Populated by Phase 17 ingestion to prevent duplicate variant rows. Not a semantic business key; superseded by aircraft_prov.source_documents once Phase 14 is populated. |
+| `ingest_key` | `text` | nullable | &mdash; | &mdash; | Opaque ingestion deduplication key. The legacy SQL loader writes concatenated raw names, e.g. "AERONCA::11AC Chief"; the Rust adapter writes SHA-256 over "planephd\0<manufacturer>\0<aircraft>". Prevents duplicate variant rows. Not a semantic business key; superseded by aircraft_prov.source_documents once Phase 14 is populated. |
 | `source_path` | `text` | nullable | &mdash; | &mdash; | URI path from the originating source system used during Phase 17 ingestion. Canonical source URL lives in aircraft_prov.source_documents.source_url. |
 | `description` | `text` | nullable | &mdash; | &mdash; | Source description text |
 | `description_tsv` | `tsvector` | nullable | generated | &mdash; | Full-text search vector; GIN-indexed |
@@ -355,7 +355,9 @@ Fact table — one row per `(variant, approval_type)`.
 | `condition_power_setting` | `text` | nullable | &mdash; | &mdash; | Engine power / thrust setting at test conditions. TEXT CHECK (10 stable values). NULL when power setting is not published by the source. |
 | `condition_surface_type` | `text` | nullable | &mdash; | &mdash; | Runway or water surface type for takeoff/landing distance metrics. NULL for airborne metrics (speeds, ceilings, range). TEXT CHECK (6 stable surface type values). |
 | `conditions_notes` | `text` | nullable | &mdash; | &mdash; | Free-text condition qualifiers from source |
-| `is_canonical` | `boolean` | NOT NULL | `false` | &mdash; | TRUE = this row is the designated cross-fleet comparison value for this (variant, metric_type) pair. At most one TRUE per pair (enforced by uq_perf_canonical partial UNIQUE index). Phase 17 ingestion sets is_canonical = TRUE for the first value; curators resolve conflicts from additional sources. |
+| `source_assertion_id` | `bigint` | nullable | &mdash; | aircraft_prov.source_assertions(id) | The exact assertion that produced this measurement, so curation flips `is_canonical` only on the row its decision refers to rather than every row sharing a metric code. Added by migration 020; the FK is validated by 021. |
+| `is_canonical` | `boolean` | NOT NULL | `false` | &mdash; | TRUE = this row is the designated cross-fleet comparison value for this (variant, metric_type) pair. At most one TRUE per pair (enforced by uq_perf_canonical partial UNIQUE index). The ingestion adapter writes every value is_canonical = FALSE; curation must explicitly promote one. |
+| `source_assertion_id` | `bigint` | nullable | &mdash; | aircraft_prov.source_assertions(id); UNIQUE when non-NULL | Exact assertion that produced this measurement; added by migration 020. Historical rows remain nullable rather than inferring the wrong source. |
 | `is_estimated` | `boolean` | NOT NULL | `false` | &mdash; |  |
 | `confidence` | `aircraft_ref.confidence_score` | nullable | &mdash; | &mdash; |  |
 | `source_notes` | `text` | nullable | &mdash; | &mdash; |  |
@@ -364,7 +366,12 @@ Fact table — one row per `(variant, approval_type)`.
 
 ### `aircraft_specs.weight_metrics`
 
-Same triple-pattern structure as `performance_metrics`. Key difference: no `is_canonical` flag (one row per `(variant, metric_type, COALESCE(configuration,''))` enforced by functional UNIQUE index). Allows negative load factor values (`LOAD_FACTOR_NEG`).
+Same triple-pattern structure as `performance_metrics`. Multiple sources may
+retain competing rows for the same `(variant, metric_type, configuration)`;
+`idx_weight_metrics_config` provides lookup without discarding that evidence.
+Allows negative load factor values (`LOAD_FACTOR_NEG`). Migration 019 added
+`is_canonical`: until then weight metrics had no curation gate and reached the
+read model on import while every other measurement waited.
 
 | Column | Type | Null | Default | Constraint / FK | Description |
 |---|---|---|---|---|---|
@@ -376,6 +383,9 @@ Same triple-pattern structure as `performance_metrics`. Key difference: no `is_c
 | `canonical_value` | `numeric` | nullable | &mdash; | &mdash; | Value in the metric-type canonical unit. For mass: LBS. For fuel: US_GAL. For dimensionless metrics (LOAD_FACTOR_*, WING_LOADING): equals raw_value. Populated by Phase 17 ingestion. |
 | `configuration` | `text` | nullable | &mdash; | &mdash; |  |
 | `is_estimated` | `boolean` | NOT NULL | `false` | &mdash; |  |
+| `source_assertion_id` | `bigint` | nullable | &mdash; | aircraft_prov.source_assertions(id) | The exact assertion that produced this measurement. Added by migration 020; the FK is validated by 021. |
+| `is_canonical` | `boolean` | NOT NULL | `false` | uq_wm_canonical (partial UNIQUE) | TRUE = served through `aircraft_read.mv_variant_search`. The Rust adapter writes FALSE and leaves promotion to curation. At most one TRUE per `(variant, metric_type)`. Added by migration 019. |
+| `source_assertion_id` | `bigint` | nullable | &mdash; | aircraft_prov.source_assertions(id); UNIQUE when non-NULL | Exact assertion that produced this measurement; added by migration 020. Historical rows remain nullable rather than inferring the wrong source. |
 | `confidence` | `aircraft_ref.confidence_score` | nullable | &mdash; | &mdash; |  |
 | `source_notes` | `text` | nullable | &mdash; | &mdash; |  |
 | `created_at` | `timestamp with time zone` | NOT NULL | `now()` | &mdash; |  |
@@ -585,9 +595,14 @@ to prevent aggregate source values from being counted again as components.
 
 ### `aircraft_market.valuations`
 
+Gated on curation by migration 020. Before it, an uncurated scraped price
+estimate reached `aircraft_read.mv_variant_search` the moment it was ingested,
+while every measurement waited for a curator.
+
 | Column | Type | Null | Default | Constraint / FK | Description |
 |---|---|---|---|---|---|
 | `id` | `bigint` | NOT NULL | identity | PK |  |
+| `is_canonical` | `boolean` | NOT NULL | `false` | uq_val_canonical (partial UNIQUE) | TRUE = served through the read model. Flipped by curation accepting the `VALUATION` assertions backing it. At most one TRUE per variant. Added by migration 020. |
 | `variant_id` | `bigint` | NOT NULL | &mdash; | aircraft_core.variants(id) ON DELETE CASCADE |  |
 | `snapshot_date` | `date` | NOT NULL | `CURRENT_DATE` | &mdash; |  |
 | `source_name` | `text` | nullable | &mdash; | &mdash; | Source system name; dedup uses functional UNIQUE on `(variant_id, snapshot_date, COALESCE(source_name,''))` |
@@ -608,9 +623,15 @@ to prevent aggregate source values from being counted again as components.
 
 ### `aircraft_market.cost_snapshots`
 
+Gated on curation by migration 020, at the snapshot rather than the line item: a
+snapshot's totals are only meaningful together, and
+`mv_ownership_cost_summary` wraps its sums in `COALESCE(..., 0)`, so publishing
+part of one would report a confident `$0.00` annual cost.
+
 | Column | Type | Null | Default | Constraint / FK | Description |
 |---|---|---|---|---|---|
 | `id` | `bigint` | NOT NULL | identity | PK |  |
+| `is_canonical` | `boolean` | NOT NULL | `false` | uq_cs_canonical (partial UNIQUE) | TRUE = this snapshot, its line items, and its totals are served. Stays TRUE while any of its assertions remains accepted. At most one TRUE per variant. Added by migration 020. |
 | `variant_id` | `bigint` | NOT NULL | &mdash; | aircraft_core.variants(id) ON DELETE CASCADE |  |
 | `snapshot_date` | `date` | NOT NULL | `CURRENT_DATE` | &mdash; |  |
 | `source_name` | `text` | nullable | &mdash; | &mdash; |  |
@@ -769,7 +790,7 @@ The core provenance fact table.
 | `asserted_value` | `text` | nullable | &mdash; | &mdash; | Value exactly as it appeared in the source (including units) |
 | `asserted_numeric` | `numeric` | nullable | &mdash; | &mdash; |  |
 | `status_code` | `aircraft_ref.lookup_code` | NOT NULL | `'PENDING'::text` | aircraft_ref.assertion_statuses(code) ON DELETE NO ACTION | `PENDING`, `ACCEPTED`, `REJECTED`, `SUPERSEDED` |
-| `is_accepted` | `boolean` | NOT NULL | `false` | &mdash; | TRUE = this assertion is the designated canonical value for this field. At most one TRUE per (entity_type_code, entity_id, field_name), enforced by the partial UNIQUE index uq_assertion_accepted. Phase 17 ingestion sets is_accepted = TRUE for the first assertion per field; subsequent conflicting assertions arrive as PENDING and require curator review. |
+| `is_accepted` | `boolean` | NOT NULL | `false` | &mdash; | TRUE = this assertion is the designated canonical value for this field. At most one TRUE per (entity_type_code, entity_id, field_name), enforced by the partial UNIQUE index uq_assertion_accepted. The ingestion adapter writes every assertion PENDING with is_accepted = FALSE; curation must explicitly accept one. |
 | `confidence` | `aircraft_ref.confidence_score` | nullable | &mdash; | &mdash; |  |
 | `notes` | `text` | nullable | &mdash; | &mdash; |  |
 | `created_at` | `timestamp with time zone` | NOT NULL | `now()` | &mdash; |  |
@@ -892,8 +913,9 @@ These rows support idempotency, provenance inspection, and failure audits. They
 must not be treated as disposable transient data or truncated through routine
 application operations. Migration
 `017_rust_ingestion_adapter.sql` is authoritative. The scripts under
-`database/staging/901_*.sql` through `903_*.sql` remain a temporary parity
-reference for the legacy server-side loader.
+`database/staging/901_*.sql` through `903_*.sql` have been retired. The Rust
+`aircraft-ingest` CLI is the ingestion path, and `database/snapshots/` holds the
+snapshot queries plus committed golden output that guard it.
 
 ---
 
