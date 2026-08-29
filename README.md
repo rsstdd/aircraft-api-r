@@ -42,7 +42,7 @@ simply because they were parsed successfully.
 |---|---|
 | Rust workspace | Cargo resolves ten packages around the ingestion slice, shared libraries, API contract generation, test support, and `xtask` |
 | Database | Canonical migrations `001` through `021`, checksum-locked history, dependency-aware installation, reference seeds, and SQL validation scripts are present |
-| Rust ingestion CLI | `validate`, `import`, and `status` are implemented for PlanePHD JSON |
+| Rust ingestion CLI | `validate`, `import`, `status`, and `curate` (`list`, `accept`, `reject`) are implemented for PlanePHD JSON |
 | Ingestion semantics | Immutable input capture, SHA-256 identity, bounded streaming, preflight validation, transactional promotion, audit history, and idempotent replay are implemented |
 | Persistence | SQLx ingestion repository implemented; the broader repository surface remains incomplete |
 | Domain and application | Ingestion rules and orchestration are implemented; most general aircraft, mission, search, and comparison behavior remains scaffolded |
