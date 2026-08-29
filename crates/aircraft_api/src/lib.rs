@@ -1,6 +1,5 @@
 #![deny(clippy::as_conversions, clippy::indexing_slicing)]
 
-pub mod dto;
 pub mod routes;
 
 use axum::{Router, routing::get};
