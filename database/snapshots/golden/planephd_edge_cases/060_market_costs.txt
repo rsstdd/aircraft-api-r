@@ -1,0 +1,9 @@
+beechcraft-baron-g58-v1|ANNUAL_INSPECTION|4800.00||USD
+beechcraft-baron-g58-v1|FUEL||182.4000|USD
+beechcraft-baron-g58-v1|HANGAR_STORAGE|7200.00||USD
+beechcraft-baron-g58-v1|INSURANCE|6200.00||USD
+beechcraft-bonanza-g36-v1|ANNUAL_INSPECTION|3100.00||USD
+beechcraft-bonanza-g36-v1|FUEL||91.2000|USD
+piper-pa-46-malibu-v1|ANNUAL_INSPECTION|5400.00||USD
+piper-pa-46-malibu-v1|FUEL||118.5000|USD
+piper-pa-46-malibu-v1|INSURANCE|4900.00||USD

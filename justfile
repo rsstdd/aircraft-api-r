@@ -19,46 +19,113 @@ default:
 # ---------------------------------------------------------------------
 
 build:
-    cargo build --workspace --all-targets
+    cargo build --workspace --all-targets --locked
 
 check:
-    cargo check --workspace --all-targets
+    cargo check --workspace --all-targets --locked
+
+boundaries:
+    cargo run --locked --package xtask -- boundaries
 
 ingest-validate input:
-    cargo run --package aircraft-ingest -- validate --source planephd --input {{ quote(input) }}
+    cargo run --locked --package aircraft-ingest -- validate --source planephd --input {{ quote(input) }}
 
 ingest-import input:
-    cargo run --package aircraft-ingest -- import --source planephd --input {{ quote(input) }}
+    cargo run --locked --package aircraft-ingest -- import --source planephd --input {{ quote(input) }}
 
 ingest-status *args:
-    cargo run --package aircraft-ingest -- status {{ args }}
+    cargo run --locked --package aircraft-ingest -- status {{ args }}
 
 ingest-status-json *args:
-    cargo run --package aircraft-ingest -- status --format json {{ args }}
+    cargo run --locked --package aircraft-ingest -- status --format json {{ args }}
+
+# Show assertions ingestion left pending for a curator.
+curate-list *args:
+    cargo run --package aircraft-ingest -- curate list {{ args }}
+
+# Accept a pending assertion, publishing its value to the read model.
+curate-accept assertion_id:
+    cargo run --package aircraft-ingest -- curate accept --assertion-id {{ assertion_id }}
+
+# Withdraw a value from the read model.
+curate-reject assertion_id:
+    cargo run --package aircraft-ingest -- curate reject --assertion-id {{ assertion_id }}
+
+# Import each fixture through the Rust adapter into a disposable database and
+# diff the normalized business snapshots against their committed golden output.
+# With no arguments this runs every fixture the gate covers.
+snapshots *args:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    if [ -n "{{ args }}" ]; then
+        cargo run --locked --package xtask -- snapshots {{ args }}
+    else
+        for fixture in tests/fixtures/planephd_minimal.json \
+                       tests/fixtures/planephd_edge_cases.json; do
+            echo "==> $fixture"
+            cargo run --locked --package xtask -- snapshots --fixture "$fixture"
+        done
+    fi
 
 test:
-    cargo nextest run --workspace
+    cargo nextest run --workspace --locked
 
 fmt:
     cargo fmt --all
 
 lint:
     cargo fmt --all -- --check
-    cargo clippy --workspace --all-targets --all-features -- -D warnings
+    just static
+    cargo clippy --workspace --all-targets --all-features --locked -- -D warnings
+    just docs-check
     cargo audit
     just deny
 
 deny:
-    cargo run --package xtask -- deny
+    cargo run --locked --package xtask -- deny
 
+# NOTE: this is currently equivalent to `just check`. The workspace depends on
+# sqlx-core/sqlx-postgres directly, without the `sqlx` facade or its `macros`
+# feature, and uses only runtime-checked query/query_scalar/raw_sql. SQLX_OFFLINE
+# only affects the compile-time `sqlx::query!` family, so there is nothing here
+# for it to verify. Kept so the recipe name stays valid; it becomes a real gate
+# the moment a compile-time-checked query is introduced.
 check-offline:
-    SQLX_OFFLINE=true cargo check --workspace --all-targets
+    SQLX_OFFLINE=true cargo check --workspace --all-targets --locked
 
 install-deps *args:
-    cargo run --package xtask -- install-deps {{ args }}
+    cargo run --locked --package xtask -- install-deps {{ args }}
 
 generate-docs *args:
-    cargo run --package xtask -- generate-docs {{ args }}
+    cargo run --locked --package xtask -- generate-docs {{ args }}
+
+api-contract:
+    cargo run --locked --package xtask -- generate-docs --check
+    npm exec --yes --package @stoplight/spectral-cli@6.15.0 -- spectral lint docs/openapi.json
+
+docs-check:
+    RUSTDOCFLAGS="-D warnings" cargo doc --workspace --all-features --no-deps --locked
+
+migrations-policy:
+    cargo run --locked --package xtask -- migrations
+
+migrations-lint:
+    npm exec --yes --package squawk-cli@2.51.0 -- squawk --no-error-on-unmatched-pattern 'database/migrations/*.sql'
+
+compose-check:
+    docker compose config --quiet
+
+github-policy-local:
+    scripts/github-repository-policy.sh --local
+
+static: boundaries api-contract migrations-policy migrations-lint compose-check github-policy-local
+
+github-policy-check:
+    scripts/github-repository-policy.sh --check
+
+# Mutates GitHub-hosted settings and requires repository administrator access.
+github-policy-apply:
+    scripts/github-repository-policy.sh --apply
 
 # ---------------------------------------------------------------------
 # Local Docker / PostgreSQL
@@ -149,30 +216,15 @@ db-validate:
       || exit $?; \
     done
 
-# The JSON path is server-side and must be below the database mount.
-# Example: just db-ingest /workspace/database/staging/aircraft_seed.json
-db-ingest container_json_path:
-    json_path={{ quote(container_json_path) }}; \
-    case "$json_path" in \
-      /workspace/database/*) ;; \
-      *) echo "container_json_path must be below /workspace/database"; exit 1 ;; \
-    esac; \
+# Grant the dedicated ingestion role. Requires an administrator connection and
+# an existing role; install.sql deliberately does not do this.
+db-grants ingest_role="aircraft_ingest_writer":
     docker compose exec -T {{ DB_SERVICE }} \
       psql -X -v ON_ERROR_STOP=1 \
         -U "{{ POSTGRES_USER }}" \
         -d "{{ POSTGRES_DB }}" \
-        -f "/workspace/database/staging/901_seed_data_staging.sql"; \
-    docker compose exec -T {{ DB_SERVICE }} \
-      psql -X -v ON_ERROR_STOP=1 \
-        -U "{{ POSTGRES_USER }}" \
-        -d "{{ POSTGRES_DB }}" \
-        -v "seed_json_path=$json_path" \
-        -f "/workspace/database/staging/902_server_side_json_ingestion.sql"; \
-    docker compose exec -T {{ DB_SERVICE }} \
-      psql -X -v ON_ERROR_STOP=1 \
-        -U "{{ POSTGRES_USER }}" \
-        -d "{{ POSTGRES_DB }}" \
-        -f "/workspace/database/staging/903_post_bootstrap_validation.sql"
+        -v "ingest_role={{ ingest_role }}" \
+        -f "/workspace/database/roles/ingest_grants.sql"
 
 db-bootstrap: db-up db-wait db-migrate db-validate
 
@@ -221,22 +273,5 @@ db-prod-validate:
       echo "==> validating $file"; \
       psql -X -v ON_ERROR_STOP=1 "$db_url" -f "$file" || exit $?; \
     done
-
-# The path is read by the PostgreSQL server, not by the machine running Just.
-# It must already exist on the production database server and be readable by
-# the PostgreSQL service account.
-db-prod-ingest server_json_path:
-    db_url="${MIGRATION_DATABASE_URL:-${DATABASE_URL:-}}"; \
-    if [ -z "$db_url" ]; then \
-      echo "MIGRATION_DATABASE_URL or DATABASE_URL must be set"; exit 1; \
-    fi; \
-    json_path={{ quote(server_json_path) }}; \
-    psql -X -v ON_ERROR_STOP=1 "$db_url" \
-      -f database/staging/901_seed_data_staging.sql; \
-    psql -X -v ON_ERROR_STOP=1 "$db_url" \
-      -v "seed_json_path=$json_path" \
-      -f database/staging/902_server_side_json_ingestion.sql; \
-    psql -X -v ON_ERROR_STOP=1 "$db_url" \
-      -f database/staging/903_post_bootstrap_validation.sql
 
 db-prod-bootstrap: db-prod-ready db-prod-migrate db-prod-validate

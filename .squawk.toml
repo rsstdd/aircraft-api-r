@@ -1,0 +1,24 @@
+pg_version = "16.0"
+
+# Migrations 001-018 predate Squawk enforcement and are immutable schema
+# history. Every later migration is linted with the complete default ruleset.
+excluded_paths = [
+  "**/001_extensions_schemas_domains_triggers.sql",
+  "**/002_core_reference_tables.sql",
+  "**/003_geography_operators_organizations.sql",
+  "**/004_aircraft_identity_taxonomy.sql",
+  "**/005_certification_operating_approvals.sql",
+  "**/006_dimensions_cabin_cargo_hangar_fit.sql",
+  "**/007_weight_balance_payload_loading.sql",
+  "**/008_performance_metrics_conditions.sql",
+  "**/009_propulsion_engines_rotors_stcs.sql",
+  "**/010_avionics_equipment_systems.sql",
+  "**/011_military_sensors_stores_loadouts.sql",
+  "**/012_ownership_cost_valuation_market.sql",
+  "**/013_maintenance_reliability_supportability.sql",
+  "**/014_sources_provenance_curation_audit.sql",
+  "**/015_mission_profiles_comparison_scoring.sql",
+  "**/016_read_models_views_indexes.sql",
+  "**/017_rust_ingestion_adapter.sql",
+  "**/018_staged_aircraft_variant_fk.sql",
+]

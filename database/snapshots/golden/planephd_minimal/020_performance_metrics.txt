@@ -1,0 +1,5 @@
+cessna-172s-skyhawk-sp-v1|CEILING_SERVICE|14000|FT|14000
+cessna-172s-skyhawk-sp-v1|CLIMB_RATE_SL|730|FPM|730
+cessna-172s-skyhawk-sp-v1|FUEL_BURN_CRUISE|8.5|GPH|8.5
+cessna-172s-skyhawk-sp-v1|RANGE_NORMAL|640|NM|640
+cessna-172s-skyhawk-sp-v1|SPEED_CRUISE_BEST|124|KIAS|124.0000000000

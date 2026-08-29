@@ -1,0 +1,21 @@
+extends:
+  - spectral:oas
+
+rules:
+  info-contact: error
+  info-description: error
+  info-license: error
+  operation-description: error
+  operation-operationId: error
+  operation-operationId-unique: error
+  operation-success-response: error
+  operation-summary-required:
+    description: Every operation must have a concise summary.
+    given: $.paths.*[get,put,post,delete,options,head,patch,trace]
+    severity: error
+    then:
+      field: summary
+      function: truthy
+  operation-tags: error
+  path-params: error
+  tag-description: error

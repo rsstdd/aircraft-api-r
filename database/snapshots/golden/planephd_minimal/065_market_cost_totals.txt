@@ -1,0 +1,1 @@
+cessna-172s-skyhawk-sp-v1||12000.00|||USD|total_fixed_cost_annual
