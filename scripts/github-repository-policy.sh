@@ -9,6 +9,11 @@ readonly REPOSITORY_ROOT
 readonly POLICY_DIR="${REPOSITORY_ROOT}/.github/repository-policy"
 readonly RULESET_NAME="production-main"
 readonly API_VERSION="2022-11-28"
+# GitHub resolves composite-action dependencies before evaluating their step conditions.
+# Keep this list aligned with the pinned actions' manifests.
+readonly -a TRANSITIVE_WORKFLOW_ACTIONS=(
+  "github/codeql-action/upload-sarif@7188fc363630916deb702c7fdcf4e481b751f97a"
+)
 
 usage() {
   echo "Usage: $0 --local|--check|--apply" >&2
@@ -52,10 +57,12 @@ check_local_policy() {
   done
 
   mapfile -t workflow_actions < <(
-    sed -nE \
-      's/^[[:space:]]*(-[[:space:]]+)?uses:[[:space:]]+([^[:space:]#]+).*/\2/p' \
-      "${REPOSITORY_ROOT}"/.github/workflows/*.yml \
-      | sort --unique
+    {
+      sed -nE \
+        's/^[[:space:]]*(-[[:space:]]+)?uses:[[:space:]]+([^[:space:]#]+).*/\2/p' \
+        "${REPOSITORY_ROOT}"/.github/workflows/*.yml
+      printf '%s\n' "${TRANSITIVE_WORKFLOW_ACTIONS[@]}"
+    } | sort --unique
   )
   mapfile -t allowed_patterns < <(
     jq --raw-output '.patterns_allowed[]' "${POLICY_DIR}/selected-actions.json" \

@@ -314,6 +314,9 @@ The direct CLI surface is:
 aircraft-ingest validate --source planephd --input FILE_OR_DASH [--format human|json]
 aircraft-ingest import --source planephd --input FILE_OR_DASH [--format human|json] [--report PATH]
 aircraft-ingest status [--run-id ID | --sha256 HASH] [--limit N] [--format human|json]
+aircraft-ingest curate list [--entity-id ID] [--field FIELD] [--limit N] [--format human|json]
+aircraft-ingest curate accept --assertion-id ID [--format human|json]
+aircraft-ingest curate reject --assertion-id ID [--format human|json]
 ```
 
 Do not add undocumented flags or silently change the versioned JSON report

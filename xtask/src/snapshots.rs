@@ -82,13 +82,17 @@ impl Container {
   fn wait_until_ready(&self) -> Result<()> {
     let deadline = Instant::now() + READY_TIMEOUT;
     while Instant::now() < deadline {
-      let ready = Command::new("docker")
-        .args(["exec", &self.id, "pg_isready", "-U", "postgres", "-d", "postgres"])
+      // The image briefly runs an initialization server before PID 1 becomes the
+      // final postgres process. That temporary server is not stable readiness.
+      let initialized = Command::new("docker")
+        .args(["exec", &self.id, "grep", "-qx", "postgres", "/proc/1/comm"])
         .stdout(Stdio::null())
         .stderr(Stdio::null())
         .status()
         .is_ok_and(|status| status.success());
-      if ready {
+      let query_succeeded =
+        initialized && self.psql(&["-c", "SELECT 1"]).is_ok_and(|output| output.status.success());
+      if query_succeeded {
         return Ok(());
       }
       sleep(Duration::from_millis(250));

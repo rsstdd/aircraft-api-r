@@ -6,6 +6,7 @@
     "actions/dependency-review-action@a1d282b36b6f3519aa1f3fc636f609c47dddb294",
     "github/codeql-action/analyze@fddeee1a7ece751b577e409a89057319e3172939",
     "github/codeql-action/init@fddeee1a7ece751b577e409a89057319e3172939",
+    "github/codeql-action/upload-sarif@7188fc363630916deb702c7fdcf4e481b751f97a",
     "oasdiff/oasdiff-action/breaking@b7c3adeb54330db1903d27c61db520e5661ad55b",
     "stoplightio/spectral-action@6416fd018ae38e60136775066eb3e98172143141",
     "Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6",

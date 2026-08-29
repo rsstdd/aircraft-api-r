@@ -37,10 +37,14 @@ Rust path never calls `pg_read_file`.
 aircraft-ingest validate --source planephd --input FILE_OR_DASH [--format human|json]
 aircraft-ingest import --source planephd --input FILE_OR_DASH [--format human|json] [--report PATH]
 aircraft-ingest status [--run-id ID | --sha256 HASH] [--limit N] [--format human|json]
+aircraft-ingest curate list [--entity-id ID] [--field FIELD] [--limit N] [--format human|json]
+aircraft-ingest curate accept --assertion-id ID [--format human|json]
+aircraft-ingest curate reject --assertion-id ID [--format human|json]
 ```
 
 Equivalent repository commands are `just ingest-validate`,
-`just ingest-import`, and `just ingest-status`. Status reports include the full
+`just ingest-import`, `just ingest-status`, `just curate-list`,
+`just curate-accept`, and `just curate-reject`. Status reports include the full
 attempt history for every matching logical run, newest attempt first.
 
 Validation is database-independent. Import and status require
