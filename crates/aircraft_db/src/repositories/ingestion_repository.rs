@@ -644,14 +644,34 @@ impl SqlxIngestionUnitOfWork {
     .fetch_one(&mut *self.transaction)
     .await
     .map_err(database_error)?;
-    query_scalar(
+    // variants.slug is UNIQUE while the record's identity is ingest_key, so two
+    // distinct source records whose names slugify identically ("A/B" and "A B")
+    // would collide on a constraint the ON CONFLICT clause does not cover and
+    // abort the whole import. Suffixing the second record's slug with a digest
+    // of its own ingest_key keeps it — deterministically, so a replay resolves
+    // to the same slug — and the curation flag below records that two source
+    // names may name the same aircraft.
+    let row = query(
       "INSERT INTO aircraft_core.variants(
                 model_id,name,slug,description,production_start_year,production_end_year,
                 is_in_production,passenger_capacity,crew_count,source_path,ingest_key)
-             VALUES($1,$2,aircraft_ref.slugify($3 || '-' || $2 || '-v1'),$4,$5,$6,$7,$8,$9,$10,$11)
+             VALUES($1,$2,
+                (SELECT CASE
+                    WHEN EXISTS (
+                        SELECT 1 FROM aircraft_core.variants existing
+                        WHERE existing.slug = candidate.slug
+                          AND existing.ingest_key IS DISTINCT FROM $11)
+                    THEN candidate.slug || '-' || substr(md5($11),1,8)
+                    ELSE candidate.slug
+                 END
+                 FROM (SELECT aircraft_ref.slugify($3 || '-' || $2 || '-v1') AS slug)
+                    AS candidate),
+                $4,$5,$6,$7,$8,$9,$10,$11)
              ON CONFLICT(ingest_key) WHERE ingest_key IS NOT NULL DO UPDATE SET
                 description=EXCLUDED.description
-             RETURNING id",
+             RETURNING id,
+                slug <> aircraft_ref.slugify($3 || '-' || $2 || '-v1') AS disambiguated,
+                slug",
     )
     .bind(model)
     .bind(&record.identity.aircraft_name)
@@ -666,7 +686,41 @@ impl SqlxIngestionUnitOfWork {
     .bind(&record.source_record_key)
     .fetch_one(&mut *self.transaction)
     .await
-    .map_err(database_error)
+    .map_err(database_error)?;
+    let variant_id: i64 = row.get("id");
+    if row.get::<bool, _>("disambiguated") {
+      let slug: String = row.get("slug");
+      self.flag_slug_collision(variant_id, &slug).await?;
+    }
+    Ok(variant_id)
+  }
+
+  /// An ambiguous identity is evidence, not a hard failure: the record is kept
+  /// under a disambiguated slug and handed to curation to merge or keep apart.
+  async fn flag_slug_collision(
+    &mut self,
+    variant_id: i64,
+    slug: &str,
+  ) -> Result<(), PersistenceError> {
+    query(
+      "INSERT INTO aircraft_prov.curation_flags(
+                entity_type_code,entity_id,field_name,issue_type,
+                issue_description,status_code,priority)
+             SELECT 'AIRCRAFT_VARIANT',$1,'slug','SLUG_COLLISION',
+                'Another variant already holds the slug this record normalizes to; '
+                || 'it was stored as ' || $2 || '. Confirm whether the two records '
+                || 'describe the same aircraft.','OPEN',2
+             WHERE NOT EXISTS (
+                SELECT 1 FROM aircraft_prov.curation_flags
+                WHERE entity_type_code='AIRCRAFT_VARIANT' AND entity_id=$1
+                  AND issue_type='SLUG_COLLISION' AND status_code='OPEN')",
+    )
+    .bind(variant_id)
+    .bind(slug)
+    .execute(&mut *self.transaction)
+    .await
+    .map_err(database_error)?;
+    Ok(())
   }
 
   async fn promote_document(
@@ -852,7 +906,7 @@ impl SqlxIngestionUnitOfWork {
     document_id: i64,
   ) -> Result<(), PersistenceError> {
     if let Some(price) = record.valuation.papi_price_estimate.as_ref() {
-      let valuation_id: Option<i64> = query_scalar(
+      let inserted: Option<i64> = query_scalar(
         "INSERT INTO aircraft_market.valuations(
                     variant_id,snapshot_date,source_name,papi_price_estimate,
                     for_sale_count,currency_code,captured_at)
@@ -867,36 +921,52 @@ impl SqlxIngestionUnitOfWork {
       .fetch_optional(&mut *self.transaction)
       .await
       .map_err(database_error)?;
+      // uq_val_variant_date_source allows one row per (variant, date, source),
+      // so a second artifact imported the same day conflicts. Resolve the
+      // existing row instead of skipping: its stored values stand — overwriting
+      // them would silently republish a row a curator already accepted — but the
+      // new document's price still has to be asserted, or its evidence is lost
+      // and there is nothing for curation to act on.
+      let valuation_id = match inserted {
+        Some(id) => id,
+        None => query_scalar(
+          "SELECT id FROM aircraft_market.valuations
+                   WHERE variant_id=$1 AND snapshot_date=CURRENT_DATE AND source_name=$2",
+        )
+        .bind(variant_id)
+        .bind(&self.source.name)
+        .fetch_one(&mut *self.transaction)
+        .await
+        .map_err(database_error)?,
+      };
 
       // Market values were the only thing this adapter wrote without provenance,
       // which also left them uncurateable: migration 020 gates valuations on
       // is_canonical, and curation flips that flag by accepting these assertions.
-      if let Some(valuation_id) = valuation_id {
+      self
+        .assert_entity_value(
+          document_id,
+          "VALUATION",
+          valuation_id,
+          "papi_price_estimate",
+          price,
+          Some(price),
+          None,
+        )
+        .await?;
+      if let Some(count) = record.valuation.for_sale_count {
+        let count = count.to_string();
         self
           .assert_entity_value(
             document_id,
             "VALUATION",
             valuation_id,
-            "papi_price_estimate",
-            price,
-            Some(price),
+            "for_sale_count",
+            &count,
+            Some(&count),
             None,
           )
           .await?;
-        if let Some(count) = record.valuation.for_sale_count {
-          let count = count.to_string();
-          self
-            .assert_entity_value(
-              document_id,
-              "VALUATION",
-              valuation_id,
-              "for_sale_count",
-              &count,
-              Some(&count),
-              None,
-            )
-            .await?;
-        }
       }
     }
     if record.operating_costs.items.is_empty() {

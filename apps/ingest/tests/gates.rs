@@ -685,3 +685,88 @@ async fn curating_market_assertions_publishes_price_and_cost() -> TestResult {
   );
   Ok(())
 }
+
+/// `uq_val_variant_date_source` allows one valuation per (variant, date,
+/// source), so a second artifact imported the same day conflicts. Skipping the
+/// conflicting row dropped the later document's price evidence entirely, which
+/// left nothing for curation to accept.
+#[tokio::test]
+async fn a_second_same_day_import_still_asserts_its_valuation() -> TestResult {
+  let (container, pool) = start_postgres(5, Duration::from_secs(5)).await?;
+  install_schema(&pool).await?;
+
+  let first = run_cli(Some(&container.database_url), &as_args(&import_args(&fixture())))?;
+  assert!(first.status.success(), "{}", describe(&first));
+  let second = import_with_alternate_cruise(&container.database_url)?;
+  assert!(second.status.success(), "{}", describe(&second));
+
+  assert_eq!(
+    count(&pool, "aircraft_market.valuations").await?,
+    1,
+    "the unique index still permits one valuation per variant, date and source"
+  );
+  assert_eq!(
+    count(
+      &pool,
+      "aircraft_prov.source_assertions
+             WHERE entity_type_code = 'VALUATION' AND field_name = 'papi_price_estimate'"
+    )
+    .await?,
+    2,
+    "both documents must leave their price as curateable evidence"
+  );
+
+  let dangling: i64 = query_scalar(
+    "SELECT COUNT(*) FROM aircraft_prov.source_assertions sa
+         WHERE sa.entity_type_code = 'VALUATION'
+           AND NOT EXISTS (
+             SELECT 1 FROM aircraft_market.valuations v WHERE v.id = sa.entity_id)",
+  )
+  .fetch_one(&pool)
+  .await?;
+  assert_eq!(dangling, 0, "every valuation assertion must address the surviving row");
+  Ok(())
+}
+
+/// `variants.slug` is UNIQUE while the record's identity is `ingest_key`, so two
+/// source names that normalize to one slug used to raise a constraint the
+/// ON CONFLICT clause does not cover and roll the whole import back.
+#[tokio::test]
+async fn colliding_slugs_are_kept_as_flagged_evidence() -> TestResult {
+  let (container, pool) = start_postgres(5, Duration::from_secs(5)).await?;
+  install_schema(&pool).await?;
+
+  // "172S/Skyhawk SP" and "172S Skyhawk SP" are distinct source records with
+  // distinct record keys, but they slugify identically.
+  let mut document: Value = serde_json::from_slice(&std::fs::read(fixture())?)?;
+  let manufacturer = document
+    .get_mut("CESSNA")
+    .and_then(Value::as_object_mut)
+    .expect("the fixture nests records under a manufacturer");
+  let record = manufacturer["172S Skyhawk SP"].clone();
+  manufacturer.insert("172S/Skyhawk SP".to_owned(), record);
+  let input = tempfile::NamedTempFile::new()?;
+  std::fs::write(input.path(), serde_json::to_vec(&document)?)?;
+
+  let output = run_cli(Some(&container.database_url), &as_args(&import_args(input.path())))?;
+  assert!(output.status.success(), "an ambiguous name is evidence: {}", describe(&output));
+
+  assert_eq!(
+    count(&pool, "aircraft_core.variants").await?,
+    2,
+    "both source records must survive rather than abort the batch"
+  );
+  let slugs: Vec<String> =
+    query_scalar("SELECT slug FROM aircraft_core.variants ORDER BY id").fetch_all(&pool).await?;
+  assert_eq!(slugs[0], "cessna-172s-skyhawk-sp-v1", "the first record keeps the plain slug");
+  assert!(
+    slugs[1].starts_with("cessna-172s-skyhawk-sp-v1-"),
+    "the second record is disambiguated, not merged: {slugs:?}"
+  );
+  assert_eq!(
+    count(&pool, "aircraft_prov.curation_flags WHERE issue_type = 'SLUG_COLLISION'").await?,
+    1,
+    "the ambiguity must reach a curator"
+  );
+  Ok(())
+}

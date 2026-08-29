@@ -304,7 +304,7 @@ fn image_items(value: Option<&Value>, issues: &mut Vec<IngestIssue>) -> Vec<Imag
     ));
     return Vec::new();
   };
-  images
+  let mut items: Vec<ImageMetadataInput> = images
     .iter()
     .enumerate()
     .filter_map(|(position, image)| {
@@ -360,10 +360,16 @@ fn image_items(value: Option<&Value>, issues: &mut Vec<IngestIssue>) -> Vec<Imag
         dimensions_raw: dimensions,
         width_px: parsed.map(|pair| pair.0),
         height_px: parsed.map(|pair| pair.1),
-        is_primary: position == 0,
+        is_primary: false,
       })
     })
-    .collect()
+    .collect();
+  // Source order still decides which image leads, but a discarded first entry
+  // must not leave the record with no primary image at all.
+  if let Some(first) = items.first_mut() {
+    first.is_primary = true;
+  }
+  items
 }
 
 fn nested<'a>(
@@ -616,7 +622,7 @@ fn cost_code(key: &str) -> (Option<&'static str>, bool, bool) {
     return (Some("TOTAL_COST_ANNUAL"), true, true);
   }
   if key.contains("pilot_salary") {
-    return (Some("PILOT_TRAINING"), false, false);
+    return (Some("PILOT_TRAINING"), true, false);
   }
   let mappings = [
     ("inspection", "ANNUAL_INSPECTION"),
@@ -776,5 +782,39 @@ mod tests {
     }
     assert_eq!(record.images.len(), 1);
     assert!(record.images[0].href_resolved.is_none());
+  }
+
+  #[test]
+  fn the_first_surviving_image_is_primary() {
+    let record = normalize_record(
+      "CESSNA",
+      "172S",
+      json!({
+          "images": [
+              42,
+              {"href": "https://example.test/a.jpg"},
+              {"href": "https://example.test/b.jpg"}
+          ]
+      }),
+    );
+
+    assert_eq!(record.images.len(), 2);
+    assert!(record.images[0].is_primary, "discarding the first entry must not drop the primary");
+    assert!(!record.images[1].is_primary, "exactly one image may be primary");
+  }
+
+  #[test]
+  fn pilot_salary_amount_is_parsed_like_any_other_mapped_cost() {
+    let record =
+      normalize_record("CESSNA", "172S", json!({"ownership_costs": {"pilot_salary": "$12,000"}}));
+
+    let item = &record.operating_costs.items[0];
+    assert_eq!(item.mapped_code.as_deref(), Some("PILOT_TRAINING"));
+    assert_eq!(
+      item.numeric_value.as_deref(),
+      Some("12000"),
+      "a mapped cost must carry its amount into the canonical line item"
+    );
+    assert!(!record.issues.iter().any(|issue| issue.code == "UNMAPPED_OR_UNPARSEABLE_COST"));
   }
 }
