@@ -195,13 +195,32 @@ Check a file without touching the database:
 just ingest-validate tests/fixtures/planephd_minimal.json
 ```
 
-Import it:
+Importing needs the restricted ingestion role. `install.sql` creates no roles,
+so create it once and grant it, using the password from your `.env`:
 
 ```bash
-export APP__INGEST__DATABASE_URL='postgresql://postgres:postgres@127.0.0.1:5432/aircraft'
+just db-create-ingest-role
+just db-grants
+```
+
+Both recipes default to `aircraft_ingest_app`, the role named in
+`APP__INGEST__DATABASE_URL`. `db-create-ingest-role` reads the password from
+`INGEST_ROLE_PASSWORD` so it stays out of the process argument list, and both
+recipes are safe to re-run. Confirm the role can reach the database:
+
+```bash
+just ingest-status --limit 1
+```
+
+Then import:
+
+```bash
 just ingest-import tests/fixtures/planephd_minimal.json
 just ingest-status --limit 20
 ```
+
+`just` loads `.env`, so `APP__INGEST__DATABASE_URL` is already set; export it
+only to point at a different database.
 
 The command captures the input, hashes it, validates the whole document before
 writing anything, then stages and promotes every record in one transaction and

@@ -216,9 +216,23 @@ db-validate:
       || exit $?; \
     done
 
+# Create the restricted ingestion login role that db-grants expects.
+# install.sql deliberately does not create roles. The password comes from
+# INGEST_ROLE_PASSWORD in the environment, never from a recipe argument, so it
+# stays out of the process argument list. Re-running this leaves an existing
+# role and its password untouched.
+db-create-ingest-role ingest_role="aircraft_ingest_app":
+    docker compose exec -T -e INGEST_ROLE_PASSWORD {{ DB_SERVICE }} \
+      psql -X -v ON_ERROR_STOP=1 \
+        -U "{{ POSTGRES_USER }}" \
+        -d "{{ POSTGRES_DB }}" \
+        -v "ingest_role={{ ingest_role }}" \
+        -f "/workspace/database/roles/create_ingest_role.sql"
+
 # Grant the dedicated ingestion role. Requires an administrator connection and
-# an existing role; install.sql deliberately does not do this.
-db-grants ingest_role="aircraft_ingest_writer":
+# an existing role; run db-create-ingest-role first. The default matches the
+# role name in .env and the architecture guide.
+db-grants ingest_role="aircraft_ingest_app":
     docker compose exec -T {{ DB_SERVICE }} \
       psql -X -v ON_ERROR_STOP=1 \
         -U "{{ POSTGRES_USER }}" \

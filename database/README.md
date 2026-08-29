@@ -10,7 +10,8 @@ This directory owns the SQL lifecycle for the Aircraft Management Engine.
 - `snapshots/`: normalized business snapshot queries, plus the committed golden
   output in `snapshots/golden/<fixture>/` that `cargo xtask snapshots` diffs the
   adapter against.
-- `roles/`: role grants applied by an administrator, not by `install.sql`.
+- `roles/`: ingestion role creation and grants, applied by an administrator,
+  not by `install.sql`.
 - `fixtures/`: test-only data.
 - `docker/init/`: optional database-level initialization for an empty volume.
 - `reconcile_local_legacy.sql`: local-only compatibility check for complete

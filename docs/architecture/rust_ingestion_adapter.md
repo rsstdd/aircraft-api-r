@@ -116,14 +116,27 @@ batch label behind historical assertions.
 Migration 017 brings the run, attempt, staging, image, raw JSON, issue, hash, and
 idempotency structures into canonical migration history.
 
-Create a dedicated Aiven service user, run migrations with the migration owner,
-then grant ingest rights as an administrator:
+Run migrations with the migration owner, create the restricted ingestion login
+role, then grant it ingest rights as an administrator. `install.sql` creates no
+roles, so both steps are explicit. The password is read from the environment so
+it never reaches the process argument list:
 
 ```bash
+export INGEST_ROLE_PASSWORD='...'
+
+psql "$MIGRATION_DATABASE_URL" \
+  -v ingest_role=aircraft_ingest_app \
+  -f database/roles/create_ingest_role.sql
+
 psql "$MIGRATION_DATABASE_URL" \
   -v ingest_role=aircraft_ingest_app \
   -f database/roles/ingest_grants.sql
 ```
+
+Locally the same two steps are `just db-create-ingest-role` and `just db-grants`,
+which default to the `aircraft_ingest_app` name used in `.env.example`. In Aiven,
+create the service user in the console instead of running
+`create_ingest_role.sql`, then apply the grants file unchanged.
 
 Set the dedicated user's TLS-verified Aiven URL in
 `APP__INGEST__DATABASE_URL`. The role can read only the required lookup and
