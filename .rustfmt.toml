@@ -1,19 +1,14 @@
 # =============================================================================
 # Rustfmt
 # =============================================================================
-# Keep this file conservative and stable-channel friendly.
-#
-# Avoid unstable options such as:
-# - group_imports
-# - imports_granularity
-# - reorder_impl_items
-# unless the project intentionally formats with nightly rustfmt.
+# Keep this file compatible with the repository's stable Rust toolchain.
 # =============================================================================
 
 edition = "2024"
 style_edition = "2024"
 
 max_width = 100
+tab_spaces = 2
 newline_style = "Unix"
 
 # More compact idiomatic Rust:
@@ -30,7 +25,7 @@ use_field_init_shorthand = true
 #   some_result?
 use_try_shorthand = true
 
-# Keep rustfmt responsible for deterministic import/module ordering where stable.
+# Keep rustfmt responsible for deterministic import and module ordering.
 reorder_imports = true
 reorder_modules = true
 
