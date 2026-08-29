@@ -1,3 +1,3 @@
 pub mod services;
 
-pub use services::ingestion;
+pub use services::{curation, ingestion};
