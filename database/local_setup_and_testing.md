@@ -88,7 +88,7 @@ This command performs the following operations in order:
 2. Waits until PostgreSQL accepts connections.
 3. Reconciles a verified legacy Phase 1/2 prefix when necessary.
 4. Runs the dependency-aware installer.
-5. Applies all 16 schema migrations.
+5. Applies all 21 schema migrations.
 6. Applies canonical seeds at their required dependency boundaries.
 7. Runs every database validation script, beginning with exact migration-history validation.
 
@@ -156,7 +156,7 @@ FROM public.aircraft_schema_migrations;
 Expected result:
 
 ```text
-16
+21
 ```
 
 Check representative canonical seed counts:
@@ -297,7 +297,7 @@ public.aircraft_schema_migrations
 
 It should still complete successfully because the canonical seeds are idempotent.
 
-Confirm that the migration count remains 16:
+Confirm that the migration count remains 21:
 
 ```bash
 just db-psql
@@ -469,7 +469,7 @@ SELECT COUNT(*) FROM aircraft_compare.mission_profiles;
 Expected results:
 
 ```text
-16 migrations
+21 migrations
 38 measurement units
 15 mission profiles
 ```
