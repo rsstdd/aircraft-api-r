@@ -10,6 +10,7 @@ members = [
     "crates/aircraft_domain",
     "crates/aircraft_ingest",
     "crates/aircraft_observability",
+    "crates/aircraft_testsupport",
     "xtask",
 ]
 default-members = [
@@ -38,6 +39,7 @@ aircraft_db = { path = "crates/aircraft_db" }
 aircraft_domain = { path = "crates/aircraft_domain" }
 aircraft_ingest = { path = "crates/aircraft_ingest" }
 aircraft_observability = { path = "crates/aircraft_observability" }
+aircraft_testsupport = { path = "crates/aircraft_testsupport" }
 
 # Error handling
 anyhow = "1.0"
@@ -99,10 +101,15 @@ proptest = "1.5"
 serial_test = "3.5"
 
 [workspace.lints.rust]
+future_incompatible = { level = "deny", priority = -1 }
+unexpected_cfgs = "deny"
 unsafe_code = "forbid"
 missing_debug_implementations = "warn"
+unreachable_pub = "warn"
 unused_imports = "warn"
+unused_lifetimes = "deny"
 unused_must_use = "deny"
+unused_qualifications = "warn"
 
 [workspace.lints.clippy]
 all = { level = "warn", priority = -3 }
@@ -130,6 +137,7 @@ lto = "thin"
 codegen-units = 1
 strip = "symbols"
 panic = "abort"
+overflow-checks = true
 
 [profile.test]
 debug = true

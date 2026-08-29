@@ -1,0 +1,687 @@
+// A failing assertion is the point of a test, so panicking accessors are fine.
+#![allow(clippy::expect_used, clippy::unwrap_used)]
+
+//! Deployment gates for the `PlanePHD` ingestion adapter.
+//!
+//! `docs/architecture/rust_ingestion_adapter.md` makes production promotion
+//! conditional on clean-database import, migration, transaction rollback,
+//! idempotency, status-history, and SQL-versus-Rust parity. These tests close
+//! the first five by driving the shipped `aircraft-ingest` binary against a
+//! disposable database carrying the canonical schema; parity lives in
+//! `cargo xtask snapshots`.
+
+use std::{
+  path::{Path, PathBuf},
+  process::Output,
+  time::Duration,
+};
+
+use aircraft_testsupport::{TestResult, install_schema, start_postgres};
+use serde_json::Value;
+use sqlx_core::{query::query, query_scalar::query_scalar, row::Row};
+use sqlx_postgres::PgPool;
+
+/// Repository-root fixture, resolved from the manifest so the test does not
+/// depend on the working directory cargo happens to choose.
+fn fixture() -> PathBuf {
+  Path::new(env!("CARGO_MANIFEST_DIR")).join("../../tests/fixtures/planephd_minimal.json")
+}
+
+fn import_with_alternate_cruise(database_url: &str) -> TestResult<Output> {
+  let input = tempfile::NamedTempFile::new()?;
+  let source = std::fs::read_to_string(fixture())?.replace("124 KIAS", "125 KIAS");
+  std::fs::write(input.path(), source)?;
+  run_cli(Some(database_url), &as_args(&import_args(input.path())))
+}
+
+/// Runs the shipped binary with a clean `APP__` environment plus the database
+/// under test, so a developer's `.env` cannot influence the result.
+fn run_cli(database_url: Option<&str>, args: &[&str]) -> TestResult<Output> {
+  let mut command = std::process::Command::new(env!("CARGO_BIN_EXE_aircraft-ingest"));
+  for (key, _) in std::env::vars() {
+    if key.starts_with("APP__") {
+      command.env_remove(key);
+    }
+  }
+  if let Some(url) = database_url {
+    command.env("APP__INGEST__DATABASE_URL", url);
+  }
+  Ok(command.args(args).output()?)
+}
+
+fn import_args(input: &Path) -> Vec<String> {
+  vec![
+    "import".to_owned(),
+    "--source".to_owned(),
+    "planephd".to_owned(),
+    "--input".to_owned(),
+    input.display().to_string(),
+    "--format".to_owned(),
+    "json".to_owned(),
+  ]
+}
+
+fn as_args(owned: &[String]) -> Vec<&str> {
+  owned.iter().map(String::as_str).collect()
+}
+
+fn stdout_json(output: &Output) -> TestResult<Value> {
+  Ok(serde_json::from_slice(&output.stdout)?)
+}
+
+fn describe(output: &Output) -> String {
+  format!(
+    "exit {:?}\n--- stdout ---\n{}\n--- stderr ---\n{}",
+    output.status.code(),
+    String::from_utf8_lossy(&output.stdout),
+    String::from_utf8_lossy(&output.stderr)
+  )
+}
+
+/// `predicate` is appended verbatim, so callers must pass only literals.
+async fn count(pool: &PgPool, table: &str) -> TestResult<i64> {
+  Ok(query_scalar(&format!("SELECT COUNT(*) FROM {table}")).fetch_one(pool).await?)
+}
+
+/// Gate: clean-database import.
+#[tokio::test]
+async fn import_into_a_clean_database_promotes_the_fixture() -> TestResult {
+  let (container, pool) = start_postgres(5, Duration::from_secs(5)).await?;
+  install_schema(&pool).await?;
+
+  let args = import_args(&fixture());
+  let output = run_cli(Some(&container.database_url), &as_args(&args))?;
+  assert!(output.status.success(), "import should succeed: {}", describe(&output));
+
+  let report = stdout_json(&output)?;
+  assert_eq!(report["status"], "SUCCEEDED", "{report:#}");
+  assert_eq!(report["promoted_records"], 1, "{report:#}");
+  assert_eq!(report["already_imported"], false, "{report:#}");
+
+  assert_eq!(count(&pool, "aircraft_core.variants").await?, 1);
+  // Seed data already carries manufacturers, so assert the fixture's own
+  // organization was resolved rather than counting the whole table.
+  assert_eq!(
+    count(&pool, "aircraft_org.organizations WHERE upper(name) = 'CESSNA'").await?,
+    1,
+    "the fixture manufacturer must resolve to exactly one organization"
+  );
+  assert!(count(&pool, "aircraft_specs.performance_metrics").await? > 0);
+  assert!(count(&pool, "aircraft_prov.source_assertions").await? > 0);
+  Ok(())
+}
+
+/// Everything this adapter writes is deliberately non-canonical and pending
+/// (commit `bd68e46`).
+///
+/// `aircraft_read.mv_variant_search` selects from `aircraft_core.variants` and
+/// applies `is_canonical` only inside its metric aggregates, so an ingested
+/// variant *is* published to the read model while its measurements are withheld
+/// until curation accepts them. This pins that split so neither side can start
+/// publishing uncurated values by accident.
+///
+/// Weight metrics were exempt from that gate until migration 019 added
+/// `is_canonical` to `aircraft_specs.weight_metrics`; asserting only the
+/// performance columns here is what let that pass unnoticed.
+#[tokio::test]
+async fn imported_values_stay_pending_and_out_of_the_read_model() -> TestResult {
+  let (container, pool) = start_postgres(5, Duration::from_secs(5)).await?;
+  install_schema(&pool).await?;
+
+  let args = import_args(&fixture());
+  let output = run_cli(Some(&container.database_url), &as_args(&args))?;
+  assert!(output.status.success(), "{}", describe(&output));
+
+  assert_eq!(
+    count(&pool, "aircraft_specs.performance_metrics WHERE is_canonical").await?,
+    0,
+    "ingestion must not canonicalize its own performance values"
+  );
+  assert_eq!(
+    count(&pool, "aircraft_specs.weight_metrics WHERE is_canonical").await?,
+    0,
+    "ingestion must not canonicalize its own weight values"
+  );
+  assert_eq!(
+    count(&pool, "aircraft_prov.source_assertions WHERE is_accepted").await?,
+    0,
+    "ingestion must not accept its own assertions"
+  );
+  assert_eq!(
+    count(&pool, "aircraft_read.mv_variant_search").await?,
+    1,
+    "the variant identity is published even while its values are pending"
+  );
+  // Every value column the matview exposes, not just the performance ones.
+  // Weight metrics were ungated until migration 019 and market data until
+  // migration 020; in both cases the columns this assertion omitted were exactly
+  // the ones with no curation gate.
+  assert_eq!(
+    count(
+      &pool,
+      "aircraft_read.mv_variant_search \
+             WHERE cruise_speed_kias IS NOT NULL OR range_nm IS NOT NULL \
+                OR service_ceiling_ft IS NOT NULL OR rate_of_climb_fpm IS NOT NULL \
+                OR stall_speed_kias IS NOT NULL OR takeoff_50ft_ft IS NOT NULL \
+                OR landing_50ft_ft IS NOT NULL OR gross_weight_lb IS NOT NULL \
+                OR empty_weight_lb IS NOT NULL OR fuel_capacity_gal IS NOT NULL \
+                OR papi_price_usd IS NOT NULL OR for_sale_count IS NOT NULL \
+                OR total_annual_cost_usd IS NOT NULL OR cost_per_hour_usd IS NOT NULL"
+    )
+    .await?,
+    0,
+    "no uncurated measurement may surface through the read model"
+  );
+  Ok(())
+}
+
+/// Gate: idempotency. A re-import of the same artifact is a replay, not a
+/// second write.
+#[tokio::test]
+async fn reimporting_the_same_artifact_is_idempotent() -> TestResult {
+  let (container, pool) = start_postgres(5, Duration::from_secs(5)).await?;
+  install_schema(&pool).await?;
+
+  let args = import_args(&fixture());
+  let first = run_cli(Some(&container.database_url), &as_args(&args))?;
+  assert!(first.status.success(), "{}", describe(&first));
+  let variants_after_first = count(&pool, "aircraft_core.variants").await?;
+  let assertions_after_first = count(&pool, "aircraft_prov.source_assertions").await?;
+
+  let second = run_cli(Some(&container.database_url), &as_args(&args))?;
+  assert!(second.status.success(), "{}", describe(&second));
+
+  let report = stdout_json(&second)?;
+  assert_eq!(report["already_imported"], true, "replay must be reported as such: {report:#}");
+  assert_eq!(
+    count(&pool, "aircraft_core.variants").await?,
+    variants_after_first,
+    "a replay must not create additional variants"
+  );
+  assert_eq!(
+    count(&pool, "aircraft_prov.source_assertions").await?,
+    assertions_after_first,
+    "a replay must not create additional assertions"
+  );
+  assert_eq!(
+    count(&pool, "aircraft_ingest.ingest_runs").await?,
+    1,
+    "the same artifact is one logical run"
+  );
+  Ok(())
+}
+
+/// Gate: transaction rollback. A hard validation failure must leave no aircraft
+/// data behind, while still committing its own audit trail.
+#[tokio::test]
+async fn a_hard_validation_failure_writes_no_aircraft_data_but_records_the_attempt() -> TestResult {
+  let (container, pool) = start_postgres(5, Duration::from_secs(5)).await?;
+  install_schema(&pool).await?;
+
+  // Production years run backwards, which normalization reports as an
+  // error-severity `INVALID_PRODUCTION_YEARS` issue.
+  let directory = tempfile::tempdir()?;
+  let invalid = directory.path().join("invalid.json");
+  std::fs::write(
+    &invalid,
+    serde_json::to_vec(&serde_json::json!({
+        "CESSNA": { "172S Skyhawk SP": { "start_year": 2006, "end_year": 1998 } }
+    }))?,
+  )?;
+
+  let args = import_args(&invalid);
+  let output = run_cli(Some(&container.database_url), &as_args(&args))?;
+  assert_eq!(
+    output.status.code(),
+    Some(4),
+    "validation failures use exit code 4: {}",
+    describe(&output)
+  );
+
+  assert_eq!(count(&pool, "aircraft_core.variants").await?, 0);
+  assert_eq!(count(&pool, "aircraft_ingest.staged_aircraft").await?, 0);
+  assert_eq!(count(&pool, "aircraft_prov.source_assertions").await?, 0);
+
+  let status: String =
+    query_scalar("SELECT status FROM aircraft_ingest.ingest_runs").fetch_one(&pool).await?;
+  assert_eq!(status, "VALIDATION_FAILED");
+  let attempt: String =
+    query_scalar("SELECT status FROM aircraft_ingest.ingest_run_attempts").fetch_one(&pool).await?;
+  assert_eq!(attempt, "VALIDATION_FAILED", "the audit trail must survive the rollback");
+  Ok(())
+}
+
+/// Gate: status history. The machine-readable status output is a contract.
+#[tokio::test]
+async fn status_reports_the_attempt_history_as_json() -> TestResult {
+  let (container, pool) = start_postgres(5, Duration::from_secs(5)).await?;
+  install_schema(&pool).await?;
+
+  let args = import_args(&fixture());
+  let imported = run_cli(Some(&container.database_url), &as_args(&args))?;
+  assert!(imported.status.success(), "{}", describe(&imported));
+
+  let output =
+    run_cli(Some(&container.database_url), &["status", "--limit", "20", "--format", "json"])?;
+  assert!(output.status.success(), "{}", describe(&output));
+
+  let document = stdout_json(&output)?;
+  let runs = document["runs"].as_array().expect("status must report a runs array");
+  assert_eq!(runs.len(), 1, "{document:#}");
+  assert_eq!(runs[0]["status"], "SUCCEEDED", "{document:#}");
+  assert_eq!(runs[0]["source_slug"], "planephd", "{document:#}");
+
+  let attempts = runs[0]["attempts"].as_array().expect("a run must carry its attempts");
+  assert_eq!(attempts.len(), 1, "{document:#}");
+  assert_eq!(attempts[0]["attempt_number"], 1, "{document:#}");
+  assert_eq!(attempts[0]["status"], "SUCCEEDED", "{document:#}");
+  assert!(
+    document["schema_version"].as_u64().is_some_and(|version| version >= 2),
+    "status output must declare its schema version: {document:#}"
+  );
+  Ok(())
+}
+
+/// A retry after an interrupted import must close the stale `IMPORTING` attempt
+/// rather than leaving two attempts open.
+///
+/// The run and attempt rows are written by a short transaction that commits
+/// before the long staging transaction begins, so a process killed mid-import
+/// leaves exactly this state behind: an `IMPORTING` run with an open attempt and
+/// no staged rows, because the long transaction rolled back. The test seeds that
+/// state directly rather than staging data first — staged rows that survived a
+/// crash would be a different (and impossible) scenario.
+#[tokio::test]
+async fn a_retry_closes_a_stale_importing_attempt() -> TestResult {
+  let (container, pool) = start_postgres(5, Duration::from_secs(5)).await?;
+  install_schema(&pool).await?;
+
+  let fixture = fixture();
+  let validated = run_cli(
+    Some(&container.database_url),
+    &[
+      "validate",
+      "--source",
+      "planephd",
+      "--input",
+      &fixture.display().to_string(),
+      "--format",
+      "json",
+    ],
+  )?;
+  assert!(validated.status.success(), "{}", describe(&validated));
+  let content_sha256 = stdout_json(&validated)?["artifact"]["content_sha256"]
+    .as_str()
+    .expect("validate must report the artifact hash")
+    .to_owned();
+
+  let run_id: i64 = query_scalar(
+    "INSERT INTO aircraft_ingest.ingest_runs(
+            run_label,source_name,source_slug,content_sha256,parser_name,parser_version,
+            input_byte_length,input_locator,status)
+         VALUES('planephd_interrupted','PlanePHD','planephd',$1,'planephd-json','1.0.0',
+            1,'interrupted.json','IMPORTING')
+         RETURNING id",
+  )
+  .bind(&content_sha256)
+  .fetch_one(&pool)
+  .await?;
+  query(
+    "INSERT INTO aircraft_ingest.ingest_run_attempts(ingest_run_id,attempt_number,status)
+         VALUES($1,1,'IMPORTING')",
+  )
+  .bind(run_id)
+  .execute(&pool)
+  .await?;
+
+  let retry = run_cli(Some(&container.database_url), &as_args(&import_args(&fixture)))?;
+  assert!(retry.status.success(), "the retry must succeed: {}", describe(&retry));
+
+  let rows = query(
+    "SELECT status, failure_code FROM aircraft_ingest.ingest_run_attempts
+         ORDER BY attempt_number",
+  )
+  .fetch_all(&pool)
+  .await?;
+  assert_eq!(rows.len(), 2, "the retry must create a second attempt");
+  assert_eq!(rows[0].get::<String, _>("status"), "FAILED", "the stale attempt must be closed");
+  assert_eq!(
+    rows[0].get::<Option<String>, _>("failure_code").as_deref(),
+    Some("PROCESS_TERMINATED")
+  );
+  assert_eq!(rows[1].get::<String, _>("status"), "SUCCEEDED");
+  assert_eq!(
+    count(&pool, "aircraft_ingest.ingest_runs").await?,
+    1,
+    "the retry must reuse the interrupted logical run"
+  );
+  Ok(())
+}
+
+/// The documented exit codes are a scripting contract; nothing pinned them.
+#[tokio::test]
+async fn documented_exit_codes_hold() -> TestResult {
+  let missing_configuration = run_cli(None, &as_args(&import_args(&fixture())))?;
+  assert_eq!(
+    missing_configuration.status.code(),
+    Some(2),
+    "a missing database URL is a configuration failure: {}",
+    describe(&missing_configuration)
+  );
+
+  let (container, pool) = start_postgres(5, Duration::from_secs(5)).await?;
+  install_schema(&pool).await?;
+
+  let absent = Path::new("/nonexistent/planephd.json");
+  let unreadable_input = run_cli(Some(&container.database_url), &as_args(&import_args(absent)))?;
+  assert_eq!(
+    unreadable_input.status.code(),
+    Some(3),
+    "an unreadable artifact is a capture failure: {}",
+    describe(&unreadable_input)
+  );
+  Ok(())
+}
+
+/// Curation is the step that makes ingested data visible. Accepting one
+/// assertion must publish exactly that value and leave its siblings pending.
+#[tokio::test]
+async fn curating_an_assertion_publishes_only_that_value() -> TestResult {
+  let (container, pool) = start_postgres(5, Duration::from_secs(5)).await?;
+  install_schema(&pool).await?;
+
+  let imported = run_cli(Some(&container.database_url), &as_args(&import_args(&fixture())))?;
+  assert!(imported.status.success(), "{}", describe(&imported));
+  let alternate = import_with_alternate_cruise(&container.database_url)?;
+  assert!(alternate.status.success(), "{}", describe(&alternate));
+
+  let listed = run_cli(
+    Some(&container.database_url),
+    &["curate", "list", "--limit", "50", "--format", "json"],
+  )?;
+  assert!(listed.status.success(), "{}", describe(&listed));
+  let pending = stdout_json(&listed)?;
+  let rows = pending["pending"].as_array().expect("curate list must report an array");
+  assert!(!rows.is_empty(), "ingestion must leave assertions pending: {pending:#}");
+
+  let cruise = rows
+    .iter()
+    .find(|row| {
+      row["field_name"] == "performance.SPEED_CRUISE_BEST" && row["raw_value"] == "124 KIAS"
+    })
+    .expect("the fixture asserts a cruise speed");
+  let assertion_id = cruise["assertion_id"].as_i64().expect("assertion id");
+
+  let accepted = run_cli(
+    Some(&container.database_url),
+    &["curate", "accept", "--assertion-id", &assertion_id.to_string(), "--format", "json"],
+  )?;
+  assert!(accepted.status.success(), "{}", describe(&accepted));
+  let outcome = stdout_json(&accepted)?;
+  assert_eq!(outcome["decision"], "ACCEPTED", "{outcome:#}");
+  assert_eq!(outcome["measurement_canonicalized"], true, "{outcome:#}");
+  assert_eq!(outcome["read_model_refreshed"], true, "{outcome:#}");
+
+  // Exactly the accepted value is published; everything else stays withheld.
+  let published: (Option<String>, Option<String>, Option<String>) = {
+    let row = query(
+      "SELECT cruise_speed_kias::text AS cruise, range_nm::text AS range,
+                    gross_weight_lb::text AS gross
+             FROM aircraft_read.mv_variant_search",
+    )
+    .fetch_one(&pool)
+    .await?;
+    (row.get("cruise"), row.get("range"), row.get("gross"))
+  };
+  assert!(
+    published.0.as_deref().is_some_and(|value| value.starts_with("124")),
+    "the accepted cruise speed must be served: {published:?}"
+  );
+  assert!(published.1.is_none(), "an unaccepted sibling must stay withheld");
+  assert!(published.2.is_none(), "an unaccepted weight must stay withheld");
+
+  // Accepting twice is not a silent no-op; the state machine rejects it.
+  let repeated = run_cli(
+    Some(&container.database_url),
+    &["curate", "accept", "--assertion-id", &assertion_id.to_string(), "--format", "json"],
+  )?;
+  assert_eq!(
+    repeated.status.code(),
+    Some(8),
+    "a second decision on the same assertion must fail: {}",
+    describe(&repeated)
+  );
+  Ok(())
+}
+
+/// Rejecting one pending source must not withdraw a different source's accepted
+/// measurement for the same aircraft field.
+#[tokio::test]
+async fn rejecting_a_pending_sibling_keeps_the_accepted_measurement_published() -> TestResult {
+  let (container, pool) = start_postgres(5, Duration::from_secs(5)).await?;
+  install_schema(&pool).await?;
+
+  let imported = run_cli(Some(&container.database_url), &as_args(&import_args(&fixture())))?;
+  assert!(imported.status.success(), "{}", describe(&imported));
+  let alternate = import_with_alternate_cruise(&container.database_url)?;
+  assert!(alternate.status.success(), "{}", describe(&alternate));
+
+  let assertions = query(
+    "SELECT id, raw_value FROM aircraft_prov.source_assertions
+         WHERE field_name = 'performance.SPEED_CRUISE_BEST'",
+  )
+  .fetch_all(&pool)
+  .await?;
+  let assertion_id = |raw_value: &str| {
+    assertions
+      .iter()
+      .find(|row| row.get::<String, _>("raw_value") == raw_value)
+      .map(|row| row.get::<i64, _>("id"))
+      .expect("both cruise assertions must exist")
+  };
+
+  let accepted = run_cli(
+    Some(&container.database_url),
+    &[
+      "curate",
+      "accept",
+      "--assertion-id",
+      &assertion_id("124 KIAS").to_string(),
+      "--format",
+      "json",
+    ],
+  )?;
+  assert!(accepted.status.success(), "{}", describe(&accepted));
+
+  let rejected = run_cli(
+    Some(&container.database_url),
+    &[
+      "curate",
+      "reject",
+      "--assertion-id",
+      &assertion_id("125 KIAS").to_string(),
+      "--format",
+      "json",
+    ],
+  )?;
+  assert!(rejected.status.success(), "{}", describe(&rejected));
+
+  let published: Option<String> =
+    query_scalar("SELECT cruise_speed_kias::text FROM aircraft_read.mv_variant_search")
+      .fetch_one(&pool)
+      .await?;
+  assert!(
+    published.as_deref().is_some_and(|value| value.starts_with("124")),
+    "rejecting a pending sibling must leave the accepted value served: {published:?}"
+  );
+  Ok(())
+}
+
+/// Rejecting withdraws a previously published value, so a curator can undo.
+#[tokio::test]
+async fn rejecting_an_accepted_assertion_withdraws_it_from_the_read_model() -> TestResult {
+  let (container, pool) = start_postgres(5, Duration::from_secs(5)).await?;
+  install_schema(&pool).await?;
+
+  let imported = run_cli(Some(&container.database_url), &as_args(&import_args(&fixture())))?;
+  assert!(imported.status.success(), "{}", describe(&imported));
+
+  let assertion_id: i64 = query_scalar(
+    "SELECT id FROM aircraft_prov.source_assertions
+         WHERE field_name = 'weight.WEIGHT_MTOW'",
+  )
+  .fetch_one(&pool)
+  .await?;
+
+  let accepted = run_cli(
+    Some(&container.database_url),
+    &["curate", "accept", "--assertion-id", &assertion_id.to_string(), "--format", "json"],
+  )?;
+  assert!(accepted.status.success(), "{}", describe(&accepted));
+  assert_eq!(count(&pool, "aircraft_specs.weight_metrics WHERE is_canonical").await?, 1);
+
+  let published: Option<String> =
+    query_scalar("SELECT gross_weight_lb::text FROM aircraft_read.mv_variant_search")
+      .fetch_one(&pool)
+      .await?;
+  assert!(published.is_some(), "the accepted weight must be served before withdrawal");
+
+  let rejected = run_cli(
+    Some(&container.database_url),
+    &["curate", "reject", "--assertion-id", &assertion_id.to_string(), "--format", "json"],
+  )?;
+  assert!(rejected.status.success(), "a curator must be able to withdraw: {}", describe(&rejected));
+  let outcome = stdout_json(&rejected)?;
+  assert_eq!(outcome["decision"], "REJECTED", "{outcome:#}");
+  assert_eq!(outcome["measurement_canonicalized"], false, "{outcome:#}");
+
+  assert_eq!(
+    count(&pool, "aircraft_specs.weight_metrics WHERE is_canonical").await?,
+    0,
+    "withdrawal must clear the canonical flag"
+  );
+  let withdrawn: Option<String> =
+    query_scalar("SELECT gross_weight_lb::text FROM aircraft_read.mv_variant_search")
+      .fetch_one(&pool)
+      .await?;
+  assert!(withdrawn.is_none(), "a withdrawn value must leave the read model");
+
+  // Repeating the same decision is refused, so an unchanged state is never
+  // reported as a successful change.
+  let repeated = run_cli(
+    Some(&container.database_url),
+    &["curate", "reject", "--assertion-id", &assertion_id.to_string(), "--format", "json"],
+  )?;
+  assert_eq!(
+    repeated.status.code(),
+    Some(8),
+    "repeating a decision must fail: {}",
+    describe(&repeated)
+  );
+  Ok(())
+}
+
+/// `DUPLICATE_SOURCE_RECORD_KEY` cannot live in the parity fixtures: it is
+/// error-severity, so it aborts preflight and there is nothing for the two
+/// loaders to compare. It still needs coverage, because the duplicate check is
+/// what stops one record silently overwriting another.
+#[tokio::test]
+async fn a_duplicated_source_record_key_is_rejected_before_anything_is_written() -> TestResult {
+  let (container, pool) = start_postgres(5, Duration::from_secs(5)).await?;
+  install_schema(&pool).await?;
+
+  // The same manufacturer/aircraft pair twice: a JSON object may repeat a key,
+  // and the streaming parser visits both.
+  let directory = tempfile::tempdir()?;
+  let duplicated = directory.path().join("duplicated.json");
+  std::fs::write(
+    &duplicated,
+    br#"{"CESSNA": {"172S Skyhawk SP": {"title": "first"}, "172S Skyhawk SP": {"title": "second"}}}"#,
+  )?;
+
+  let output = run_cli(Some(&container.database_url), &as_args(&import_args(&duplicated)))?;
+  assert_eq!(
+    output.status.code(),
+    Some(4),
+    "a duplicate source-record key is a validation failure: {}",
+    describe(&output)
+  );
+  assert!(
+    String::from_utf8_lossy(&output.stderr).contains("DUPLICATE_SOURCE_RECORD_KEY"),
+    "the failure must name the code: {}",
+    describe(&output)
+  );
+  assert_eq!(count(&pool, "aircraft_core.variants").await?, 0);
+  assert_eq!(count(&pool, "aircraft_ingest.staged_aircraft").await?, 0);
+  Ok(())
+}
+
+/// Market data is gated at the snapshot, not the row: a cost snapshot's totals
+/// are only meaningful together, so accepting any of its assertions publishes it
+/// and withdrawing the last one takes it back down. Prices were also the only
+/// values the adapter wrote with no provenance at all, which left them
+/// permanently unpublishable once migration 020 gated them.
+#[tokio::test]
+async fn curating_market_assertions_publishes_price_and_cost() -> TestResult {
+  let (container, pool) = start_postgres(5, Duration::from_secs(5)).await?;
+  install_schema(&pool).await?;
+
+  let imported = run_cli(Some(&container.database_url), &as_args(&import_args(&fixture())))?;
+  assert!(imported.status.success(), "{}", describe(&imported));
+
+  // Provenance for the price now exists; before migration 020 it did not.
+  let valuation_assertion: i64 = query_scalar(
+    "SELECT id FROM aircraft_prov.source_assertions
+         WHERE entity_type_code = 'VALUATION' AND field_name = 'papi_price_estimate'",
+  )
+  .fetch_one(&pool)
+  .await?;
+
+  let price_before: Option<String> =
+    query_scalar("SELECT papi_price_usd::text FROM aircraft_read.mv_variant_search")
+      .fetch_one(&pool)
+      .await?;
+  assert!(price_before.is_none(), "an uncurated price must not be served");
+
+  let accepted = run_cli(
+    Some(&container.database_url),
+    &["curate", "accept", "--assertion-id", &valuation_assertion.to_string(), "--format", "json"],
+  )?;
+  assert!(accepted.status.success(), "{}", describe(&accepted));
+
+  let price_after: Option<String> =
+    query_scalar("SELECT papi_price_usd::text FROM aircraft_read.mv_variant_search")
+      .fetch_one(&pool)
+      .await?;
+  assert!(
+    price_after.as_deref().is_some_and(|value| value.starts_with("285000")),
+    "the accepted price must be served: {price_after:?}"
+  );
+
+  // A cost assertion publishes its whole snapshot.
+  let cost_assertion: i64 = query_scalar(
+    "SELECT id FROM aircraft_prov.source_assertions
+         WHERE entity_type_code = 'COST_SNAPSHOT' ORDER BY id LIMIT 1",
+  )
+  .fetch_one(&pool)
+  .await?;
+  let published = run_cli(
+    Some(&container.database_url),
+    &["curate", "accept", "--assertion-id", &cost_assertion.to_string(), "--format", "json"],
+  )?;
+  assert!(published.status.success(), "{}", describe(&published));
+  assert_eq!(count(&pool, "aircraft_market.cost_snapshots WHERE is_canonical").await?, 1);
+
+  // Withdrawing the only accepted assertion takes the snapshot back down.
+  let withdrawn = run_cli(
+    Some(&container.database_url),
+    &["curate", "reject", "--assertion-id", &cost_assertion.to_string(), "--format", "json"],
+  )?;
+  assert!(withdrawn.status.success(), "{}", describe(&withdrawn));
+  assert_eq!(
+    count(&pool, "aircraft_market.cost_snapshots WHERE is_canonical").await?,
+    0,
+    "withdrawing the last accepted assertion must unpublish the snapshot"
+  );
+  Ok(())
+}

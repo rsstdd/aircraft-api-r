@@ -1,0 +1,149 @@
+{
+  "BEECHCRAFT": {
+    "Baron G58": {
+      "source_link": "/wizard/details/baron-g58",
+      "page_url": "https://planephd.com/wizard/details/baron-g58",
+      "title": "2010 BEECHCRAFT Baron G58",
+      "description": "This aircraft seats up to 5 passengers plus 1 pilot.",
+      "papi_price_estimate": "$1,150,000",
+      "for_sale_count": "7",
+      "start_year": 2005,
+      "end_year": null,
+      "in_production": true,
+      "performance": {
+        "best_cruise_speed": "200 KTAS",
+        "best_range_i": "1480 NM",
+        "ceiling": "20688 FT",
+        "fuel_burn_75": "32 GPH",
+        "rate_of_climb": "1700 FPM",
+        "stall_speed": "84 KIAS",
+        "takeoff_distance_over_50ft_obstacle": "2345 FT",
+        "landing_distance_over_50ft_obstacle": "2490 FT",
+        "horsepower": "2 x 300 HP"
+      },
+      "weights": {
+        "empty_weight": "3980 LBS",
+        "gross_weight": "5500 LBS",
+        "fuel_capacity": "194 GAL"
+      },
+      "engine": {
+        "manufacturer": "Continental",
+        "model": "IO-550-C",
+        "horsepower": "300 HP",
+        "overhaul_ht": "1700 HRS",
+        "years_before_overhaul": "12"
+      },
+      "ownership_costs": {
+        "annual_inspection_cost": "$4,800",
+        "insurance_cost": "$6,200",
+        "hangar_cost": "$7,200",
+        "fuel_cost_per_hour": "$182.40",
+        "total_fixed_cost_annual": "$28,400",
+        "total_variable_cost_per_hour": "$310.75"
+      },
+      "images": [
+        {
+          "href": "/static/acftref/baron-g58.jpg",
+          "title": "Beechcraft Baron G58",
+          "holder": "Synthetic fixture",
+          "dimensions": "640x420"
+        }
+      ]
+    },
+    "Bonanza G36": {
+      "source_link": "/wizard/details/bonanza-g36",
+      "page_url": "https://planephd.com/wizard/details/bonanza-g36",
+      "title": "2012 BEECHCRAFT Bonanza G36",
+      "description": "This aircraft seats up to 5 passengers plus 1 pilot.",
+      "papi_price_estimate": "none",
+      "for_sale_count": "n/a",
+      "start_year": 2006,
+      "end_year": 2021,
+      "in_production": false,
+      "performance": {
+        "best_cruise_speed": "176 KTAS",
+        "best_range_i": "--",
+        "ceiling": "18500 FT",
+        "fuel_burn_75": "-",
+        "rate_of_climb": "1230 FPM",
+        "horsepower": "1 x 300 HP"
+      },
+      "weights": {
+        "empty_weight": "2530 LBS",
+        "gross_weight": "3650 LBS",
+        "fuel_capacity": "none"
+      },
+      "engine": {
+        "manufacturer": "Continental",
+        "model": "IO-550-B",
+        "horsepower": "300 HP",
+        "overhaul_ht": "n/a",
+        "years_before_overhaul": "--"
+      },
+      "ownership_costs": {
+        "annual_inspection_cost": "$3,100",
+        "insurance_cost": "none",
+        "fuel_cost_per_hour": "$91.20"
+      },
+      "images": []
+    }
+  },
+  "PIPER": {
+    "PA-46 Malibu": {
+      "source_link": "/wizard/details/pa46-malibu",
+      "page_url": "ftp://planephd.com/wizard/details/pa46-malibu",
+      "title": "1988 PIPER PA-46 Malibu",
+      "description": "This aircraft seats up to 5 passengers plus 1 pilot.",
+      "papi_price_estimate": "priceless",
+      "for_sale_count": "2.5",
+      "start_year": 1984,
+      "end_year": 1988,
+      "in_production": "maybe",
+      "registration_prefix": "N",
+      "certification_basis": "FAR 23",
+      "performance": {
+        "best_cruise_speed": "213 MPH",
+        "best_range_i": "1420 NM",
+        "ceiling": "25000 FT",
+        "max_speed": "234 KTAS",
+        "cruise_altitude": "24000 FT",
+        "rate_of_climb": "1143 FPM",
+        "horsepower": "1 x 310 HP"
+      },
+      "weights": {
+        "empty_weight": "2460 LBS",
+        "gross_weight": "4100 LBS",
+        "ramp_weight": "4118 LBS",
+        "fuel_capacity": "120 GAL"
+      },
+      "engine": {
+        "manufacturer": "Continental",
+        "model": "TSIO-520-BE",
+        "horsepower": "310 HP",
+        "overhaul_ht": "2000 HRS",
+        "years_before_overhaul": "12"
+      },
+      "ownership_costs": {
+        "annual_inspection_cost": "$5,400",
+        "insurance_cost": "$4,900",
+        "mystery_surcharge": "$250",
+        "fuel_cost_per_hour": "$118.50",
+        "total_fixed_cost_annual": "$21,900"
+      },
+      "images": [
+        {
+          "href": "/static/acftref/pa46.jpg",
+          "title": "Piper PA-46 Malibu",
+          "holder": "Synthetic fixture",
+          "dimensions": "very wide"
+        },
+        "https://planephd.com/static/acftref/not-an-object.jpg",
+        {
+          "title": "Image with no href, dropped entirely",
+          "holder": "Synthetic fixture",
+          "dimensions": "100x100"
+        }
+      ]
+    }
+  }
+}

@@ -1,0 +1,20 @@
+[package]
+name = "aircraft_testsupport"
+edition.workspace = true
+rust-version.workspace = true
+version.workspace = true
+license.workspace = true
+publish = false
+
+[lints]
+workspace = true
+
+[dependencies]
+# Internal Workspace Orchestration Layers
+aircraft_app.workspace = true
+
+# Disposable PostgreSQL Fixtures
+sqlx-core.workspace = true
+sqlx-postgres.workspace = true
+tokio = { workspace = true, features = ["rt", "time"] }
+chrono.workspace = true
