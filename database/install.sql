@@ -207,6 +207,50 @@ INSERT INTO public.aircraft_schema_migrations(version) VALUES ('017');
 \echo 'Skipping applied migration 017'
 \endif
 
+SELECT NOT EXISTS (
+    SELECT 1 FROM public.aircraft_schema_migrations WHERE version = '018'
+) AS apply_migration \gset
+\if :apply_migration
+\echo 'Applying migration 018: 018_staged_aircraft_variant_fk.sql'
+\ir migrations/018_staged_aircraft_variant_fk.sql
+INSERT INTO public.aircraft_schema_migrations(version) VALUES ('018');
+\else
+\echo 'Skipping applied migration 018'
+\endif
+
+SELECT NOT EXISTS (
+    SELECT 1 FROM public.aircraft_schema_migrations WHERE version = '019'
+) AS apply_migration \gset
+\if :apply_migration
+\echo 'Applying migration 019: 019_weight_metrics_curation_gate.sql'
+\ir migrations/019_weight_metrics_curation_gate.sql
+INSERT INTO public.aircraft_schema_migrations(version) VALUES ('019');
+\else
+\echo 'Skipping applied migration 019'
+\endif
+
+SELECT NOT EXISTS (
+    SELECT 1 FROM public.aircraft_schema_migrations WHERE version = '020'
+) AS apply_migration \gset
+\if :apply_migration
+\echo 'Applying migration 020: 020_market_curation_gate.sql'
+\ir migrations/020_market_curation_gate.sql
+INSERT INTO public.aircraft_schema_migrations(version) VALUES ('020');
+\else
+\echo 'Skipping applied migration 020'
+\endif
+
+SELECT NOT EXISTS (
+    SELECT 1 FROM public.aircraft_schema_migrations WHERE version = '021'
+) AS apply_migration \gset
+\if :apply_migration
+\echo 'Applying migration 021: 021_validate_measurement_assertion_foreign_keys.sql'
+\ir migrations/021_validate_measurement_assertion_foreign_keys.sql
+INSERT INTO public.aircraft_schema_migrations(version) VALUES ('021');
+\else
+\echo 'Skipping applied migration 021'
+\endif
+
 
 \echo 'Database schema and canonical seed installation complete.'
 SELECT pg_advisory_unlock(hashtextextended(current_database() || ':aircraft-install', 0));
