@@ -1,0 +1,2 @@
+beechcraft-baron-g58-v1||28400.00|310.75||USD|total_fixed_cost_annual
+piper-pa-46-malibu-v1||21900.00|||USD|total_fixed_cost_annual

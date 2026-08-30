@@ -1,1 +1,0 @@
-// Manufacturer domain types.

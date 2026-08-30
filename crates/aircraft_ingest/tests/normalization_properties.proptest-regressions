@@ -1,0 +1,8 @@
+# Seeds for failure cases proptest has generated in the past. It is
+# automatically read and these particular cases re-run before any
+# novel cases are generated.
+#
+# It is recommended to check this file in to source control so that
+# everyone who runs the test benefits from these saved cases.
+cc ccce5e18041e6c888c1f3df4617ec1fceed90cbe17666b5c13b140f2bbfc4683 # shrinks to sentinel = "none", manufacturer = "A", aircraft = "a"
+cc 75296bc947c63249a283342e2e87b4dc27cd902e0830cf617ff668860269ab2c # shrinks to magnitude = 1, unit = "MPH", manufacturer = "a", aircraft = "a"

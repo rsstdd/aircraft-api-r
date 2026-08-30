@@ -1,0 +1,146 @@
+name: CI
+
+permissions:
+  contents: read
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  CARGO_TERM_COLOR: always
+  RUST_BACKTRACE: 1
+
+jobs:
+  lint:
+    name: Format and lint
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2
+      - run: cargo fmt --all -- --check
+      - run: cargo clippy --workspace --all-targets --all-features --locked -- -D warnings
+
+  msrv:
+    name: Rust 1.85 minimum version
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
+      - run: rustup toolchain install 1.85.0 --profile minimal
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2
+        with:
+          key: msrv
+      - run: cargo +1.85.0 check --workspace --all-targets --locked
+
+  static-contracts:
+    name: Architecture, API, and migrations
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2
+      - run: cargo run --locked --package xtask -- boundaries
+      - run: cargo run --locked --package xtask -- migrations
+      - name: Reject edits to migrations already present on the base branch
+        if: github.event_name == 'pull_request'
+        env:
+          BASE_REF: origin/${{ github.base_ref }}
+        run: |
+          if ! git diff --quiet --diff-filter=MDR "${BASE_REF}" -- database/migrations; then
+            git diff --name-status --diff-filter=MDR "${BASE_REF}" -- database/migrations
+            echo "Applied migration files are immutable; add a new migration instead."
+            exit 1
+          fi
+      - run: cargo run --locked --package xtask -- generate-docs --check
+      - run: docker compose config --quiet
+      - uses: stoplightio/spectral-action@6416fd018ae38e60136775066eb3e98172143141 # v0.8.13
+        with:
+          file_glob: docs/openapi.json
+          spectral_ruleset: .spectral.yaml
+      # The same script `just migrations-lint` runs, so the hosted check and the
+      # local one cannot diverge on the reviewed 017-018 baselines.
+      - run: scripts/migrations-lint.sh
+      - if: github.event_name == 'pull_request'
+        uses: oasdiff/oasdiff-action/breaking@b7c3adeb54330db1903d27c61db520e5661ad55b # v0.1.11
+        with:
+          base: origin/${{ github.base_ref }}:docs/openapi.json
+          revision: HEAD:docs/openapi.json
+          fail-on: WARN
+
+  test:
+    name: Test
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2
+      - uses: taiki-e/install-action@37f7c5781271959fb65b6b35224e28652ff2b63d # v2
+        with:
+          tool: cargo-nextest
+      # The ingestion gates start their own postgres:16-alpine containers via the
+      # docker CLI, which ubuntu-latest runners provide; no service container is
+      # needed here.
+      - run: cargo nextest run --workspace --locked
+
+  snapshots:
+    name: Ingestion golden snapshots
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2
+      # Every fixture the gate covers, not just the default one. Kept as a
+      # shell loop rather than `just` so no extra action needs pinning.
+      - name: Check ingestion output against golden snapshots
+        run: |
+          for fixture in tests/fixtures/planephd_minimal.json \
+                         tests/fixtures/planephd_edge_cases.json; do
+            echo "==> $fixture"
+            cargo run --locked --package xtask -- snapshots --fixture "$fixture"
+          done
+
+  supply-chain:
+    name: Advisories and licenses
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2
+      - uses: taiki-e/install-action@37f7c5781271959fb65b6b35224e28652ff2b63d # v2
+        with:
+          tool: cargo-audit,cargo-deny
+      - run: cargo audit
+      - run: cargo deny --locked check
+
+  rustdoc:
+    name: Rust documentation
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    env:
+      RUSTDOCFLAGS: -D warnings
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2
+      - run: cargo doc --workspace --all-features --no-deps --locked

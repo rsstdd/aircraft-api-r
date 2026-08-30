@@ -1,0 +1,101 @@
+{
+  "schema_version": 1,
+  "migrations": [
+    {
+      "file": "001_extensions_schemas_domains_triggers.sql",
+      "sha256": "920be25d1699676c0970fa87cb529deb8976bcf66fc178e8fcb7d77499f02448"
+    },
+    {
+      "file": "002_core_reference_tables.sql",
+      "sha256": "1c423308e3879a537e6d96d7884d6f6191bf0d3acf90d6a49169ecc48ec51028"
+    },
+    {
+      "file": "003_geography_operators_organizations.sql",
+      "sha256": "f76a7db1cdc4ed5729ff0c613aff97d116b89c8c2379430b174222b18f1430c0"
+    },
+    {
+      "file": "004_aircraft_identity_taxonomy.sql",
+      "sha256": "415270445ca5b585bc3a81ca9c8556b11b357d8d50a7fd7441a007fa7572933b"
+    },
+    {
+      "file": "005_certification_operating_approvals.sql",
+      "sha256": "d3e0ba4fde029e40dde98c75374b765f4b35192812abca81b28938913e8601e9"
+    },
+    {
+      "file": "006_dimensions_cabin_cargo_hangar_fit.sql",
+      "sha256": "b6441dac2b0628107ab26ccd9599e661bd90f8d14ac6a392462155740adc8055"
+    },
+    {
+      "file": "007_weight_balance_payload_loading.sql",
+      "sha256": "5fc5b60338c0135f81e9a4714d671e8a5e068ef923434c069b3a4028f7b12836"
+    },
+    {
+      "file": "008_performance_metrics_conditions.sql",
+      "sha256": "3e1ce470ae56587370566445724a6a45eef72a3617ebe233bf7592b1f96f7655"
+    },
+    {
+      "file": "009_propulsion_engines_rotors_stcs.sql",
+      "sha256": "f25339d34453950393a25bd2d6a282d5e49363980686399e96c41a4a231da4fb"
+    },
+    {
+      "file": "010_avionics_equipment_systems.sql",
+      "sha256": "dad9989dbc328504ea3bf0f8b25b0a8717fd757e36108b577d066c2768233b39"
+    },
+    {
+      "file": "011_military_sensors_stores_loadouts.sql",
+      "sha256": "c014546debca1d2eb2885af3bc0b0fc21ae45dde1688e7f8fd0a9e705e5d4ad6"
+    },
+    {
+      "file": "012_ownership_cost_valuation_market.sql",
+      "sha256": "536a1885083caf437b785f088e9d994fe3e18323f821624f7cce3427dd15f264"
+    },
+    {
+      "file": "013_maintenance_reliability_supportability.sql",
+      "sha256": "3e8718adcdf8db16d09c80cf153f7380b7f0f945844ec08d687af1ce60c3f3ca"
+    },
+    {
+      "file": "014_sources_provenance_curation_audit.sql",
+      "sha256": "ce32394da146019a9599003d0b7aed4159078144aa56b60a3028bb0a50924e1d"
+    },
+    {
+      "file": "015_mission_profiles_comparison_scoring.sql",
+      "sha256": "ad963cc468e3f4a89fb891703b18634ffcc2f628ac48bd60e20f04319b5054c4"
+    },
+    {
+      "file": "016_read_models_views_indexes.sql",
+      "sha256": "d7eb8a0645649a47f84fdfe7bcf342a47672150cf102beafbacdff5296bbc7dd"
+    },
+    {
+      "file": "017_rust_ingestion_adapter.sql",
+      "sha256": "5df32ccc4ecd55560572d34609bb7a2602a549d8cc866fdf232d5b1104f4728e"
+    },
+    {
+      "file": "018_staged_aircraft_variant_fk.sql",
+      "sha256": "f4458b7c07ba4287297dc892e0a33a83200b0e0e418ef0161d146aeb30d8683b"
+    },
+    {
+      "file": "019_weight_metrics_curation_gate.sql",
+      "sha256": "1ab1d0a8bc05c55808d9c2d92e1785d2e7f5d06e206ecaebb8470e0e4fed819b"
+    },
+    {
+      "file": "020_market_curation_gate.sql",
+      "sha256": "f5d988cc5eac568aa3a8bf802379384f897cdfc8100c1e61b780b544b655039d"
+    },
+    {
+      "file": "021_validate_measurement_assertion_foreign_keys.sql",
+      "sha256": "b5adf32a5d0a96eecd631d34b1348b51e5672b8c3c3b8d7d032992fe56f03216"
+    },
+    {
+      "file": "022_read_model_refresh_requests.sql",
+      "sha256": "037113e42f9dbe48bfc4daee7165dee25f3c686e8a3f0582812cdaa64e711652"
+    },
+    {
+      "file": "023_backfill_ingestion_identity_projections.sql",
+      "sha256": "e63d72c1920c5142274da372fe2523e1117d05f134813de980a4fae2ae0a227d"
+    },
+    {
+      "file": "024_promote_existing_manufacturer_links.sql",
+      "sha256": "15dbc7b85a52933357b69fd3f78d60017944e10531d3c1d0cd2b96ca44b274f0"
+    }
+  ]
+}

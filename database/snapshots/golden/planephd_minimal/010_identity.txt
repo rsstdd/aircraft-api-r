@@ -1,0 +1,1 @@
+cessna|Cessna|cessna-family|cessna-172s-skyhawk-sp|cessna-172s-skyhawk-sp-v1|172S Skyhawk SP|b48ab179425708838c9c538e578818b46b87f187abbafd1758be25ed57f78bc6|/wizard/details/172s

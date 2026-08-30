@@ -90,18 +90,19 @@ DECLARE
 BEGIN
     -- Hierarchy skeleton
     INSERT INTO aircraft_core.families (slug, name)
-    VALUES ('pow9-smoke-fam', 'Pow9 Family') RETURNING id INTO v_fam;
+    VALUES ('validation-009-family', 'Validation 009 Family') RETURNING id INTO v_fam;
     INSERT INTO aircraft_core.models (family_id, slug, name)
-    VALUES (v_fam, 'pow9-smoke-mod', 'Pow9 Model') RETURNING id INTO v_mod;
+    VALUES (v_fam, 'validation-009-model', 'Validation 009 Model') RETURNING id INTO v_mod;
     INSERT INTO aircraft_core.variants (model_id, slug, name, engine_count, propulsion_category_code)
-    VALUES (v_mod, 'pow9-smoke-var', 'Pow9 Variant', 1, 'PISTON_RECIPROCATING')
+    VALUES (v_mod, 'validation-009-variant', 'Validation 009 Variant', 1,
+            'PISTON_RECIPROCATING')
     RETURNING id INTO v_var;
 
     -- Engine variant 1: Lycoming O-320
     INSERT INTO aircraft_power.engine_variants
         (slug, model_designation, model_family, propulsion_category_code,
          fuel_type_code, hp_rated, tbo_hours, is_fuel_injected, has_fadec)
-    VALUES ('lycoming-o-320-d2j', 'O-320-D2J', 'O-320',
+    VALUES ('validation-009-o-320-d2j', 'VALIDATION-009-O-320-D2J', 'O-320',
             'PISTON_RECIPROCATING', 'AVGAS_100LL', 160, 2000, FALSE, FALSE)
     RETURNING id INTO v_eng1;
 
@@ -109,7 +110,7 @@ BEGIN
     INSERT INTO aircraft_power.engine_variants
         (slug, model_designation, model_family, propulsion_category_code,
          fuel_type_code, hp_rated, tbo_hours, is_fuel_injected, has_fadec)
-    VALUES ('lycoming-io-360-a1b6', 'IO-360-A1B6', 'IO-360',
+    VALUES ('validation-009-io-360-a1b6', 'VALIDATION-009-IO-360-A1B6', 'IO-360',
             'PISTON_RECIPROCATING', 'AVGAS_100LL', 200, 2000, TRUE, FALSE)
     RETURNING id INTO v_eng2;
 
@@ -118,7 +119,7 @@ BEGIN
         INSERT INTO aircraft_power.engine_variants
             (slug, model_designation, model_family, propulsion_category_code,
              manufacturer_name_raw)
-        VALUES ('lycoming-o-320-d2j-dup', 'O-320-D2J', 'O-320',
+        VALUES ('validation-009-o-320-d2j-dup', 'VALIDATION-009-O-320-D2J', 'O-320',
                 'PISTON_RECIPROCATING', NULL);
         -- Should succeed as different slug; uq_engine_variant_raw_dedup only fires
         -- when manufacturer_org_id IS NULL AND manufacturer_name_raw IS NOT NULL
@@ -144,7 +145,8 @@ BEGIN
         -- Try inserting a third engine option with is_primary = TRUE
         INSERT INTO aircraft_power.engine_variants
             (slug, model_designation, propulsion_category_code)
-        VALUES ('test-engine-3rd', 'TEST-3RD', 'PISTON_RECIPROCATING')
+        VALUES ('validation-009-engine-3rd', 'VALIDATION-009-ENGINE-3RD',
+                'PISTON_RECIPROCATING')
         RETURNING id INTO v_eng1;  -- reuse v_eng1 to hold temp id
 
         INSERT INTO aircraft_power.variant_powerplants
@@ -167,7 +169,8 @@ BEGIN
     BEGIN
         INSERT INTO aircraft_power.engine_variants
             (slug, model_designation, thrust_lbf_dry, thrust_lbf_wet, has_afterburner)
-        VALUES ('bad-ab-engine', 'BADJET-100', 5000, 8000, FALSE);
+        VALUES ('validation-009-bad-ab-engine', 'VALIDATION-009-BADJET-100',
+                5000, 8000, FALSE);
         RAISE EXCEPTION 'chk_ev_afterburner should have rejected wet thrust without afterburner flag';
     EXCEPTION WHEN check_violation THEN NULL;
     END;
@@ -176,7 +179,8 @@ BEGIN
     BEGIN
         INSERT INTO aircraft_power.propeller_specs
             (slug, model_designation, prop_type)
-        VALUES ('bad-prop', 'BAD-PROP-1', 'VARIABLE_INCIDENCE');
+        VALUES ('validation-009-bad-prop', 'VALIDATION-009-BAD-PROP-1',
+                'VARIABLE_INCIDENCE');
         RAISE EXCEPTION 'chk_ps_type should have rejected unknown prop_type';
     EXCEPTION WHEN check_violation THEN NULL;
     END;
@@ -184,7 +188,7 @@ BEGIN
     -- Valid propeller insertion
     INSERT INTO aircraft_power.propeller_specs
         (slug, model_designation, blade_count, diameter_in, diameter_ft, prop_type)
-    VALUES ('hartzell-hc-c2yk-1bf-f7666', 'HC-C2YK-1BF/F7666A',
+    VALUES ('validation-009-hartzell-prop', 'VALIDATION-009-HC-C2YK-1BF/F7666A',
             2, 76.0, 76.0/12, 'CONSTANT_SPEED')
     RETURNING id INTO v_prop;
 

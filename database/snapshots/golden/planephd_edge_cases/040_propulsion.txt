@@ -1,0 +1,3 @@
+beechcraft-baron-g58-v1|continental-io-550-c|Continental|IO-550-C||300||2|t|t
+beechcraft-bonanza-g36-v1|continental-io-550-b|Continental|IO-550-B||300||1|t|t
+piper-pa-46-malibu-v1|continental-tsio-520-be|Continental|TSIO-520-BE||310||1|t|t

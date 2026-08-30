@@ -1,0 +1,3 @@
+cessna-172s-skyhawk-sp-v1|FUEL_CAPACITY_USABLE|56|US_GAL|56|
+cessna-172s-skyhawk-sp-v1|WEIGHT_EMPTY|1680|LBS|1680|
+cessna-172s-skyhawk-sp-v1|WEIGHT_MTOW|2550|LBS|2550|

@@ -1,0 +1,14 @@
+beechcraft-baron-g58-v1|CEILING_SERVICE|20688|FT|20688
+beechcraft-baron-g58-v1|CLIMB_RATE_SL|1700|FPM|1700
+beechcraft-baron-g58-v1|DIST_LDG_50FT|2490|FT|2490
+beechcraft-baron-g58-v1|DIST_TO_50FT|2345|FT|2345
+beechcraft-baron-g58-v1|FUEL_BURN_CRUISE|32|GPH|32
+beechcraft-baron-g58-v1|RANGE_NORMAL|1480|NM|1480
+beechcraft-baron-g58-v1|SPEED_CRUISE_BEST|200|KTAS|200
+beechcraft-baron-g58-v1|SPEED_STALL_CLEAN|84|KIAS|84
+beechcraft-bonanza-g36-v1|CEILING_SERVICE|20688|FT|20688
+beechcraft-bonanza-g36-v1|CLIMB_RATE_SL|1230|FPM|1230
+beechcraft-bonanza-g36-v1|SPEED_CRUISE_BEST|176|KTAS|176
+piper-pa-46-malibu-v1|CEILING_SERVICE|25000|FT|25000
+piper-pa-46-malibu-v1|CLIMB_RATE_SL|1143|FPM|1143
+piper-pa-46-malibu-v1|RANGE_NORMAL|1420|NM|1420

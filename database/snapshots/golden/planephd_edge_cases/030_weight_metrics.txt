@@ -1,0 +1,8 @@
+beechcraft-baron-g58-v1|FUEL_CAPACITY_USABLE|194|US_GAL|194|
+beechcraft-baron-g58-v1|WEIGHT_EMPTY|3980|LBS|3980|
+beechcraft-baron-g58-v1|WEIGHT_MTOW|5500|LBS|5500|
+beechcraft-bonanza-g36-v1|WEIGHT_EMPTY|2530|LBS|2530|
+beechcraft-bonanza-g36-v1|WEIGHT_MTOW|3650|LBS|3650|
+piper-pa-46-malibu-v1|FUEL_CAPACITY_USABLE|120|US_GAL|120|
+piper-pa-46-malibu-v1|WEIGHT_EMPTY|2460|LBS|2460|
+piper-pa-46-malibu-v1|WEIGHT_MTOW|4100|LBS|4100|

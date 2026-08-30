@@ -88,7 +88,7 @@ This command performs the following operations in order:
 2. Waits until PostgreSQL accepts connections.
 3. Reconciles a verified legacy Phase 1/2 prefix when necessary.
 4. Runs the dependency-aware installer.
-5. Applies all 16 schema migrations.
+5. Applies all 21 schema migrations.
 6. Applies canonical seeds at their required dependency boundaries.
 7. Runs every database validation script, beginning with exact migration-history validation.
 
@@ -144,7 +144,7 @@ FROM public.aircraft_schema_migrations
 ORDER BY version;
 ```
 
-The result should contain versions `001` through `016`.
+The result should contain versions `001` through `021`.
 
 Check the migration count:
 
@@ -156,7 +156,7 @@ FROM public.aircraft_schema_migrations;
 Expected result:
 
 ```text
-16
+21
 ```
 
 Check representative canonical seed counts:
@@ -184,34 +184,68 @@ Exit PostgreSQL:
 
 ## 6. Load an aircraft JSON dataset
 
-Place the source file under:
+Ingestion runs through the `aircraft-ingest` CLI, which reads the file from your
+own filesystem. The retired server-side SQL loader required the JSON to sit under
+`/workspace/database/` so the PostgreSQL server process could read it; that
+constraint is gone, and any readable path works.
 
-```text
-database/staging/
-```
-
-Raw JSON files in that directory are ignored by Git. Sanitized examples must use the `.json.example` extension if they need to be committed.
-
-Run ingestion with the path visible inside the PostgreSQL container:
+Check a file without touching the database:
 
 ```bash
-just db-ingest /workspace/database/staging/aircraft_seed.json
+just ingest-validate tests/fixtures/planephd_minimal.json
 ```
 
-The command:
+Importing needs the restricted ingestion role. `install.sql` creates no roles,
+so create it once and grant it, using the password from your `.env`:
 
-1. Creates the staging structures.
-2. Reads the JSON from the PostgreSQL server’s filesystem.
-3. Loads staged aircraft and image records.
-4. Promotes valid records into canonical tables.
-5. Refreshes search materialized views.
-6. Runs post-ingestion invariants.
-
-A host path such as `/home/user/aircraft_seed.json` will not work. The path must begin with:
-
-```text
-/workspace/database/
+```bash
+just db-create-ingest-role
+just db-grants
 ```
+
+Both recipes default to `aircraft_ingest_app`, the role named in
+`APP__INGEST__DATABASE_URL`. `db-create-ingest-role` reads the password from
+`INGEST_ROLE_PASSWORD` so it stays out of the process argument list, and both
+recipes are safe to re-run. Confirm the role can reach the database:
+
+```bash
+just ingest-status --limit 1
+```
+
+Then import:
+
+```bash
+just ingest-import tests/fixtures/planephd_minimal.json
+just ingest-status --limit 20
+```
+
+`just` loads `.env`, so `APP__INGEST__DATABASE_URL` is already set; export it
+only to point at a different database.
+
+The command captures the input, hashes it, validates the whole document before
+writing anything, then stages and promotes every record in one transaction and
+refreshes the read models. Re-running it with the same file is a no-op: the run
+is identified by source, content SHA-256, and parser version.
+
+Raw datasets are ignored by Git. Sanitized examples must use the `.json.example`
+extension if they need to be committed.
+
+### Nothing is searchable until it is curated
+
+This surprises people. Ingested values are written non-canonical and their
+assertions `PENDING`, so a freshly imported variant appears in
+`aircraft_read.mv_variant_search` with its identity but **no** speeds, weights,
+prices, or costs. That is deliberate: nothing from an uncurated scraped source is
+served until a person accepts it.
+
+```bash
+just curate-list                  # what is awaiting a decision
+just curate-accept <assertion-id> # publish that value
+just curate-reject <assertion-id> # withdraw it again
+```
+
+Each decision moves the assertion, the row it backs, any curation flags it
+closes, and the read-model refresh together in one transaction.
 
 ## 7. Stop the database
 
@@ -282,7 +316,7 @@ public.aircraft_schema_migrations
 
 It should still complete successfully because the canonical seeds are idempotent.
 
-Confirm that the migration count remains 16:
+Confirm that the migration count remains 21:
 
 ```bash
 just db-psql
@@ -342,7 +376,7 @@ database/validation/
 ```
 
 The first file, `000_migration_history_validation.sql`, requires the ledger to
-contain exactly versions `001` through `016`. This prevents a structurally
+contain exactly versions `001` through `021`. This prevents a structurally
 partial or unexpectedly versioned database from passing the broader suite.
 
 The command uses `ON_ERROR_STOP=1`, so any SQL error or failed hard invariant stops the recipe with a nonzero exit code.
@@ -351,10 +385,10 @@ Warnings should be reviewed, but they are not necessarily failures. Errors and r
 
 ## 6. Test JSON ingestion
 
-Place a valid dataset under `database/staging/`, then run:
+Point the CLI at a PlanePHD JSON file, then run:
 
 ```bash
-just db-ingest /workspace/database/staging/aircraft_seed.json
+just ingest-import tests/fixtures/planephd_minimal.json
 ```
 
 Inspect the result:
@@ -389,26 +423,37 @@ No staged row should remain in `PENDING` after a successful promotion.
 Run the same ingestion command again:
 
 ```bash
-just db-ingest /workspace/database/staging/aircraft_seed.json
+just ingest-import tests/fixtures/planephd_minimal.json
 ```
 
 The second run should complete without duplicating the content-derived ingestion run or canonical aircraft records.
 
-## 7. Test path rejection
+## 7. Test input rejection
 
-Confirm that local ingestion rejects paths outside the mounted database directory:
+The retired server-side loader required its JSON to sit under
+`/workspace/database/` and rejected anything else. The CLI reads from your own
+filesystem, so that guard is gone; what replaced it is validation of the document
+itself, before anything is written.
+
+An unreadable file is an artifact-capture failure (exit code 3):
 
 ```bash
-just db-ingest /tmp/aircraft_seed.json
+just ingest-import /nonexistent/planephd.json; echo "exit $?"
 ```
 
-Expected result:
+A document that fails validation is exit code 4, and must leave the database
+untouched:
 
-```text
-container_json_path must be below /workspace/database
+```bash
+printf '{"CESSNA":{"172S":{"start_year":2006,"end_year":1998}}}' > /tmp/invalid.json
+just ingest-import /tmp/invalid.json; echo "exit $?"
+just ingest-status --limit 5
 ```
 
-A successful command here would indicate that the path guard is broken.
+Expect `INVALID_PRODUCTION_YEARS` on stderr, exit code 4, and a run recorded as
+`VALIDATION_FAILED` with no aircraft rows created. The documented exit codes are
+2 configuration, 3 artifact, 4 validation, 5 already running, 6 persistence,
+7 parser consistency, and 8 a curation decision the current state does not allow.
 
 ## 8. Test installation from a clean database
 
@@ -443,7 +488,7 @@ SELECT COUNT(*) FROM aircraft_compare.mission_profiles;
 Expected results:
 
 ```text
-16 migrations
+21 migrations
 38 measurement units
 15 mission profiles
 ```
@@ -498,7 +543,7 @@ The local database is ready when all of the following are true:
 - `just db-migrate` succeeds twice.
 - `just db-seed` succeeds twice.
 - `just db-validate` succeeds.
-- Migration history contains versions `001` through `016`.
+- Migration history contains versions `001` through `021`.
 - The canonical seed counts are 38 measurement units and 15 mission profiles.
 - JSON ingestion completes without pending staged records.
 - Re-ingesting identical JSON does not duplicate runs or canonical variants.

@@ -1,0 +1,12 @@
+# Security-sensitive repository controls require explicit owner review.
+/.github/ @rsstdd
+/Cargo.lock @rsstdd
+/Cargo.toml @rsstdd
+/deny.toml @rsstdd
+/.spectral.yaml @rsstdd
+/.squawk.toml @rsstdd
+/database/install.sql @rsstdd
+/database/migrations/ @rsstdd
+/database/migrations.lock.json @rsstdd
+/database/roles/ @rsstdd
+/scripts/github-repository-policy.sh @rsstdd

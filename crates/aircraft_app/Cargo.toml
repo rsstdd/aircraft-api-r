@@ -14,13 +14,15 @@ workspace = true
 aircraft_domain.workspace = true
 
 # Coordination Error Mechanics & Diagnostics
-anyhow.workspace = true
 thiserror.workspace = true
 tracing.workspace = true
+async-trait.workspace = true
 
 # Domain Type Support for Operations Execution
 chrono.workspace = true
 serde.workspace = true
+serde_json.workspace = true
+sha2.workspace = true
 uuid.workspace = true
 
 # Async Synchronization Tools (for managing internal channels/use-case orchestration)

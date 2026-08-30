@@ -1,0 +1,14 @@
+AIRCRAFT_VARIANT|piper-pa-46-malibu-v1|||certification_basis|UNSUPPORTED_RECORD_FIELD|field is preserved in raw JSON but is not promoted|3
+AIRCRAFT_VARIANT|piper-pa-46-malibu-v1|||for_sale_count|INVALID_INTEGER_FIELD|numeric field is not an integer in the supported range|3
+AIRCRAFT_VARIANT|piper-pa-46-malibu-v1|||images[0].dimensions|INVALID_IMAGE_DIMENSIONS|expected WxH dimensions|3
+AIRCRAFT_VARIANT|piper-pa-46-malibu-v1|||images[1]|IMAGE_NOT_OBJECT|image metadata must be an object|3
+AIRCRAFT_VARIANT|piper-pa-46-malibu-v1|||images[2].href|IMAGE_HREF_MISSING|image metadata has no usable href|3
+AIRCRAFT_VARIANT|piper-pa-46-malibu-v1|||in_production|INVALID_BOOLEAN_FIELD|field is not a boolean|3
+AIRCRAFT_VARIANT|piper-pa-46-malibu-v1|||ownership_costs.mystery_surcharge|UNMAPPED_OR_UNPARSEABLE_COST|cost is preserved for curation and excluded from canonical totals|3
+AIRCRAFT_VARIANT|piper-pa-46-malibu-v1|||page_url|INVALID_URL|URL is invalid or uses an unsupported scheme|3
+AIRCRAFT_VARIANT|piper-pa-46-malibu-v1|||papi_price_estimate|INVALID_NUMERIC_FIELD|field has no valid numeric prefix|3
+AIRCRAFT_VARIANT|piper-pa-46-malibu-v1|||performance.best_cruise_speed|UNKNOWN_MEASUREMENT_UNIT|unit is not mapped and will not be canonicalized|3
+AIRCRAFT_VARIANT|piper-pa-46-malibu-v1|||performance.cruise_altitude|UNMAPPED_MEASUREMENT_FIELD|measurement is preserved as a pending assertion|3
+AIRCRAFT_VARIANT|piper-pa-46-malibu-v1|||performance.max_speed|UNMAPPED_MEASUREMENT_FIELD|measurement is preserved as a pending assertion|3
+AIRCRAFT_VARIANT|piper-pa-46-malibu-v1|||registration_prefix|UNSUPPORTED_RECORD_FIELD|field is preserved in raw JSON but is not promoted|3
+AIRCRAFT_VARIANT|piper-pa-46-malibu-v1|||weights.ramp_weight|UNMAPPED_MEASUREMENT_FIELD|measurement is preserved as a pending assertion|3

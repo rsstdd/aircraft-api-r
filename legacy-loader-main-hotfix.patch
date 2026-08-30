@@ -1,0 +1,69 @@
+--- a/database/staging/902_server_side_json_ingestion.sql
++++ b/database/staging/902_server_side_json_ingestion.sql
+@@ -71,7 +71,10 @@
+     IF cleaned IS NULL THEN RETURN NULL; END IF;
+     cleaned := regexp_replace(cleaned, '^\$', '');
+     cleaned := replace(cleaned, ',', '');
+-    cleaned := (regexp_match(cleaned, '^-?[0-9]+(\.[0-9]+)?'))[1];
++    -- regexp_match returns capture groups, so the numeric part must be the
++    -- first group. Matching '^-?[0-9]+(\.[0-9]+)?' instead returned only the
++    -- optional decimal tail: '14000 FT' yielded NULL and '8.5 GPH' yielded 0.5.
++    cleaned := (regexp_match(cleaned, '^(-?[0-9]+(?:\.[0-9]+)?)'))[1];
+     IF cleaned IS NULL THEN RETURN NULL; END IF;
+     BEGIN
+         result := cleaned::NUMERIC;
+@@ -362,9 +365,21 @@
+                 CASE WHEN (v_record->'papi_price_estimate') = 'null'::jsonb
+                      THEN NULL ELSE v_record->>'papi_price_estimate' END,
+                 v_record->>'for_sale_count',
+-                (v_record->>'start_year')::SMALLINT,
+-                (v_record->>'end_year')::SMALLINT,
+-                (v_record->>'in_production')::BOOLEAN,
++                -- Guarded casts. These were bare, so a single malformed value
++                -- anywhere in the file aborted load_seed_json outright -- this
++                -- INSERT has no per-record EXCEPTION handler, unlike
++                -- promote_staged_aircraft -- and nothing was staged at all.
++                -- Unparseable values now become NULL, matching how every other
++                -- malformed field in this loader is handled. The 1-4 digit
++                -- bound on years also keeps an oversized number from
++                -- overflowing SMALLINT.
++                CASE WHEN v_record->>'start_year' ~ '^-?[0-9]{1,4}$'
++                     THEN (v_record->>'start_year')::SMALLINT END,
++                CASE WHEN v_record->>'end_year' ~ '^-?[0-9]{1,4}$'
++                     THEN (v_record->>'end_year')::SMALLINT END,
++                CASE WHEN lower(v_record->>'in_production') IN
++                          ('true','false','t','f','yes','no','on','off','1','0')
++                     THEN (v_record->>'in_production')::BOOLEAN END,
+                 CASE WHEN jsonb_typeof(v_record->'performance') = 'object'
+                      THEN v_record->'performance' ELSE '{}'::JSONB END,
+                 CASE WHEN jsonb_typeof(v_record->'weights') = 'object'
+@@ -395,6 +410,15 @@
+                          THEN v_record->'images' ELSE '[]'::JSONB END
+                 )
+             LOOP
++                -- staged_images.href_raw is NOT NULL, and this INSERT has no
++                -- per-record EXCEPTION handler, so an image with no href -- or
++                -- an array entry that is not an object at all -- aborted the
++                -- whole file and staged nothing. Skip it instead, matching the
++                -- Rust adapter, which drops it with an IMAGE_HREF_MISSING
++                -- warning and imports the rest.
++                CONTINUE WHEN jsonb_typeof(v_img) <> 'object'
++                           OR NULLIF(btrim(v_img->>'href'), '') IS NULL;
++
+                 INSERT INTO aircraft_ingest.staged_images (
+                     staged_aircraft_id, array_position,
+                     href_raw, href_resolved, title, holder,
+@@ -444,6 +468,13 @@
+     notes               TEXT
+ )
+ LANGUAGE plpgsql AS $$
++-- The RETURNS TABLE output columns (notably variant_id) share names with
++-- columns of the tables written below, which makes an unqualified reference —
++-- such as the ON CONFLICT inference on aircraft_specs.weight_metrics — ambiguous
++-- and aborts promotion with "column reference \"variant_id\" is ambiguous".
++-- Every output column here is only ever assigned to, never read inside SQL, so
++-- resolving ambiguity toward the column is correct.
++#variable_conflict use_column
+ DECLARE
+     rec                  aircraft_ingest.staged_aircraft%ROWTYPE;
+     v_org_id             BIGINT;

@@ -196,5 +196,94 @@ INSERT INTO public.aircraft_schema_migrations(version) VALUES ('016');
 \echo 'Skipping applied migration 016'
 \endif
 
+SELECT NOT EXISTS (
+    SELECT 1 FROM public.aircraft_schema_migrations WHERE version = '017'
+) AS apply_migration \gset
+\if :apply_migration
+\echo 'Applying migration 017: 017_rust_ingestion_adapter.sql'
+\ir migrations/017_rust_ingestion_adapter.sql
+INSERT INTO public.aircraft_schema_migrations(version) VALUES ('017');
+\else
+\echo 'Skipping applied migration 017'
+\endif
+
+SELECT NOT EXISTS (
+    SELECT 1 FROM public.aircraft_schema_migrations WHERE version = '018'
+) AS apply_migration \gset
+\if :apply_migration
+\echo 'Applying migration 018: 018_staged_aircraft_variant_fk.sql'
+\ir migrations/018_staged_aircraft_variant_fk.sql
+INSERT INTO public.aircraft_schema_migrations(version) VALUES ('018');
+\else
+\echo 'Skipping applied migration 018'
+\endif
+
+SELECT NOT EXISTS (
+    SELECT 1 FROM public.aircraft_schema_migrations WHERE version = '019'
+) AS apply_migration \gset
+\if :apply_migration
+\echo 'Applying migration 019: 019_weight_metrics_curation_gate.sql'
+\ir migrations/019_weight_metrics_curation_gate.sql
+INSERT INTO public.aircraft_schema_migrations(version) VALUES ('019');
+\else
+\echo 'Skipping applied migration 019'
+\endif
+
+SELECT NOT EXISTS (
+    SELECT 1 FROM public.aircraft_schema_migrations WHERE version = '020'
+) AS apply_migration \gset
+\if :apply_migration
+\echo 'Applying migration 020: 020_market_curation_gate.sql'
+\ir migrations/020_market_curation_gate.sql
+INSERT INTO public.aircraft_schema_migrations(version) VALUES ('020');
+\else
+\echo 'Skipping applied migration 020'
+\endif
+
+SELECT NOT EXISTS (
+    SELECT 1 FROM public.aircraft_schema_migrations WHERE version = '021'
+) AS apply_migration \gset
+\if :apply_migration
+\echo 'Applying migration 021: 021_validate_measurement_assertion_foreign_keys.sql'
+\ir migrations/021_validate_measurement_assertion_foreign_keys.sql
+INSERT INTO public.aircraft_schema_migrations(version) VALUES ('021');
+\else
+\echo 'Skipping applied migration 021'
+\endif
+
+SELECT NOT EXISTS (
+    SELECT 1 FROM public.aircraft_schema_migrations WHERE version = '022'
+) AS apply_migration \gset
+\if :apply_migration
+\echo 'Applying migration 022: 022_read_model_refresh_requests.sql'
+\ir migrations/022_read_model_refresh_requests.sql
+INSERT INTO public.aircraft_schema_migrations(version) VALUES ('022');
+\else
+\echo 'Skipping applied migration 022'
+\endif
+
+SELECT NOT EXISTS (
+    SELECT 1 FROM public.aircraft_schema_migrations WHERE version = '023'
+) AS apply_migration \gset
+\if :apply_migration
+\echo 'Applying migration 023: 023_backfill_ingestion_identity_projections.sql'
+\ir migrations/023_backfill_ingestion_identity_projections.sql
+INSERT INTO public.aircraft_schema_migrations(version) VALUES ('023');
+\else
+\echo 'Skipping applied migration 023'
+\endif
+
+SELECT NOT EXISTS (
+    SELECT 1 FROM public.aircraft_schema_migrations WHERE version = '024'
+) AS apply_migration \gset
+\if :apply_migration
+\echo 'Applying migration 024: 024_promote_existing_manufacturer_links.sql'
+\ir migrations/024_promote_existing_manufacturer_links.sql
+INSERT INTO public.aircraft_schema_migrations(version) VALUES ('024');
+\else
+\echo 'Skipping applied migration 024'
+\endif
+
+
 \echo 'Database schema and canonical seed installation complete.'
 SELECT pg_advisory_unlock(hashtextextended(current_database() || ':aircraft-install', 0));

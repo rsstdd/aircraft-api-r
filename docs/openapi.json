@@ -3,17 +3,29 @@
   "info": {
     "title": "Aircraft Management Engine API",
     "description": "HTTP contracts implemented by the Aircraft Management Engine",
+    "contact": {
+      "name": "Aircraft Management Engine maintainers",
+      "url": "https://github.com/rsstdd/aircraft-api-r"
+    },
     "license": {
       "name": "Proprietary"
     },
     "version": "0.1.0"
   },
+  "servers": [
+    {
+      "url": "/",
+      "description": "Current deployment origin"
+    }
+  ],
   "paths": {
     "/health": {
       "get": {
         "tags": [
           "health"
         ],
+        "summary": "Check service health",
+        "description": "Report whether the process can serve HTTP requests.",
         "operationId": "health",
         "responses": {
           "200": {

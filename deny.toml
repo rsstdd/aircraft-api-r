@@ -9,10 +9,13 @@ allow = [
     "Apache-2.0",
     "Apache-2.0 WITH LLVM-exception",
     "BSD-3-Clause",
+    "CDLA-Permissive-2.0",
     "BSL-1.0",
+    "ISC",
     "MIT",
     "Unicode-3.0",
     "Unlicense",
+    "Zlib",
 ]
 confidence-threshold = 0.8
 exceptions = [
@@ -30,6 +33,72 @@ highlight = "all"
 skip = [
     { crate = "wit-bindgen", reason = "getrandom currently resolves separate WASI preview 2 and preview 3 support trees" },
 ]
+
+[bans.build]
+# Exact versions approved from the current lockfile. Dependency updates must
+# review and deliberately replace the affected entry.
+allow-build-scripts = [
+    "anyhow@1.0.103",
+    "bigdecimal@0.4.10",
+    "crossbeam-utils@0.8.22",
+    "erased-serde@0.4.10",
+    "generic-array@0.14.9",
+    "getrandom@0.3.4",
+    "getrandom@0.4.2",
+    "httparse@1.10.1",
+    "iana-time-zone-haiku@0.1.2",
+    "icu_normalizer_data@2.1.1",
+    "icu_properties_data@2.1.2",
+    "libc@0.2.186",
+    "libm@0.2.16",
+    "num-traits@0.2.19",
+    "parking_lot_core@0.9.12",
+    "portable-atomic@1.15.0",
+    "proc-macro2@1.0.106",
+    "quote@1.0.45",
+    "ring@0.17.14",
+    "rustix@1.1.4",
+    "rustls@0.23.43",
+    "rustversion@1.0.22",
+    "serde@1.0.228",
+    "serde_core@1.0.228",
+    "serde_json@1.0.150",
+    "thiserror@2.0.18",
+    "typeid@1.0.3",
+    "wasm-bindgen-shared@0.2.125",
+    "wasm-bindgen@0.2.125",
+    "windows_aarch64_gnullvm@0.48.5",
+    "windows_aarch64_gnullvm@0.52.6",
+    "windows_aarch64_msvc@0.48.5",
+    "windows_aarch64_msvc@0.52.6",
+    "windows_i686_gnu@0.48.5",
+    "windows_i686_gnu@0.52.6",
+    "windows_i686_gnullvm@0.52.6",
+    "windows_i686_msvc@0.48.5",
+    "windows_i686_msvc@0.52.6",
+    "windows_x86_64_gnu@0.48.5",
+    "windows_x86_64_gnu@0.52.6",
+    "windows_x86_64_gnullvm@0.48.5",
+    "windows_x86_64_gnullvm@0.52.6",
+    "windows_x86_64_msvc@0.48.5",
+    "windows_x86_64_msvc@0.52.6",
+    "wit-bindgen@0.46.0",
+    "wit-bindgen@0.51.0",
+    "zerocopy@0.8.56",
+    "zmij@1.0.21",
+]
+executables = "deny"
+interpreted = "deny"
+
+[[bans.build.bypass]]
+name = "ring"
+version = "=0.17.14"
+allow-globs = ["crypto/**/*.pl"]
+
+[[bans.build.bypass]]
+name = "zerocopy"
+version = "=0.8.56"
+allow-globs = ["cargo.sh", "ci/*.sh"]
 
 [sources]
 unknown-registry = "deny"

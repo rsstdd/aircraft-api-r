@@ -1,349 +1,436 @@
 # Aircraft Management Engine
 
-A high-throughput, production-grade asynchronous Rust backend platform built using Hexagonal (Clean) Architecture primitives. This engine enforces domain isolation, compile-time SQL validation, structured tracing diagnostics, and strict input boundary validation.
+Aircraft Management Engine is a Rust 2024 and PostgreSQL backend under active
+development for storing, curating, searching, and comparing aircraft data. The
+target system uses hexagonal architecture, Axum at the HTTP boundary, SQLx at
+the persistence boundary, and SQL-first migrations as the canonical database
+history.
 
-## Architectural Architecture & Ecosystem
+The project treats provenance, source assertions, measurement conditions, and
+curation status as first-class data. Imported values do not become canonical
+simply because they were parsed successfully.
 
-```text
-root/
-├── Cargo.toml                  # Workspace dependencies & compiler lint matrix
-├── Justfile                    # Human-facing local automation task runner
-├── .sqlx/                      # Offline database query schema snapshots
-├── apps/
-│   └── server/                 # Composition root & application entry-point
-├── crates/
-│   ├── aircraft_api/           # HTTP Transport Layer (Axum & DTOs)
-│   ├── aircraft_app/           # Use-case coordination & driving application services
-│   ├── aircraft_domain/        # Pure pure business entities & domain invariants
-│   ├── aircraft_db/            # Data persistence layer (SQLx repositories)
-│   ├── aircraft_ingest/        # Non-blocking batch ingestion & data normalization
-│   ├── aircraft_config/        # Strongly-typed environment configuration trees
-│   └── aircraft_observability/ # Telemetry bootstrapping (JSON traces & OTLP)
-├── database/                   # Schema evolution tracking, validations, & seeds
-└── xtask/                      # Rust-powered administrative lifecycle automation
+> [!IMPORTANT]
+> This repository is an incomplete restructuring branch, not a production
+> server. The PlanePHD ingestion vertical slice, the ordered database schema,
+> and several repository automation commands are implemented. The Axum API
+> currently contains only a health contract, and `apps/server` is excluded from
+> the workspace because its source is still legacy Actix/Diesel code that does
+> not match its target manifest. Search, comparison, authentication, and the
+> runnable HTTP service are not implemented end to end. The Rust ingestion path
+> passed all six deployment gates, including the SQL-versus-Rust parity run that
+> justified retiring the legacy loader; that gate is now a golden-snapshot
+> regression check. Run them with `just test` and `just snapshots`. Ingested measurements stay pending until a
+> curator accepts them with `just curate-accept`.
+
+## Goals
+
+- Preserve aircraft identity, specifications, provenance, and curation history.
+- Import untrusted source data through explicit validation and normalization
+  boundaries.
+- Keep source claims separate from reviewed canonical aircraft data.
+- Support aircraft search and comparison without losing units or measurement
+  conditions.
+- Keep domain behavior independent of HTTP, PostgreSQL, configuration, and
+  telemetry frameworks.
+- Provide repeatable SQL-first migration, seed, and validation workflows.
+- Make imports auditable, idempotent, bounded, and recoverable after failure.
+
+## Current status
+
+| Area | Status |
+|---|---|
+| Rust workspace | Cargo resolves ten packages around the ingestion slice, shared libraries, API contract generation, test support, and `xtask` |
+| Database | Canonical migrations `001` through `024`, checksum-locked history, dependency-aware installation, reference seeds, and SQL validation scripts are present |
+| Rust ingestion CLI | `validate`, `import`, `status`, and `curate` (`list`, `accept`, `reject`, `refresh`) are implemented for PlanePHD JSON |
+| Ingestion semantics | Immutable input capture, SHA-256 identity, bounded streaming, preflight validation, transactional promotion, audit history, and idempotent replay are implemented |
+| Persistence | SQLx ingestion repository implemented; the broader repository surface remains incomplete |
+| Domain and application | Ingestion rules and orchestration are implemented; most general aircraft, mission, search, and comparison behavior remains scaffolded |
+| HTTP API | Axum health route and generated OpenAPI contract only; no runnable target server |
+| Server | Excluded from the workspace; source still depends on retired Actix/Diesel-era crates |
+| Repository automation | Boundaries, migration policy, OpenAPI compatibility, dependency review, supply-chain policy, workflow linting, secret scanning, CodeQL, and ingestion golden snapshots are enforced locally or in CI |
+| Tests | Meaningful unit, application, property, repository, and disposable-PostgreSQL ingestion tests. The three placeholder files under `tests/` were deleted; that directory now holds only fixtures |
+| Production readiness | Not ready; target-environment gates remain, and the authenticated HTTP product is incomplete |
+
+### What works today
+
+The `aircraft-ingest` binary can:
+
+- read PlanePHD JSON from a file or standard input;
+- enforce a configurable input-size limit while copying bytes to an owner-only
+  temporary artifact;
+- compute a SHA-256 identity over the exact input;
+- validate every record before opening the import transaction;
+- normalize supported identity, measurement, propulsion, market, and cost data;
+- preserve raw JSON and emit stable issues for uncertain or unsupported values;
+- stream prepared records through a bounded channel;
+- import through a dedicated SQLx repository in one PostgreSQL transaction;
+- retain durable run and attempt history, including validation and transaction
+  failures;
+- recognize a successfully imported source/hash/parser identity as an
+  idempotent replay; and
+- report status in human-readable or versioned JSON form.
+
+The database tree provides the ordered schema, canonical seed data, transient
+staging logic, test fixtures, role grants, and post-install validation. The
+installer records applied versions in `public.aircraft_schema_migrations` and
+places required seed phases at their foreign-key boundaries.
+
+## Architecture
+
+The implemented ingestion path follows the intended inward dependency
+direction:
+
+```mermaid
+flowchart LR
+    Source["PlanePHD JSON"] --> CLI["aircraft-ingest CLI"]
+    CLI --> Adapter["aircraft_ingest<br/>capture, parse, normalize"]
+    Adapter --> UseCase["aircraft_app<br/>ingestion use case and ports"]
+    UseCase --> Domain["aircraft_domain<br/>deterministic invariants"]
+    CLI --> Repository["aircraft_db<br/>SQLx repository"]
+    Repository -. implements .-> UseCase
+    Repository --> PostgreSQL["PostgreSQL"]
 ```
 
-### Dependency Decoupling Strategy
+The target HTTP path is:
 
-To guarantee architectural safety, structural data boundaries are strictly mapped across separate layers:
+```text
+Axum API adapter -> application use cases -> domain
+database adapter -> application ports / domain
+server -> configuration + telemetry + database + API composition
+```
 
-* **DTO Layer (`aircraft_api`):** JSON payloads, HTTP status mapping, and semantic boundary inputs (`validator`).
-* **Application Layer (`aircraft_app`):** Workflow transaction handling and domain trait orchestration.
-* **Domain Layer (`aircraft_domain`):** Structurally pure entities, rules, and mathematical invariants. **Zero infrastructure dependencies.**
-* **Persistence Layer (`aircraft_db`):** Strongly-typed row transformations mapping explicitly to PostgreSQL tables.
+The layer responsibilities are:
 
----
+- `aircraft_domain`: deterministic entities, value objects, units, and business
+  invariants with no HTTP, SQLx, Tokio, configuration, or telemetry dependency.
+- `aircraft_app`: use cases and ports. It coordinates domain behavior without
+  depending on HTTP DTOs or concrete database repositories.
+- `aircraft_api`: Axum requests, responses, status mapping, middleware, and
+  OpenAPI definitions. It must not issue SQL.
+- `aircraft_db`: SQLx repositories and explicit database-row/domain mappings.
+- `aircraft_ingest`: source capture, parsing, validation, normalization, and
+  source-specific failure reporting.
+- `aircraft_config`: typed configuration, including secret-protected database
+  URLs.
+- `aircraft_observability`: structured tracing initialization.
+- `apps/server`: the future runtime composition root; it is not currently
+  buildable.
 
-## Core Prerequisites
+HTTP DTOs, application inputs, domain values, and database rows are separate
+representations. Boundary conversions should remain explicit as the system is
+completed.
 
-* **Rust Toolchain:** Version `1.85+` utilizing the **Rust 2024 Edition** compiler profiles.
-* **Docker Daemon:** Required locally to support containerized database testing passes via `testcontainers`.
-* **Just Utility:** Command runner for workspace workflow mechanics (`cargo binstall just`).
+## Ingestion processing model
 
----
+```text
+capture immutable input and compute SHA-256
+  -> preflight the complete artifact
+  -> open a bounded prepared-record stream
+  -> acquire the logical-import advisory lock
+  -> stage and promote records transactionally
+  -> preserve provenance, assertions, and curation flags
+  -> refresh the read model
+  -> commit the import and its audit result
+```
 
-## Local Development Workflow
+Logical import identity is:
 
-### 1. Initialization and Compilation
+```text
+source slug + content SHA-256 + parser name + parser version
+```
 
-Bring up development containers, execute canonical schema evolutions, run semantic data validations, and compile the workspace tree:
+A successful replay returns the existing report instead of creating duplicate
+aircraft data. A hard import failure rolls back staged and promoted aircraft
+data while recording the failed attempt separately.
+
+PlanePHD measurements and assertions are intentionally imported as pending and
+non-canonical. They remain outside the canonical search read model until a
+curation workflow accepts them.
+
+See [Rust ingestion adapter](docs/architecture/rust_ingestion_adapter.md) for
+the complete mapping, transaction, exit-code, Aiven-role, and retirement
+contracts.
+
+## Repository structure
+
+```text
+aircraft-api-r/
+├── apps/
+│   ├── ingest/                 # Working ingestion CLI composition root
+│   └── server/                 # Excluded legacy source; target server root
+├── crates/
+│   ├── aircraft_api/           # Minimal Axum health/OpenAPI contract
+│   ├── aircraft_app/           # Use cases and ports; ingestion is implemented
+│   ├── aircraft_config/        # Typed configuration
+│   ├── aircraft_db/            # SQLx persistence; ingestion is implemented
+│   ├── aircraft_domain/        # Pure rules; ingestion invariants implemented
+│   ├── aircraft_ingest/        # PlanePHD capture, parsing, and normalization
+│   ├── aircraft_observability/ # Tracing setup
+│   └── aircraft_testsupport/   # Disposable PostgreSQL integration harness
+├── database/
+│   ├── migrations/             # Canonical ordered schema history
+│   ├── seeds/                  # Canonical reference and mission-profile data
+│   ├── snapshots/              # Snapshot queries and committed golden output
+│   ├── validation/             # Post-install schema and behavior checks
+│   ├── fixtures/               # Test-only database data
+│   └── roles/                  # Restricted ingestion-role grants
+├── docs/architecture/          # Architecture and boundary documentation
+├── tests/fixtures/             # Source fixtures used by Rust integration tests
+├── xtask/                      # Tested repository automation
+├── Cargo.toml
+└── justfile
+```
+
+`archive/` contains restructure snapshots and retired template-derived code. It
+is reference material and is not part of the active implementation.
+
+## Development environment
+
+Required local tools are:
+
+- Rust 1.85 or newer with Cargo, rustfmt, and Clippy;
+- Docker with the Compose plugin;
+- PostgreSQL client tools;
+- Node.js with npm for pinned OpenAPI and migration linters;
+- Just; and
+- cargo-nextest for `just test`.
+
+`just lint` additionally requires cargo-audit and cargo-deny. The SQLx CLI is
+managed as a development dependency but offline query metadata is not yet part
+of the implemented repository workflow.
+
+Create a local ignored environment file before using Just recipes:
+
+```bash
+cp .env.example .env
+```
+
+The values in `.env.example` and `docker-compose.yml` are local-development
+defaults, not production credentials.
+
+Check the environment without installing anything:
+
+```bash
+just install-deps --check
+```
+
+Run `just install-deps` only if you want the repository automation to install
+missing Rust development tools. Platform prerequisites such as Docker and the
+PostgreSQL client must be installed separately.
+
+## Validate source data without PostgreSQL
+
+The checked-in synthetic fixture exercises the PlanePHD boundary:
+
+```bash
+just ingest-validate tests/fixtures/planephd_minimal.json
+```
+
+The binary also accepts standard input and JSON output directly:
+
+```bash
+cargo run --package aircraft-ingest -- \
+  validate \
+  --source planephd \
+  --input - \
+  --format json
+```
+
+Validation captures and parses the artifact but does not connect to PostgreSQL.
+
+## Run the local database workflow
+
+Inspect the resolved Compose configuration before changing local infrastructure:
+
+```bash
+just compose-config
+just compose-services
+```
+
+For an isolated local database, start PostgreSQL, install the canonical schema,
+and run the SQL validation suite:
 
 ```bash
 just db-bootstrap
-just build
 ```
 
-`just db-bootstrap` is safe to rerun. For local volumes created before the
-migration ledger was introduced, it verifies and adopts only a complete legacy
-Phase 1/2 prefix before applying the remaining migrations. A partial legacy
-schema is rejected with recovery guidance instead of being marked as migrated.
-See `database/local_setup_and_testing.md` for the complete workflow.
+Then import the fixture and inspect the audit history:
 
-### 2. Execution of Test Suites
+```bash
+just ingest-import tests/fixtures/planephd_minimal.json
+just ingest-status --limit 20
+just ingest-status-json --limit 20
+```
 
-Run the enabled workspace test suite:
+Import and status require `APP__INGEST__DATABASE_URL`. The ingestion database
+URL is read from configuration and is never accepted as a command-line
+argument.
+
+If a committed curation decision reports that its read-model refresh is queued,
+retry the outstanding refresh with the implemented CLI command:
+
+```bash
+just curate-refresh
+```
+
+> [!WARNING]
+> `just db-reset` deletes the local Compose PostgreSQL volume and starts an
+> empty database. `just db-rebuild` performs the destructive reset and then
+> installs and validates the schema. Do not run either command when local data
+> must be preserved.
+
+The legacy server-side SQL loader has been retired. `cargo xtask snapshots`
+(`just snapshots`) now imports each fixture through the Rust adapter and diffs the
+result against committed golden snapshots in `database/snapshots/golden/`.
+
+## Configuration
+
+Ingestion settings use the `APP` prefix and `__` for nesting:
+
+| Variable | Purpose |
+|---|---|
+| `APP__INGEST__DATABASE_URL` | PostgreSQL URL for the restricted ingestion role |
+| `APP__INGEST__MAX_INPUT_BYTES` | Maximum accepted source size; defaults to 512 MiB |
+| `APP__INGEST__LOCK_TIMEOUT_SECONDS` | PostgreSQL lock timeout |
+| `APP__INGEST__STATEMENT_TIMEOUT_SECONDS` | PostgreSQL statement timeout |
+| `APP__INGEST__TEMP_DIR` | Optional secure temporary-artifact directory |
+| `APP__INGEST__MAX_CONNECTIONS` | SQLx pool size |
+
+For hosted PostgreSQL, use a TLS-verified URL and a dedicated role. Apply
+[`database/roles/ingest_grants.sql`](database/roles/ingest_grants.sql) as an
+administrator after migrations have been installed by the migration owner;
+locally, `just db-grants <role>` does this.
+
+## Verify the current implementation
+
+Fast checks that do not require PostgreSQL are:
+
+```bash
+cargo metadata --no-deps
+cargo check --workspace --locked
+cargo test --workspace --lib --locked
+cargo fmt --all -- --check
+cargo clippy --workspace --all-targets --all-features --locked -- -D warnings
+RUSTDOCFLAGS="-D warnings" cargo doc --workspace --all-features --no-deps --locked
+just static
+```
+
+The full Rust suite starts disposable `postgres:16-alpine` containers for the
+ingestion and repository integration tests, so Docker must be running:
 
 ```bash
 just test
 ```
 
-`just test` currently runs `cargo nextest run --workspace`; it does not run the
-database validation scripts. Use `just db-validate` separately for the
-container-backed database verification suite.
-
-### 3. Schema Management and Offline Compilation Verification
-
-After modifying SQL query profiles inside `aircraft_db`, verify the existing
-offline metadata when that crate and its metadata are enabled:
+The local schema can be checked independently with:
 
 ```bash
-# Execute local schema evolution steps
-just db-migrate
-
-# Ensure compliance with strict offline compilation assertions
-just check-offline
+just db-validate
 ```
 
-
-## Production Database Workflow
-
-Provision the target database and migration role through the deployment
-platform, set `MIGRATION_DATABASE_URL`, then run:
-
-```bash
-just db-prod-bootstrap
-```
-
-This uses the host `psql` client, installs all migrations and canonical
-seeds, and runs database validation. See `database/README.md` for individual
-commands, required privileges, and server-side JSON ingestion.
-
----
-
-## Continuous Integration & Security Guardrails
-
-The workspace enforces high-severity lint walls and secure compilation boundaries:
-
-* **Unsafe Execution:** Forbidden explicitly (`#[forbid(unsafe_code)]`).
-* **Memory Hygiene:** Private authorization components and access configurations are sealed within `secrecy::SecretString` enclosures to prevent leakage during format logging operations.
-* **CI Gates:** Every code check evaluates via `cargo fmt` -> `cargo clippy` -> `cargo audit` -> `cargo deny` -> `cargo nextest`.
-
----
-
-## 2. Application Binaries: `apps/server/README.md`
-
-# Application Entry-Point: `server`
-
-The central composition root for the entire platform workspace. This package coordinates structural bootstrapping lifecycles, parses infrastructure runtime configuration layers, initializes long-lived asynchronous database connection pools, and configures the system runtime context.
-
-## Bootstrap Sequence Execution Flow
-
-```text
-[Load Configurations] -> [Bootstrap Diagnostics] -> [Initialize DB Pools] -> [Bind Transports]
-```
-
-1. **Environment Setup:** Ingests local execution variables safely via local-only `.env` fallbacks.
-2. **Configuration Ingestion:** Evaluates strongly-typed settings objects mapping file states into memory.
-3. **Observability Ingestion:** Initializes the global `tracing-subscriber` layer to capture JSON output strings.
-4. **Resource Allocation:** Allocates the async `sqlx::PgPool` driver instance based on security scopes.
-5. **Transport Routing:** composes sub-module HTTP routing tables from `aircraft_api`.
-6. **Signal Capture:** Spawns asynchronous OS signal handlers (`SIGINT`, `SIGTERM`) to trigger clean shutdown cascades across processing tasks.
-
-## Local Execution Primitive
-
-To spin up the service entry-point manually in a local development context:
-
-```bash
-cargo run --package server
-```
-
-## 3. Boundary Transport: `crates/aircraft_api/README.md`
-
-# Interface Transport Crate: `aircraft_api`
-
-The inbound perimeter interface. This crate maps external network transport interactions safely into core execution mechanisms using `axum` routing graphs, standard HTTP request extractions, and uniform serialization schemas.
-
-## Technical Implementations
-
-### Perimeter Payload Hygiene (`ValidatedJson`)
-To prevent structural ingestion errors from polluting internal coordination layers, this component overrides framework fallbacks using a unified verification extractor wrapper:
-
-```rust
-pub struct ValidatedJson<T>(pub T);
-```
-
-This ensures that incoming requests conform to target structural limits, verify schema constraints via `validator`, and output standardized RFC 7807 problem footprints back to calling consumers upon processing failures.
-
-### Target Routing Architecture Discovery
-
-API documentation runs out-of-band via inline macro scanning tools (`utoipa`), mapping active paths directly to local discovery endpoints:
-
-* **Interactive Engine Workspace:** `/docs`
-* **Raw Schema Contract Specification:** `/api-docs/openapi.json`
-
-## Layer Security Controls
-
-Every route pipeline is wrapped by explicit resource bounds:
-
-* **Payload Caps:** Global request body length restrictions using `tower-http` limit definitions.
-* **Trace Context Chains:** Transparent correlation identification injection mapping `request_id` spans to output diagnostics.
-
----
-
-## 4. Application Logic: `crates/aircraft_app/README.md`
-
-# Core Coordination Layer: `aircraft_app`
-
-The implementation home for application use-cases, system orchestrators, and driving business process components. This package defines execution boundaries and coordinates transactional workflows.
-
-## Key Responsibilities
-
-* **Process Coordination:** Sequencing discrete tasks required to fulfill high-level system functions.
-* **Execution Isolation:** Decoupling the system core from presentation layers (`aircraft_api`) and data-access subsystems (`aircraft_db`).
-* **Data Boundary Mapping (Ports):** Defining the abstract trait profiles required to interface with external storage engines:
-
-```rust
-pub namespace ports {
-    // Abstract boundaries implemented downstream within persistence layers
-    pub trait AircraftRepository: Send + Sync { ... }
-}
-```
-
-## Fault Propagation Policy
-
-Errors within this package use explicit domain enumerations built on top of `thiserror`. Low-level infrastructure exceptions (such as network drops or physical database drops) are caught, packaged into clean semantic failures, and passed upward to protect boundary consumers from internal data layer patterns.
-
----
-
-## 5. System Core Invariants: `crates/aircraft_domain/README.md`
-
-# Domain Invariant Library: `aircraft_domain`
-
-The pure structural core of the platform architecture. This package isolates corporate rules, value object models, and invariant equations from the outside world.
-
-> **Architectural Guardrail:** This crate maintains a strict **zero-dependency policy** regarding asynchronous runtimes (`tokio`), transport layers (`axum`), and data storage engines (`sqlx`). It remains completely deterministic, synchronous, and memory-safe.
-
-## Pure Domain Implementations
-
-* **Core Primitives:** Primitive representations for operational assets, operational bounds, and computational frameworks.
-* **Algorithmic Computations:** Pure functions covering asset score metrics, configuration checks, and normalization logic.
-* **Structural Integrity:** Value objects that leverage Rust's type architecture to make illegal system states unrepresentable.
-
-## Permitted Additions
-Small, pure utility tools are declared selectively when their usage is justified:
-* `serde` (Serialization definitions)
-* `uuid` / `chrono` (Standardized mathematical values)
-* `thiserror` (Pure domain failure models)
-
----
-
-## 6. Infrastructure Storage: `crates/aircraft_db/README.md`
-
-# Persistence Subsystem: `aircraft_db`
-
-The infrastructure data-access package. This library bridges domain layer requests to physical storage systems using asynchronous, compile-time verified SQL execution pipelines.
-
-## Implementation Blueprint
-
-* **Compile-Time Query Guarantees:** Database interactions execute through `sqlx` query macros, verifying SQL formatting patterns against target engine definitions during compilation blocks.
-* **Separation of Models:** Database rows are represented via local target models, keeping table layout tracking decoupled from domain transformations.
-
-## Integration Testing Profiles
-
-Integration tracking hooks up to live engine lifecycles using `testcontainers`:
-
-```rust
-#[tokio::test]
-async fn verify_asset_persistence_lifecycle() {
-    let container = Postgres::default().start().await;
-    // Executes isolated validation tasks against clean database states
-}
-```
-
-To maintain continuous integration performance and permit offline verification, query meta-footprints must be snapshotted to disk prior to deployment pushes:
-
-```bash
-cargo sqlx prepare --workspace
-```
-
----
-
-## 7. Stream Aggregations: `crates/aircraft_ingest/README.md`
-
-# Processing & Integration Engine: `crates/aircraft_ingest`
-
-The asynchronous background processing engine. This crate handles high-volume ingestion flows, unpacks incoming payload streams, validates formats, and coordinates structural normalization passes.
-
-## Architectural Flow Matrix
-
-```text
-[External Data Pipeline] -> [Raw Schema Parsing] -> [Structural Invariant Processing] -> [Persistence Pipeline]
-```
-
-## System Constraints
-
-* **Memory Efficiency:** Processing streams manage large payloads incrementally using memory-bounded iteration blocks.
-* **Idempotence Protections:** Processing loops assert operational run states at the storage perimeter to prevent redundant evaluations of matching datasets.
-* **Fault Tolerance:** Processing tasks isolate structural format failures, allowing valid sub-records to process cleanly while logging parsing faults for audit inspection.
-
----
-
-## 8. Configuration Systems: `crates/aircraft_config/README.md`
-
-# Hierarchical Settings Subsystem: `aircraft_config`
-
-Strongly-typed runtime configuration architecture. This package manages environment settings and guards infrastructure access credentials.
-
-## Operational Inheritance Layer
-
-Settings are aggregated using a multi-tiered file inheritance tree:
-1.  `default.hjson` — Global workspace fallbacks.
-2.  `local.hjson` — Development overrides (Ignored by source control tools).
-3.  `production.hjson` — Live cluster environmental bindings.
-4.  `ENVIRONMENT VARIABLES` — Final overrides mapping directly to targeted deployment slots (e.g., `APP_DATABASE__URL`).
-
-## Secret Hygiene Controls
-
-```rust
-#[derive(Debug, serde::Deserialize)]
-pub struct DatabaseSettings {
-    pub url: secrecy::SecretString, // Protected against accidental logging leaks
-}
-```
-
-Credentials, tokens, and verification strings are encapsulated inside `secrecy` wrappers. This deactivates standard formatting evaluation vectors, blocking inadvertent leakage through system logs, error responses, or diagnostic trace streams.
-
----
-
-## 9. Diagnostic Engines: `crates/aircraft_observability/README.md`
-
-# Structured Diagnostics Engine: `aircraft_observability`
-
-The unified operational telemetry subsystem. This component manages application instrumentation, trace collection, and structured diagnostic reporting.
-
-## Features
-
-* **Structured JSON Output:** Formats application logs into computer-scannable JSON strings for direct pipeline ingestions.
-* **Contextual Tracing:** Captures execution scopes cleanly across asynchronous tasks, binding structural execution metadata (`request_id`, `db.operation`) uniformly to event contexts.
-* **Distributed Exporters:** Implements hooks for distributed tracing collection engines using standard `opentelemetry` export protocols.
-
-## Production Instrumentation Rules
-
-Avoid utilizing generic text tracing macros (`println!`) across application layers. Ensure all execution logging passes through standard semantic level definitions (`event!`, `span!` macros):
-
-```rust
-tracing::info!(request_id = %id, path = %url.path(), "Processing inbound HTTP transaction");
-```
-
----
-
-## 10. Development Task Management: `xtask/`
-
-The `xtask` binary provides behaviorally tested development automation through
-root Just recipes:
-
-* `just install-deps` checks the platform prerequisites (`cargo`, `rustup`,
-  Docker Compose, and the PostgreSQL client) and installs missing Rust
-  development tools used by this repository:
-  rustfmt, Clippy, Just, cargo-nextest, cargo-audit, cargo-deny, and SQLx CLI.
-  Use `just install-deps --check` to report missing tools without installing
-  anything.
-* `just deny` runs the tested `xtask deny` wrapper against the locked workspace.
-  The root `deny.toml` enforces the approved license set, rejects wildcard
-  dependencies and unapproved registry or Git sources, and checks RustSec
-  advisories. `just lint` includes the same command.
-* `just generate-docs` compiles the API-owned Utoipa contract and writes
-  `docs/openapi.json`. Use `just generate-docs --check` to fail when the checked
-  artifact is missing or stale, or `just generate-docs --output <path>` to
-  select another local destination.
-
-`prepare-sqlx` remains unavailable while `aircraft_db` is a scaffold without
-compile-time checked SQLx queries. Add the command only after the persistence
-crate is an active workspace member with real queries whose offline metadata can
-be generated and verified.
-
-The working Just recipe `just db-reset` is separate from these xtask commands.
-It deletes the local Compose PostgreSQL volume and starts an empty database
-container; it does not migrate, seed, or validate. Use the destructive
-`just db-rebuild` recipe when an explicitly disposable local database should be
-reset, migrated, seeded, and validated in one workflow.
+## Command reference
+
+| Command | Behavior |
+|---|---|
+| `just build` | Build all workspace targets |
+| `just check` | Check all workspace targets |
+| `just test` | Run the workspace through cargo-nextest, including Docker-backed tests |
+| `just lint` | Run formatting, static contracts, Clippy, rustdoc, cargo-audit, and cargo-deny gates |
+| `just static` | Check boundaries, OpenAPI, migration and Squawk policy, Compose, and GitHub action-pin policy |
+| `just boundaries` | Enforce the hexagonal workspace dependency graph |
+| `just api-contract` | Check generated OpenAPI and Spectral policy |
+| `just docs-check` | Build all workspace documentation with warnings denied |
+| `just migrations-policy` | Check migration names, checksums, transactions, install order, validation companions, and the Squawk baseline |
+| `just migrations-lint` | Run Squawk against canonical migration history |
+| `just compose-check` | Validate the resolved Compose configuration without starting services |
+| `just github-policy-local` | Validate hosted-policy JSON, required checks, and full-SHA action allowlist |
+| `just github-policy-check` | Compare live GitHub settings with the checked-in repository policy |
+| `just github-policy-apply` | Apply the checked-in GitHub policy; requires administrator access and changes hosted settings |
+| `just ingest-validate FILE` | Validate PlanePHD JSON without PostgreSQL |
+| `just ingest-import FILE` | Import PlanePHD JSON transactionally |
+| `just ingest-status` | Show ingestion run and attempt history |
+| `just curate-list` | Show assertions awaiting a curation decision |
+| `just curate-accept ID` | Accept an assertion, publishing its value |
+| `just curate-reject ID` | Withdraw a value from the read model |
+| `just curate-refresh` | Retry read-model refreshes left pending by committed curation decisions |
+| `just snapshots` | Diff ingestion output against the committed golden snapshots |
+| `just db-grants ROLE` | Grant the dedicated ingestion role on the local database |
+| `just generate-docs` | Generate `docs/openapi.json` from the API crate |
+| `just generate-docs --check` | Fail if the checked-in OpenAPI document is absent or stale |
+| `just db-bootstrap` | Start, migrate, seed at required boundaries, and validate the local database |
+| `just db-seed` | Reapply canonical seed files in order |
+| `just db-validate` | Run every database validation script |
+
+Use `just --list` as the authority for available recipes. Commands described in
+older notes may be architectural intent rather than implemented automation.
+
+## Testing strategy
+
+- Domain invariants use deterministic unit tests without Tokio or PostgreSQL.
+- Application orchestration uses fake ports and explicit failure cases.
+- Parser and normalization tests pin supported source shapes, warnings, units,
+  and identity rules.
+- Repository tests install the canonical SQL into disposable PostgreSQL
+  containers.
+- CLI deployment gates exercise clean import, non-canonical retention,
+  idempotency, rollback, retry history, status JSON, and documented exit codes.
+- Database validation scripts assert schema and post-install behavior.
+
+The SQL-versus-Rust parity run reached explained-zero-difference on two fixtures
+and the legacy loader was retired on that basis. `just snapshots` no longer
+compares two implementations: it diffs the adapter's output against committed
+golden snapshots, which catches regressions but cannot re-validate the adapter
+against an independent implementation. Property tests over the normalizer
+(`crates/aircraft_ingest/tests/normalization_properties.rs`) cover the stated
+rules instead. Qualification in the target release environment remains external
+evidence.
+
+## Security and data policy
+
+- Never commit `.env`, credentials, tokens, private aircraft datasets, or
+  database dumps.
+- Validate external input at the API or ingestion boundary before it reaches
+  application and domain code.
+- Keep database credentials in secret-protected configuration and out of CLI
+  arguments, reports, and logs.
+- Preserve raw source evidence without automatically accepting its claims.
+- Keep explicit units and conditions on physical and performance values.
+- Use parameterized SQL; source-controlled values must not be interpolated into
+  queries.
+- Use `tracing` in application paths rather than `println!` or `dbg!`.
+- Unsafe Rust is forbidden by the workspace lint configuration.
+- Authentication, authorization, request limits, and production HTTP middleware
+  are not complete and must not be inferred from the legacy server files.
+
+## Not implemented yet
+
+- A buildable Axum server composition root
+- Aircraft CRUD, search, comparison, and mission-scoring HTTP flows
+- Production authentication and authorization
+- Complete request limits, timeouts, rate limits, and transport middleware
+- SQLx compile-time query metadata and a meaningful offline-query gate
+- End-to-end production deployment qualification
+
+## Documentation
+
+- [Repository implementation rules](AGENTS.md) — source-of-truth routing,
+  architectural invariants, verification, and safety rules
+- [Database guide](database/README.md) — SQL ownership, install order, local
+  lifecycle, and destructive-command warnings
+- [Database data dictionary](database/data_dictionary.md) — documented schema
+  meaning; migration SQL remains authoritative
+- [Database implementation notes](database/implementation_notes.md) — migration
+  dependencies, curation rules, and known limitations
+- [Local database setup and testing](database/local_setup_and_testing.md) —
+  detailed local lifecycle and migration-ledger behavior
+- [Rust ingestion adapter](docs/architecture/rust_ingestion_adapter.md) — source
+  contract, transaction semantics, configuration, and deployment gates
+- [Generated OpenAPI document](docs/openapi.json) — current minimal health
+  contract, not evidence of a runnable server
+
+## License status
+
+The workspace is currently marked `UNLICENSED`, and no license text is present.
+No permission to use, modify, or distribute the project should be inferred until
+the project owner adopts an explicit license.
