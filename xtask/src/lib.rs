@@ -14,6 +14,19 @@ use anyhow::{Context, Result, bail};
 
 pub use snapshots::{SnapshotOptions, snapshots};
 
+pub(crate) fn path_label(path: &Path) -> String {
+  if path == Path::new("-") {
+    return "<stdin>".to_owned();
+  }
+  path
+    .file_name()
+    .map(|name| {
+      name.to_string_lossy().chars().filter(|character| !character.is_control()).take(255).collect()
+    })
+    .filter(|name: &String| !name.is_empty())
+    .unwrap_or_else(|| "<file>".to_owned())
+}
+
 #[derive(Debug, Clone, Copy)]
 pub struct InstallDepsOptions {
   pub check_only: bool,
@@ -186,6 +199,7 @@ pub fn deny(runner: &impl Runner, workspace_root: &Path) -> Result<()> {
 }
 
 pub fn generate_docs(workspace_root: &Path, options: GenerateDocsOptions) -> Result<()> {
+  let output_label = path_label(&options.output);
   let output =
     if options.output.is_absolute() { options.output } else { workspace_root.join(options.output) };
   let mut rendered = serde_json::to_string_pretty(&aircraft_api::openapi())?;
@@ -193,19 +207,20 @@ pub fn generate_docs(workspace_root: &Path, options: GenerateDocsOptions) -> Res
 
   if options.check {
     let existing = fs::read_to_string(&output)
-      .with_context(|| format!("OpenAPI document is missing: {}", output.display()))?;
+      .with_context(|| format!("OpenAPI document is missing: {output_label}"))?;
     if existing != rendered {
-      bail!("OpenAPI document is stale: {}. Run `just generate-docs`", output.display());
+      bail!("OpenAPI document is stale: {output_label}. Run `just generate-docs`");
     }
-    println!("OpenAPI document is up to date: {}", output.display());
+    println!("OpenAPI document is up to date: {output_label}");
     return Ok(());
   }
 
   if let Some(parent) = output.parent() {
-    fs::create_dir_all(parent).with_context(|| format!("failed to create {}", parent.display()))?;
+    fs::create_dir_all(parent)
+      .with_context(|| format!("failed to create parent directory for {output_label}"))?;
   }
-  fs::write(&output, rendered).with_context(|| format!("failed to write {}", output.display()))?;
-  println!("Wrote OpenAPI document to {}", output.display());
+  fs::write(&output, rendered).with_context(|| format!("failed to write {output_label}"))?;
+  println!("Wrote OpenAPI document to {output_label}");
   Ok(())
 }
 
@@ -333,5 +348,12 @@ mod tests {
 
     assert!(error.contains("stale"));
     Ok(())
+  }
+
+  #[test]
+  fn path_labels_never_expose_parent_directories() {
+    assert_eq!(path_label(Path::new("/private/build/fixture.json")), "fixture.json");
+    assert_eq!(path_label(Path::new("-")), "<stdin>");
+    assert_eq!(path_label(Path::new("/private/build/bad\nname.sql")), "badname.sql");
   }
 }

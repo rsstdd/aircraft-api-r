@@ -20,6 +20,8 @@ use std::{
 
 use anyhow::{Context, Result, anyhow, bail};
 
+use crate::path_label;
+
 const POSTGRES_IMAGE: &str = "postgres:16-alpine";
 const CONTAINER_WORKSPACE: &str = "/workspace";
 const READY_TIMEOUT: Duration = Duration::from_secs(60);
@@ -251,7 +253,7 @@ fn describe_difference(expected: &str, actual: &str) -> String {
 fn snapshot_queries(workspace_root: &Path) -> Result<Vec<(String, String)>> {
   let directory = workspace_root.join("database/snapshots");
   let mut files: Vec<PathBuf> = std::fs::read_dir(&directory)
-    .with_context(|| format!("failed to read {}", directory.display()))?
+    .with_context(|| format!("failed to read {}", path_label(&directory)))?
     .map(|entry| entry.map(|entry| entry.path()))
     .collect::<Result<Vec<_>, _>>()?
     .into_iter()
@@ -259,7 +261,7 @@ fn snapshot_queries(workspace_root: &Path) -> Result<Vec<(String, String)>> {
     .collect();
   files.sort();
   if files.is_empty() {
-    bail!("no snapshot queries found in {}", directory.display());
+    bail!("no snapshot queries found in {}", path_label(&directory));
   }
 
   files
@@ -267,7 +269,7 @@ fn snapshot_queries(workspace_root: &Path) -> Result<Vec<(String, String)>> {
     .map(|path| {
       let name = path.file_name().and_then(|name| name.to_str()).unwrap_or_default().to_owned();
       let sql = std::fs::read_to_string(&path)
-        .with_context(|| format!("failed to read {}", path.display()))?;
+        .with_context(|| format!("failed to read {}", path_label(&path)))?;
       Ok((name, sql))
     })
     .collect()
@@ -287,7 +289,7 @@ pub fn snapshots(workspace_root: &Path, options: &SnapshotOptions) -> Result<()>
     workspace_root.join(&options.fixture)
   };
   if !fixture.is_file() {
-    bail!("fixture {} does not exist", fixture.display());
+    bail!("fixture {} does not exist", path_label(&fixture));
   }
   let queries = snapshot_queries(workspace_root)?;
 
@@ -299,7 +301,7 @@ pub fn snapshots(workspace_root: &Path, options: &SnapshotOptions) -> Result<()>
   println!("installing the canonical schema");
   install_canonical_schema(&database, workspace_root)?;
 
-  println!("importing {}", fixture.display());
+  println!("importing {}", path_label(&fixture));
   let database_url = database.database_url()?;
   load_through_rust_adapter(workspace_root, &database_url, &fixture)?;
 
@@ -311,11 +313,12 @@ pub fn snapshots(workspace_root: &Path, options: &SnapshotOptions) -> Result<()>
 
     if options.update {
       if let Some(parent) = path.parent() {
-        std::fs::create_dir_all(parent)
-          .with_context(|| format!("failed to create {}", parent.display()))?;
+        std::fs::create_dir_all(parent).with_context(|| {
+          format!("failed to create parent directory for {}", path_label(&path))
+        })?;
       }
       std::fs::write(&path, format!("{actual}\n"))
-        .with_context(|| format!("failed to write {}", path.display()))?;
+        .with_context(|| format!("failed to write {}", path_label(&path)))?;
       println!("  wrote      {name}");
       continue;
     }
@@ -324,8 +327,8 @@ pub fn snapshots(workspace_root: &Path, options: &SnapshotOptions) -> Result<()>
       bail!(
         "no golden snapshot at {}. Review the output, then record it with \
          `cargo xtask snapshots --fixture {} --update`.",
-        path.display(),
-        options.fixture.display()
+        path_label(&path),
+        path_label(&options.fixture)
       );
     };
     if expected.trim_end() == actual.trim_end() {
