@@ -84,6 +84,24 @@ async fn count(pool: &PgPool, table: &str) -> TestResult<i64> {
   Ok(query_scalar(&format!("SELECT COUNT(*) FROM {table}")).fetch_one(pool).await?)
 }
 
+/// Drives one curation decision through the shipped binary, so the exit codes
+/// and rendering under test are the ones a caller actually scripts against.
+fn curate(database_url: &str, decision: &str, assertion_id: i64) -> TestResult<Output> {
+  run_cli(
+    Some(database_url),
+    &["curate", decision, "--assertion-id", &assertion_id.to_string(), "--format", "json"],
+  )
+}
+
+/// The valuation price the read model currently serves, if any.
+async fn served_price(pool: &PgPool) -> TestResult<Option<String>> {
+  Ok(
+    query_scalar("SELECT papi_price_usd::text FROM aircraft_read.mv_variant_search")
+      .fetch_one(pool)
+      .await?,
+  )
+}
+
 /// Gate: clean-database import.
 #[tokio::test]
 async fn import_into_a_clean_database_promotes_the_fixture() -> TestResult {
@@ -617,13 +635,16 @@ async fn a_duplicated_source_record_key_is_rejected_before_anything_is_written()
   Ok(())
 }
 
-/// Market data is gated at the snapshot, not the row: a cost snapshot's totals
-/// are only meaningful together, so accepting any of its assertions publishes it
-/// and withdrawing the last one takes it back down. Prices were also the only
-/// values the adapter wrote with no provenance at all, which left them
-/// permanently unpublishable once migration 020 gated them.
+/// Market data is gated at the snapshot, not the field: one `is_canonical` flag
+/// covers every column of a valuation and every line item of a cost snapshot,
+/// which migration 020 records as "Published as a unit". A unit that publishes
+/// together has to be curated together, so the snapshot appears only once every
+/// field asserted on it is accepted and disappears when any one is withdrawn.
+/// The half-curated assertions are the load-bearing part: publishing on the
+/// first acceptance served an unaccepted `for_sale_count` and every pending
+/// sibling cost.
 #[tokio::test]
-async fn curating_market_assertions_publishes_price_and_cost() -> TestResult {
+async fn a_market_snapshot_is_published_only_once_every_field_on_it_is_accepted() -> TestResult {
   let (container, pool) = start_postgres(5, Duration::from_secs(5)).await?;
   install_schema(&pool).await?;
 
@@ -631,58 +652,150 @@ async fn curating_market_assertions_publishes_price_and_cost() -> TestResult {
   assert!(imported.status.success(), "{}", describe(&imported));
 
   // Provenance for the price now exists; before migration 020 it did not.
-  let valuation_assertion: i64 = query_scalar(
+  let price_assertion: i64 = query_scalar(
     "SELECT id FROM aircraft_prov.source_assertions
          WHERE entity_type_code = 'VALUATION' AND field_name = 'papi_price_estimate'",
   )
   .fetch_one(&pool)
   .await?;
 
-  let price_before: Option<String> =
-    query_scalar("SELECT papi_price_usd::text FROM aircraft_read.mv_variant_search")
-      .fetch_one(&pool)
-      .await?;
-  assert!(price_before.is_none(), "an uncurated price must not be served");
+  assert!(served_price(&pool).await?.is_none(), "an uncurated price must not be served");
 
-  let accepted = run_cli(
-    Some(&container.database_url),
-    &["curate", "accept", "--assertion-id", &valuation_assertion.to_string(), "--format", "json"],
-  )?;
-  assert!(accepted.status.success(), "{}", describe(&accepted));
-
-  let price_after: Option<String> =
-    query_scalar("SELECT papi_price_usd::text FROM aircraft_read.mv_variant_search")
-      .fetch_one(&pool)
-      .await?;
+  // The fixture's valuation also carries a for_sale_count, so the price alone
+  // does not complete the snapshot.
+  let accepted_price = curate(&container.database_url, "accept", price_assertion)?;
+  assert!(accepted_price.status.success(), "{}", describe(&accepted_price));
   assert!(
-    price_after.as_deref().is_some_and(|value| value.starts_with("285000")),
-    "the accepted price must be served: {price_after:?}"
+    served_price(&pool).await?.is_none(),
+    "a snapshot with a pending for_sale_count must stay unpublished"
   );
 
-  // A cost assertion publishes its whole snapshot.
-  let cost_assertion: i64 = query_scalar(
+  let for_sale_assertion: i64 = query_scalar(
     "SELECT id FROM aircraft_prov.source_assertions
-         WHERE entity_type_code = 'COST_SNAPSHOT' ORDER BY id LIMIT 1",
+         WHERE entity_type_code = 'VALUATION' AND field_name = 'for_sale_count'",
   )
   .fetch_one(&pool)
   .await?;
-  let published = run_cli(
-    Some(&container.database_url),
-    &["curate", "accept", "--assertion-id", &cost_assertion.to_string(), "--format", "json"],
-  )?;
-  assert!(published.status.success(), "{}", describe(&published));
-  assert_eq!(count(&pool, "aircraft_market.cost_snapshots WHERE is_canonical").await?, 1);
+  let accepted_count = curate(&container.database_url, "accept", for_sale_assertion)?;
+  assert!(accepted_count.status.success(), "{}", describe(&accepted_count));
+  let published_price = served_price(&pool).await?;
+  assert!(
+    published_price.as_deref().is_some_and(|value| value.starts_with("285000")),
+    "the completed valuation must be served: {published_price:?}"
+  );
 
-  // Withdrawing the only accepted assertion takes the snapshot back down.
-  let withdrawn = run_cli(
-    Some(&container.database_url),
-    &["curate", "reject", "--assertion-id", &cost_assertion.to_string(), "--format", "json"],
-  )?;
+  // The same rule over a snapshot with more than two fields: the fixture's four
+  // ownership-cost entries publish on the last acceptance, not the first.
+  let cost_assertions: Vec<i64> = query_scalar(
+    "SELECT id FROM aircraft_prov.source_assertions
+         WHERE entity_type_code = 'COST_SNAPSHOT' ORDER BY id",
+  )
+  .fetch_all(&pool)
+  .await?;
+  assert!(cost_assertions.len() > 1, "the fixture must assert several cost fields to gate on");
+  let last = cost_assertions.len() - 1;
+  for (index, assertion_id) in cost_assertions.iter().copied().enumerate() {
+    let accepted = curate(&container.database_url, "accept", assertion_id)?;
+    assert!(accepted.status.success(), "{}", describe(&accepted));
+    let published = count(&pool, "aircraft_market.cost_snapshots WHERE is_canonical").await?;
+    assert_eq!(
+      published,
+      i64::from(index == last),
+      "cost snapshot after accepting assertion {} of {}",
+      index + 1,
+      cost_assertions.len()
+    );
+  }
+
+  // Withdrawing any one of them takes the whole snapshot back down.
+  let withdrawn = curate(&container.database_url, "reject", cost_assertions[0])?;
   assert!(withdrawn.status.success(), "{}", describe(&withdrawn));
   assert_eq!(
     count(&pool, "aircraft_market.cost_snapshots WHERE is_canonical").await?,
     0,
-    "withdrawing the last accepted assertion must unpublish the snapshot"
+    "withdrawing one accepted assertion must unpublish the snapshot it published"
+  );
+  Ok(())
+}
+
+/// `curation_failure` in `apps/ingest/src/main.rs` maps every decision the
+/// current state does not permit to exit code 8. `SNAPSHOT_CONFLICT` and
+/// `VALUE_MISMATCH` were only ever asserted at the repository boundary, so the
+/// contract a caller actually scripts against went unexercised.
+#[tokio::test]
+async fn a_market_decision_the_state_refuses_exits_eight() -> TestResult {
+  let (container, pool) = start_postgres(5, Duration::from_secs(5)).await?;
+  install_schema(&pool).await?;
+
+  let imported = run_cli(Some(&container.database_url), &as_args(&import_args(&fixture())))?;
+  assert!(imported.status.success(), "{}", describe(&imported));
+
+  // A second artifact the same day reuses the stored valuation -- the stored
+  // price stays $285,000 -- while asserting its own $295,000 against it.
+  let reprice = tempfile::NamedTempFile::new()?;
+  std::fs::write(
+    reprice.path(),
+    std::fs::read_to_string(fixture())?.replace("285,000", "295,000"),
+  )?;
+  let repriced = run_cli(Some(&container.database_url), &as_args(&import_args(reprice.path())))?;
+  assert!(repriced.status.success(), "{}", describe(&repriced));
+
+  let mismatched: i64 = query_scalar(
+    "SELECT id FROM aircraft_prov.source_assertions
+         WHERE entity_type_code = 'VALUATION' AND field_name = 'papi_price_estimate'
+           AND asserted_numeric = 295000",
+  )
+  .fetch_one(&pool)
+  .await?;
+  let refused = curate(&container.database_url, "accept", mismatched)?;
+  assert_eq!(
+    refused.status.code(),
+    Some(8),
+    "a value mismatch must exit 8: {}",
+    describe(&refused)
+  );
+
+  // Publish the standing valuation, then offer the next day's snapshot for the
+  // same variant: uq_val_canonical permits only one.
+  for field in ["papi_price_estimate", "for_sale_count"] {
+    let assertion: i64 = query_scalar(
+      "SELECT id FROM aircraft_prov.source_assertions
+           WHERE entity_type_code = 'VALUATION' AND field_name = $1
+             AND asserted_numeric <> 295000
+           ORDER BY id LIMIT 1",
+    )
+    .bind(field)
+    .fetch_one(&pool)
+    .await?;
+    let accepted = curate(&container.database_url, "accept", assertion)?;
+    assert!(accepted.status.success(), "{}", describe(&accepted));
+  }
+
+  let contender: i64 = query_scalar(
+    "WITH snapshot AS (
+             INSERT INTO aircraft_market.valuations(
+                 variant_id, snapshot_date, source_name, papi_price_estimate,
+                 currency_code, captured_at)
+             SELECT variant_id, CURRENT_DATE + 1, 'PlanePHD', 305000, 'USD', now()
+             FROM aircraft_market.valuations LIMIT 1
+             RETURNING id)
+         INSERT INTO aircraft_prov.source_assertions(
+             source_document_id, entity_type_code, entity_id, field_name,
+             raw_value, asserted_numeric, status_code, is_accepted)
+         SELECT document.id, 'VALUATION', snapshot.id, 'papi_price_estimate',
+                '$305,000', 305000, 'PENDING', FALSE
+         FROM snapshot,
+              (SELECT id FROM aircraft_prov.source_documents ORDER BY id LIMIT 1) AS document
+         RETURNING id",
+  )
+  .fetch_one(&pool)
+  .await?;
+  let conflicted = curate(&container.database_url, "accept", contender)?;
+  assert_eq!(
+    conflicted.status.code(),
+    Some(8),
+    "a snapshot conflict must exit 8: {}",
+    describe(&conflicted)
   );
   Ok(())
 }

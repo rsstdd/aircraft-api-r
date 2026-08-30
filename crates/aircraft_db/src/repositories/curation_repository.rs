@@ -47,12 +47,23 @@ impl SqlxCurationStore {
 
 /// Where a market assertion publishes to.
 ///
-/// Market data is gated at the snapshot rather than the row, because a cost
-/// snapshot's totals are only meaningful together and
+/// Market data is gated at the snapshot rather than the field, because one
+/// `is_canonical` flag covers every column of a valuation and every line item
+/// and total of a cost snapshot -- migration 020 states it as "Published as a
+/// unit: the snapshot's totals are only meaningful together", and
 /// `mv_ownership_cost_summary` would otherwise report a confident `$0.00` for a
-/// partly-curated one (migration 020). Accepting any assertion on a snapshot
-/// therefore publishes it, and it stays published while any of its assertions
-/// remains accepted.
+/// partly-curated one.
+///
+/// A unit that publishes together must be curated together: the snapshot is
+/// served only once every field asserted on it has an accepted assertion, and
+/// withdrawing any one of them takes the whole snapshot back down. Publishing on
+/// the first acceptance would serve the snapshot's other columns -- a valuation's
+/// `for_sale_count`, a cost snapshot's remaining line items -- while their own
+/// assertions were still pending, which is exactly what
+/// `docs/architecture/rust_ingestion_adapter.md` says the read model may never
+/// do. Decisions themselves stay per-assertion, so a curator still accepts each
+/// field on its own evidence and each one is value-checked against the row it
+/// would publish.
 const fn market_target(entity_type_code: &str) -> Option<&'static str> {
   match entity_type_code.as_bytes() {
     b"VALUATION" => Some("aircraft_market.valuations"),
@@ -412,12 +423,23 @@ async fn publish_decision(
   }
 
   if let Some(table) = market_target(entity_type_code) {
-    // Market rows are keyed by the assertion's entity_id, and stay published
-    // while any assertion on them is still accepted.
-    let still_accepted: bool = query_scalar(
+    // Market rows are keyed by the assertion's entity_id and publish as a unit,
+    // so the snapshot is served only when the unit is fully curated: at least
+    // one accepted assertion, and no field left without one. The first half also
+    // keeps the predicate from being vacuously true -- "no undecided field" alone
+    // would publish a snapshot carrying no assertions at all.
+    let publishable: bool = query_scalar(
       "SELECT EXISTS(
                 SELECT 1 FROM aircraft_prov.source_assertions
-                WHERE entity_type_code = $1 AND entity_id = $2 AND is_accepted)",
+                WHERE entity_type_code = $1 AND entity_id = $2 AND is_accepted)
+              AND NOT EXISTS(
+                SELECT 1 FROM aircraft_prov.source_assertions AS undecided
+                WHERE undecided.entity_type_code = $1 AND undecided.entity_id = $2
+                  AND NOT EXISTS(
+                    SELECT 1 FROM aircraft_prov.source_assertions AS accepted
+                    WHERE accepted.entity_type_code = $1 AND accepted.entity_id = $2
+                      AND accepted.field_name = undecided.field_name
+                      AND accepted.is_accepted))",
     )
     .bind(entity_type_code)
     .bind(entity_id)
@@ -425,11 +447,16 @@ async fn publish_decision(
     .await
     .map_err(database_error)?;
 
-    if decision.is_accepted()
-      && let Some((asserted, stored)) =
+    // Written as a `match` rather than a let-chain: let-chains are stable only
+    // from Rust 1.88, and `rust-version` in the workspace manifest is 1.85.
+    let mismatch = match decision {
+      Decision::Accepted => {
         market_value_mismatch(transaction, assertion_id, entity_type_code, entity_id, field_name)
           .await?
-    {
+      }
+      Decision::Rejected => None,
+    };
+    if let Some((asserted, stored)) = mismatch {
       return Err(CurationError::ValueMismatch {
         assertion_id,
         field_name: field_name.to_owned(),
@@ -445,7 +472,7 @@ async fn publish_decision(
     // instead of letting the curator receive a raw constraint violation naming an
     // index. The index stays the authority: two curators publishing different
     // snapshots of one variant concurrently still lose that race there, not here.
-    if still_accepted {
+    if publishable {
       let blocking_id: Option<i64> = query_scalar(&format!(
         "SELECT id FROM {table}
                  WHERE variant_id = (SELECT variant_id FROM {table} WHERE id = $1)
@@ -469,12 +496,12 @@ async fn publish_decision(
              WHERE id = $1 AND is_canonical IS DISTINCT FROM $2"
     ))
     .bind(entity_id)
-    .bind(still_accepted)
+    .bind(publishable)
     .execute(&mut **transaction)
     .await
     .map_err(database_error)?
     .rows_affected();
-    return Ok((still_accepted && affected > 0, affected > 0));
+    return Ok((publishable && affected > 0, affected > 0));
   }
 
   Ok((false, false))

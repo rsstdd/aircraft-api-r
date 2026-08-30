@@ -8,6 +8,16 @@
 //! Accepting is deliberately per-field rather than per-record: a source can be
 //! right about cruise speed and wrong about empty weight, and the provenance
 //! tables are keyed that way (`entity_type_code`, `entity_id`, `field_name`).
+//!
+//! What a decision *publishes* is a separate question, and the schema answers
+//! it. A measurement carries its own `is_canonical` flag, so accepting one field
+//! publishes exactly that value. A market snapshot does not: one flag covers
+//! every column of a valuation and every line item of a cost snapshot, which
+//! migration 020 records as "Published as a unit". Such a snapshot is therefore
+//! served only once every field asserted on it has been accepted, and
+//! withdrawing any one of them takes the whole snapshot back down -- per-field
+//! decisions, unit publication, and no unaccepted value ever reaching the read
+//! model.
 
 use std::{fmt, sync::Arc};
 
