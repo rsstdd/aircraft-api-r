@@ -1,11 +1,22 @@
+//! Upgrade safety for the curation gates.
+//!
+//! Migrations 019 and 020 put weight metrics, valuations, and cost snapshots
+//! behind `is_canonical`. Each gate backfills only the rows its pre-migration
+//! read model already served, so an upgrade must not publish anything that was
+//! previously withheld. Each gate is asserted on its own so a regression names
+//! the table it broke.
+
 use std::time::Duration;
 
-use aircraft_testsupport::{SCHEMA_STEPS, TestResult, start_postgres};
+use aircraft_testsupport::{DockerPostgres, SCHEMA_STEPS, TestResult, start_postgres};
 use sqlx_core::{query_scalar::query_scalar, raw_sql::raw_sql};
+use sqlx_postgres::PgPool;
 
-#[tokio::test]
-async fn curation_gates_preserve_only_the_rows_previously_served() -> TestResult {
-  let (_container, pool) = start_postgres(2, Duration::from_secs(5)).await?;
+/// Installs the schema up to the first curation gate, seeds a variant with rows
+/// on both sides of every gate's backfill predicate, then applies the remaining
+/// migrations. Returns the pool, keeping the container alive for the caller.
+async fn upgrade_across_the_curation_gates() -> TestResult<(DockerPostgres, PgPool)> {
+  let (container, pool) = start_postgres(2, Duration::from_secs(5)).await?;
   let gate_index = SCHEMA_STEPS
     .iter()
     .position(|sql| sql.contains("019_weight_metrics_curation_gate.sql"))
@@ -54,6 +65,14 @@ async fn curation_gates_preserve_only_the_rows_previously_served() -> TestResult
   for sql in &SCHEMA_STEPS[gate_index..] {
     raw_sql(sql).execute(&pool).await?;
   }
+  Ok((container, pool))
+}
+
+/// Migration 016 served only `configuration IS NULL` weights, so migration 019
+/// must leave a configured sibling pending.
+#[tokio::test]
+async fn the_weight_gate_leaves_configured_rows_pending() -> TestResult {
+  let (_container, pool) = upgrade_across_the_curation_gates().await?;
 
   let configured_canonical_weights: i64 = query_scalar(
     "SELECT count(*) FROM aircraft_specs.weight_metrics
@@ -61,7 +80,16 @@ async fn curation_gates_preserve_only_the_rows_previously_served() -> TestResult
   )
   .fetch_one(&pool)
   .await?;
+
   assert_eq!(configured_canonical_weights, 0);
+  Ok(())
+}
+
+/// Migration 020 backfills only the valuation the pre-migration read model
+/// selected as current, so historical time-series siblings stay pending.
+#[tokio::test]
+async fn the_valuation_gate_leaves_historical_rows_pending() -> TestResult {
+  let (_container, pool) = upgrade_across_the_curation_gates().await?;
 
   let historical_canonical_valuations: i64 = query_scalar(
     "SELECT count(*) FROM aircraft_market.valuations
@@ -69,7 +97,16 @@ async fn curation_gates_preserve_only_the_rows_previously_served() -> TestResult
   )
   .fetch_one(&pool)
   .await?;
+
   assert_eq!(historical_canonical_valuations, 0);
+  Ok(())
+}
+
+/// The same backfill rule applies to cost snapshots, which are gated as whole
+/// snapshots rather than line items.
+#[tokio::test]
+async fn the_cost_snapshot_gate_leaves_historical_rows_pending() -> TestResult {
+  let (_container, pool) = upgrade_across_the_curation_gates().await?;
 
   let historical_canonical_costs: i64 = query_scalar(
     "SELECT count(*) FROM aircraft_market.cost_snapshots
@@ -77,6 +114,7 @@ async fn curation_gates_preserve_only_the_rows_previously_served() -> TestResult
   )
   .fetch_one(&pool)
   .await?;
+
   assert_eq!(historical_canonical_costs, 0);
   Ok(())
 }
