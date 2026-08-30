@@ -18,7 +18,7 @@ use std::{
 
 use aircraft_testsupport::{TestResult, install_schema, start_postgres};
 use serde_json::Value;
-use sqlx_core::{query::query, query_scalar::query_scalar, row::Row};
+use sqlx_core::{query::query, query_scalar::query_scalar, raw_sql::raw_sql, row::Row};
 use sqlx_postgres::PgPool;
 
 /// Repository-root fixture, resolved from the manifest so the test does not
@@ -769,5 +769,112 @@ async fn colliding_slugs_are_kept_as_flagged_evidence() -> TestResult {
     1,
     "the ambiguity must reach a curator"
   );
+  Ok(())
+}
+
+/// A curation decision commits before the read model is rebuilt, so the rebuild
+/// can fail with the decision already durable. The decision must survive, the
+/// stale read model must be recorded, and a retry must be able to rebuild it
+/// without a second decision — which the state machine would refuse anyway.
+#[tokio::test]
+async fn a_failed_refresh_after_a_committed_decision_stays_retryable() -> TestResult {
+  let (container, pool) = start_postgres(5, Duration::from_secs(5)).await?;
+  install_schema(&pool).await?;
+
+  let imported = run_cli(Some(&container.database_url), &as_args(&import_args(&fixture())))?;
+  assert!(imported.status.success(), "{}", describe(&imported));
+
+  let assertion_id: i64 = query_scalar(
+    "SELECT id FROM aircraft_prov.source_assertions
+         WHERE field_name = 'performance.SPEED_CRUISE_BEST' AND status_code = 'PENDING'
+         ORDER BY id LIMIT 1",
+  )
+  .fetch_one(&pool)
+  .await?;
+
+  // Take the matview out from under refresh_search_matviews. Renaming makes the
+  // refresh fail exactly the way a lock or statement timeout would, and unlike a
+  // drop it can be undone so the retry has something to rebuild.
+  raw_sql("ALTER MATERIALIZED VIEW aircraft_read.mv_variant_search RENAME TO mv_search_offline")
+    .execute(&pool)
+    .await?;
+
+  let accepted = run_cli(
+    Some(&container.database_url),
+    &["curate", "accept", "--assertion-id", &assertion_id.to_string(), "--format", "json"],
+  )?;
+  assert!(
+    accepted.status.success(),
+    "a committed decision must not be reported as a failure: {}",
+    describe(&accepted)
+  );
+  let outcome = stdout_json(&accepted)?;
+  assert_eq!(outcome["decision"], "ACCEPTED", "{outcome:#}");
+  assert_eq!(outcome["read_model_refreshed"], false, "{outcome:#}");
+  assert_eq!(outcome["read_model_refresh_pending"], true, "{outcome:#}");
+
+  // The decision itself is durable, and repeating it is still refused.
+  assert_eq!(
+    count(
+      &pool,
+      "aircraft_specs.performance_metrics WHERE is_canonical
+           AND metric_type_code = 'SPEED_CRUISE_BEST'"
+    )
+    .await?,
+    1,
+    "the accepted measurement must stay canonical after the failed refresh"
+  );
+  let repeated = run_cli(
+    Some(&container.database_url),
+    &["curate", "accept", "--assertion-id", &assertion_id.to_string(), "--format", "json"],
+  )?;
+  assert_eq!(repeated.status.code(), Some(8), "{}", describe(&repeated));
+
+  // The staleness is recorded, with the failure attributed to it.
+  let outstanding: (i64, i64, Option<String>) = {
+    let row = query(
+      "SELECT count(*) AS pending, coalesce(max(attempts), 0) AS attempts,
+                  max(last_error) AS last_error
+           FROM aircraft_read.read_model_refresh_requests
+           WHERE status_code = 'PENDING'",
+    )
+    .fetch_one(&pool)
+    .await?;
+    (row.get("pending"), row.get("attempts"), row.get("last_error"))
+  };
+  assert_eq!(outstanding.0, 1, "the unfinished refresh must be recorded");
+  assert_eq!(outstanding.1, 1, "the failed attempt must be counted");
+  assert!(outstanding.2.is_some(), "the failure must be attributed to the request");
+
+  raw_sql("ALTER MATERIALIZED VIEW aircraft_read.mv_search_offline RENAME TO mv_variant_search")
+    .execute(&pool)
+    .await?;
+
+  let refreshed =
+    run_cli(Some(&container.database_url), &["curate", "refresh", "--format", "json"])?;
+  assert!(refreshed.status.success(), "{}", describe(&refreshed));
+  let settled = stdout_json(&refreshed)?;
+  assert_eq!(settled["read_model_refreshed"], true, "{settled:#}");
+  assert_eq!(settled["requests_completed"], 1, "{settled:#}");
+
+  assert_eq!(
+    count(&pool, "aircraft_read.read_model_refresh_requests WHERE status_code = 'PENDING'").await?,
+    0,
+    "a successful rebuild closes the request it satisfied"
+  );
+  let published: Option<String> =
+    query_scalar("SELECT cruise_speed_kias::text FROM aircraft_read.mv_variant_search")
+      .fetch_one(&pool)
+      .await?;
+  assert!(
+    published.as_deref().is_some_and(|value| value.starts_with("124")),
+    "the retry must publish the decision the failed refresh withheld: {published:?}"
+  );
+
+  // Nothing outstanding: the retry is idempotent rather than an unconditional
+  // rebuild, so it can be run safely without checking first.
+  let again = run_cli(Some(&container.database_url), &["curate", "refresh", "--format", "json"])?;
+  assert!(again.status.success(), "{}", describe(&again));
+  assert_eq!(stdout_json(&again)?["read_model_refreshed"], false, "{}", describe(&again));
   Ok(())
 }

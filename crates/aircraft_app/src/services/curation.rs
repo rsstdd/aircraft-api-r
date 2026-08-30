@@ -48,6 +48,11 @@ pub struct CurationOutcome {
   /// Whether the read model was rebuilt. Refreshing is skipped when nothing
   /// the read model exposes actually changed.
   pub read_model_refreshed: bool,
+  /// True when the decision is committed but the rebuild that should have
+  /// followed it did not succeed. The read model is stale and the outstanding
+  /// refresh is recorded durably, so [`CurationService::refresh_read_models`]
+  /// can complete it without repeating the decision.
+  pub read_model_refresh_pending: bool,
 }
 
 impl CurationOutcome {
@@ -60,7 +65,35 @@ impl CurationOutcome {
       measurement_canonicalized: false,
       flags_resolved: 0,
       read_model_refreshed: false,
+      read_model_refresh_pending: false,
     }
+  }
+}
+
+/// What a refresh retry settled.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct RefreshOutcome {
+  pub schema_version: u16,
+  /// Whether the materialized views were actually rebuilt. False means nothing
+  /// was outstanding, not that a rebuild failed -- a failure is an error.
+  pub read_model_refreshed: bool,
+  /// Outstanding refresh requests closed by this rebuild.
+  pub requests_completed: u64,
+}
+
+impl RefreshOutcome {
+  #[must_use]
+  pub const fn nothing_pending() -> Self {
+    Self {
+      schema_version: REPORT_SCHEMA_VERSION,
+      read_model_refreshed: false,
+      requests_completed: 0,
+    }
+  }
+
+  #[must_use]
+  pub const fn refreshed(requests_completed: u64) -> Self {
+    Self { schema_version: REPORT_SCHEMA_VERSION, read_model_refreshed: true, requests_completed }
   }
 }
 
@@ -104,14 +137,24 @@ pub trait CurationStore: Send + Sync {
   ) -> Result<Vec<PendingAssertion>, PersistenceError>;
 
   /// Applies the assertion status, canonical flag, and curation-flag changes in
-  /// one transaction, then refreshes the read model after commit when needed.
-  /// A refresh error is therefore reported after the decision is already
-  /// durable; callers must not assume that an error rolled the decision back.
+  /// one transaction, enqueueing the read-model refresh that the changes make
+  /// necessary within the same transaction, then performs that refresh after
+  /// commit.
+  ///
+  /// A post-commit refresh failure is not an error: the decision is already
+  /// durable, so it is reported as a successful outcome carrying
+  /// `read_model_refresh_pending`, and the enqueued request keeps the stale
+  /// read model recoverable through [`CurationStore::refresh_read_models`].
   async fn decide(
     &self,
     assertion_id: i64,
     decision: Decision,
   ) -> Result<CurationOutcome, CurationError>;
+
+  /// Rebuilds the read model if any refresh request is outstanding, closing the
+  /// requests the rebuild satisfied. Idempotent, and safe to call when nothing
+  /// is pending.
+  async fn refresh_read_models(&self) -> Result<RefreshOutcome, PersistenceError>;
 }
 
 #[derive(Debug, Error)]
@@ -174,6 +217,12 @@ impl CurationService {
   pub async fn reject(&self, assertion_id: i64) -> Result<CurationOutcome, CurationError> {
     self.store.decide(assertion_id, Decision::Rejected).await
   }
+
+  /// Completes a refresh a committed decision could not, without asking for
+  /// another decision.
+  pub async fn refresh_read_models(&self) -> Result<RefreshOutcome, PersistenceError> {
+    self.store.refresh_read_models().await
+  }
 }
 
 #[cfg(test)]
@@ -194,7 +243,19 @@ mod tests {
     assert_eq!(outcome.assertion_id, 7);
     assert!(!outcome.measurement_canonicalized);
     assert!(!outcome.read_model_refreshed);
+    assert!(!outcome.read_model_refresh_pending);
     assert_eq!(outcome.flags_resolved, 0);
+  }
+
+  #[test]
+  fn a_refresh_that_found_nothing_pending_does_not_claim_a_rebuild() {
+    let idle = RefreshOutcome::nothing_pending();
+    assert!(!idle.read_model_refreshed);
+    assert_eq!(idle.requests_completed, 0);
+
+    let settled = RefreshOutcome::refreshed(3);
+    assert!(settled.read_model_refreshed);
+    assert_eq!(settled.requests_completed, 3);
   }
 
   #[test]

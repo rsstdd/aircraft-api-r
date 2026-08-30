@@ -41,7 +41,8 @@ GRANT SELECT, INSERT, UPDATE ON TABLE
     aircraft_ingest.ingest_runs,
     aircraft_ingest.ingest_run_attempts,
     aircraft_ingest.staged_aircraft,
-    aircraft_ingest.staged_images
+    aircraft_ingest.staged_images,
+    aircraft_read.read_model_refresh_requests
 TO :"ingest_role";
 
 GRANT USAGE, SELECT ON SEQUENCE

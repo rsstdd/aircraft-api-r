@@ -51,6 +51,10 @@ curate-accept assertion_id:
 curate-reject assertion_id:
     cargo run --package aircraft-ingest -- curate reject --assertion-id {{ assertion_id }}
 
+# Rebuild the read model for decisions whose refresh did not complete.
+curate-refresh *args:
+    cargo run --package aircraft-ingest -- curate refresh {{ args }}
+
 # Import each fixture through the Rust adapter into a disposable database and
 # diff the normalized business snapshots against their committed golden output.
 # With no arguments this runs every fixture the gate covers.

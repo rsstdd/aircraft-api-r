@@ -929,5 +929,8 @@ snapshot queries plus committed golden output that guard it.
 | `mv_ownership_cost_summary` | MATVIEW | Aggregated annual + per-hour cost from latest snapshot; 17 columns |
 | `mv_variant_search` | MATVIEW | 48-column denormalized search surface with 20 indexes total: three GIN/trigram indexes and 17 B-tree/partial indexes; **must be refreshed after data changes** |
 | `refresh_search_matviews(concurrent BOOLEAN)` | FUNCTION | Refreshes `mv_ownership_cost_summary` then `mv_variant_search` in correct order. Pass `FALSE` for initial population (no `CONCURRENTLY`); default `TRUE` for live updates |
+| `read_model_refresh_requests` | TABLE | Durable record that the matviews are stale, added by migration 022. Written in the transaction that changed what they serve, and closed only after `refresh_search_matviews()` succeeds |
+
+**Recovering a missed refresh.** Curation commits its decision and rebuilds the matviews afterwards, so the rebuild can fail with the decision already durable. The decision therefore enqueues a `read_model_refresh_requests` row inside its own transaction; the row survives a failed rebuild and is closed only by one that succeeded. `aircraft-ingest curate refresh` drains whatever is outstanding, so a stale read model never depends on repeating a decision the state machine would refuse.
 
 **Critical refresh note.** `mv_variant_search` is created `WITH NO DATA`. It returns zero rows until `refresh_search_matviews(FALSE)` is called. Subsequent incremental updates use `refresh_search_matviews()` (concurrent = TRUE by default), which does not block reads.

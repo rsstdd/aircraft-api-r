@@ -41,8 +41,8 @@ simply because they were parsed successfully.
 | Area | Status |
 |---|---|
 | Rust workspace | Cargo resolves ten packages around the ingestion slice, shared libraries, API contract generation, test support, and `xtask` |
-| Database | Canonical migrations `001` through `021`, checksum-locked history, dependency-aware installation, reference seeds, and SQL validation scripts are present |
-| Rust ingestion CLI | `validate`, `import`, `status`, and `curate` (`list`, `accept`, `reject`) are implemented for PlanePHD JSON |
+| Database | Canonical migrations `001` through `022`, checksum-locked history, dependency-aware installation, reference seeds, and SQL validation scripts are present |
+| Rust ingestion CLI | `validate`, `import`, `status`, and `curate` (`list`, `accept`, `reject`, `refresh`) are implemented for PlanePHD JSON |
 | Ingestion semantics | Immutable input capture, SHA-256 identity, bounded streaming, preflight validation, transactional promotion, audit history, and idempotent replay are implemented |
 | Persistence | SQLx ingestion repository implemented; the broader repository surface remains incomplete |
 | Domain and application | Ingestion rules and orchestration are implemented; most general aircraft, mission, search, and comparison behavior remains scaffolded |
@@ -267,6 +267,13 @@ Import and status require `APP__INGEST__DATABASE_URL`. The ingestion database
 URL is read from configuration and is never accepted as a command-line
 argument.
 
+If a committed curation decision reports that its read-model refresh is queued,
+retry the outstanding refresh with the implemented CLI command:
+
+```bash
+just curate-refresh
+```
+
 > [!WARNING]
 > `just db-reset` deletes the local Compose PostgreSQL volume and starts an
 > empty database. `just db-rebuild` performs the destructive reset and then
@@ -346,6 +353,7 @@ just db-validate
 | `just curate-list` | Show assertions awaiting a curation decision |
 | `just curate-accept ID` | Accept an assertion, publishing its value |
 | `just curate-reject ID` | Withdraw a value from the read model |
+| `just curate-refresh` | Retry read-model refreshes left pending by committed curation decisions |
 | `just snapshots` | Diff ingestion output against the committed golden snapshots |
 | `just db-grants ROLE` | Grant the dedicated ingestion role on the local database |
 | `just generate-docs` | Generate `docs/openapi.json` from the API crate |

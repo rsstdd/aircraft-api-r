@@ -84,6 +84,10 @@
     {
       "file": "021_validate_measurement_assertion_foreign_keys.sql",
       "sha256": "b5adf32a5d0a96eecd631d34b1348b51e5672b8c3c3b8d7d032992fe56f03216"
+    },
+    {
+      "file": "022_read_model_refresh_requests.sql",
+      "sha256": "037113e42f9dbe48bfc4daee7165dee25f3c686e8a3f0582812cdaa64e711652"
     }
   ]
 }

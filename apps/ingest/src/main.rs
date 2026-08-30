@@ -8,7 +8,7 @@ use std::{
 };
 
 use aircraft_app::curation::{
-  CurationError, CurationOutcome, CurationService, PendingAssertion, PendingFilter,
+  CurationError, CurationOutcome, CurationService, PendingAssertion, PendingFilter, RefreshOutcome,
 };
 use aircraft_app::ingestion::{
   ImportError, IngestionService, IngestionStore, IssueSeverity, REPORT_SCHEMA_VERSION, RunStatus,
@@ -90,6 +90,11 @@ enum CurateCommand {
   Reject {
     #[arg(long, value_parser = clap::value_parser!(i64).range(1..))]
     assertion_id: i64,
+    #[arg(long, value_enum, default_value_t = OutputFormat::Human)]
+    format: OutputFormat,
+  },
+  /// Rebuild the read model for decisions whose refresh did not complete
+  Refresh {
     #[arg(long, value_enum, default_value_t = OutputFormat::Human)]
     format: OutputFormat,
   },
@@ -210,6 +215,13 @@ async fn run_curate(command: CurateCommand) -> Result<(), CliFailure> {
       let outcome = service.reject(assertion_id).await.map_err(curation_failure)?;
       render_curation(format, &outcome)
     }
+    CurateCommand::Refresh { format } => {
+      let outcome = service
+        .refresh_read_models()
+        .await
+        .map_err(|error| CliFailure::new(6, Error::new(error)))?;
+      render_refresh(format, &outcome)
+    }
   }
 }
 
@@ -261,8 +273,31 @@ fn render_curation(format: OutputFormat, outcome: &CurationOutcome) -> Result<()
         outcome.decision,
         outcome.measurement_canonicalized,
         outcome.flags_resolved,
-        if outcome.read_model_refreshed { "refreshed" } else { "unchanged" }
+        if outcome.read_model_refreshed {
+          "refreshed"
+        } else if outcome.read_model_refresh_pending {
+          "stale, refresh queued"
+        } else {
+          "unchanged"
+        }
       );
+      Ok(())
+    }
+  }
+}
+
+fn render_refresh(format: OutputFormat, outcome: &RefreshOutcome) -> Result<(), CliFailure> {
+  match format {
+    OutputFormat::Json => render_json(outcome),
+    OutputFormat::Human => {
+      if outcome.read_model_refreshed {
+        println!(
+          "read model refreshed, {} outstanding request(s) closed",
+          outcome.requests_completed
+        );
+      } else {
+        println!("read model is current; no refresh was outstanding");
+      }
       Ok(())
     }
   }

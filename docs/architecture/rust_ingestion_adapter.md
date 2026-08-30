@@ -40,6 +40,7 @@ aircraft-ingest status [--run-id ID | --sha256 HASH] [--limit N] [--format human
 aircraft-ingest curate list [--entity-id ID] [--field FIELD] [--limit N] [--format human|json]
 aircraft-ingest curate accept --assertion-id ID [--format human|json]
 aircraft-ingest curate reject --assertion-id ID [--format human|json]
+aircraft-ingest curate refresh [--format human|json]
 ```
 
 Equivalent repository commands are `just ingest-validate`,
@@ -331,6 +332,16 @@ withdrawing another source's row. Historical measurements remain unlinked
 rather than guessing a provenance association during upgrade. Migration 021
 validates those foreign keys in a separate transaction so migration 020 does
 not hold its stronger table locks during the validation scan.
+
+A decision commits before the read model is rebuilt, so the rebuild never holds
+its `ACCESS EXCLUSIVE` locks inside the curation transaction — and can therefore
+fail with the decision already durable. Each decision that changes what the read
+model serves enqueues a `aircraft_read.read_model_refresh_requests` row
+(migration 022) in its own transaction, and that row is closed only by a rebuild
+that succeeded. A failed rebuild is consequently not an error: the outcome
+reports `read_model_refresh_pending`, and `aircraft-ingest curate refresh`
+drains what is outstanding. Without it a stale read model would be
+unrecoverable, because repeating the decision is refused as `ALREADY_DECIDED`.
 
 The `curate` subcommands exit 8 for a decision the current state does not permit,
 alongside the ingestion codes (2 configuration, 3 artifact, 4 validation,

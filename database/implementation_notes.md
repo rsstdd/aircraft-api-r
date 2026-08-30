@@ -488,8 +488,8 @@ ALTER TABLE aircraft_prov.source_assertions SET (
 |---|---|---|
 | Local legacy reconciliation | database/reconcile_local_legacy.sql | Verify and adopt complete pre-ledger Phase 1/2 local schemas; reject partial states |
 | Installer | database/install.sql | Dependency-aware migration and canonical-seed orchestration |
-| Migrations | database/migrations/001_*.sql through 021_*.sql | Canonical ordered schema history; immutable once written, hashed in migrations.lock.json |
+| Migrations | database/migrations/001_*.sql through 022_*.sql | Canonical ordered schema history; immutable once written, hashed in migrations.lock.json |
 | Canonical seeds | database/seeds/001_*.sql through 003_*.sql | Units, lookup data, and mission profiles |
 | Ingestion | apps/ingest + database/snapshots/ | Rust CLI import, snapshot queries, and committed golden output |
-| Verification | database/validation/000_migration_history_validation.sql and remaining database/validation/*.sql | Exact 001-021 ledger assertion plus phase-specific structural and behavioral checks |
+| Verification | database/validation/000_migration_history_validation.sql and remaining database/validation/*.sql | Exact 001-022 ledger assertion plus phase-specific structural and behavioral checks |
 | Documentation | database/README.md, data_dictionary.md, implementation_notes.md | Lifecycle, schema meaning, and operational guidance |

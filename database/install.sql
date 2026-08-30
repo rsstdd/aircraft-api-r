@@ -251,6 +251,18 @@ INSERT INTO public.aircraft_schema_migrations(version) VALUES ('021');
 \echo 'Skipping applied migration 021'
 \endif
 
+SELECT NOT EXISTS (
+    SELECT 1 FROM public.aircraft_schema_migrations WHERE version = '022'
+) AS apply_migration \gset
+\if :apply_migration
+\echo 'Applying migration 022: 022_read_model_refresh_requests.sql'
+\ir migrations/022_read_model_refresh_requests.sql
+INSERT INTO public.aircraft_schema_migrations(version) VALUES ('022');
+\else
+\echo 'Skipping applied migration 022'
+\endif
+
+
 
 \echo 'Database schema and canonical seed installation complete.'
 SELECT pg_advisory_unlock(hashtextextended(current_database() || ':aircraft-install', 0));

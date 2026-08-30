@@ -22,7 +22,7 @@ This directory owns the SQL lifecycle for the Aircraft Management Engine.
   correction goes in a new migration and in this documentation, never by editing
   an applied one.
 - `validation/000_migration_history_validation.sql`: asserts that migration
-  history contains exactly versions `001` through `021`.
+  history contains exactly versions `001` through `022`.
 - `data_dictionary.md`: detailed reference for principal tables and read models;
   migrations remain authoritative for the complete schema.
 - `implementation_notes.md`: dependency rules, curator workflows, known

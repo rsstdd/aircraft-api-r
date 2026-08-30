@@ -4,9 +4,16 @@
 //! own status, the canonical flag on the measurement it backs, and any curation
 //! flags it closes. The decision commits before the read model is rebuilt, so a
 //! refresh never holds the curation transaction open.
+//!
+//! That ordering means the rebuild can fail with the decision already durable,
+//! so the decision also enqueues a refresh request (migration 022) inside its
+//! own transaction. The request outlives a failed rebuild and is closed only by
+//! one that succeeded, which is what makes a stale read model recoverable
+//! without asking for a second decision the state machine would refuse.
 
 use aircraft_app::curation::{
   CurationError, CurationOutcome, CurationStore, Decision, PendingAssertion, PendingFilter,
+  RefreshOutcome,
 };
 use aircraft_app::ingestion::PersistenceError;
 use async_trait::async_trait;
@@ -14,6 +21,7 @@ use chrono::{DateTime, Utc};
 use sqlx_core::transaction::Transaction;
 use sqlx_core::{error::Error as SqlxError, query::query, query_scalar::query_scalar, row::Row};
 use sqlx_postgres::{PgPool, PgRow, Postgres};
+use tracing::warn;
 
 use super::ingestion_repository::database_error;
 
@@ -21,6 +29,9 @@ use super::ingestion_repository::database_error;
 /// written by `SqlxIngestionUnitOfWork::promote_measurements`.
 const PERFORMANCE_PREFIX: &str = "performance.";
 const WEIGHT_PREFIX: &str = "weight.";
+
+/// Value written to `read_model_refresh_requests.requested_by` by this adapter.
+const REFRESH_REQUESTED_BY: &str = "CURATION";
 
 #[derive(Clone, Debug)]
 pub struct SqlxCurationStore {
@@ -184,7 +195,8 @@ impl CurationStore for SqlxCurationStore {
     )
     .await?;
     outcome.measurement_canonicalized = canonicalized;
-    outcome.read_model_refreshed = refreshed;
+    // `refreshed` says the read model's inputs moved, not that it was rebuilt;
+    // whether the rebuild happened is only known after the commit below.
 
     let flags = query(
       "UPDATE aircraft_prov.curation_flags
@@ -204,14 +216,113 @@ impl CurationStore for SqlxCurationStore {
     .rows_affected();
     outcome.flags_resolved = flags;
 
+    // Enqueued inside the decision's transaction so the two facts -- what was
+    // decided and that the read model no longer reflects it -- cannot diverge.
+    if refreshed {
+      enqueue_refresh_request(&mut transaction, assertion_id, decision).await?;
+    }
     transaction.commit().await.map_err(database_error)?;
-    if outcome.read_model_refreshed {
-      query("SELECT aircraft_read.refresh_search_matviews(FALSE)")
-        .execute(&self.pool)
-        .await
-        .map_err(database_error)?;
+
+    if refreshed {
+      match refresh_and_settle(&self.pool).await {
+        Ok(_) => outcome.read_model_refreshed = true,
+        Err(error) => {
+          // The decision is durable, so a stale read model is reported rather
+          // than raised: failing here would tell the caller the decision did
+          // not happen, and no retry of it would ever be accepted.
+          warn!(
+            assertion_id,
+            error = %error,
+            "curation committed but the read model refresh failed; retry with `curate refresh`"
+          );
+          outcome.read_model_refreshed = false;
+          outcome.read_model_refresh_pending = true;
+        }
+      }
     }
     Ok(outcome)
+  }
+
+  async fn refresh_read_models(&self) -> Result<RefreshOutcome, PersistenceError> {
+    refresh_and_settle(&self.pool).await
+  }
+}
+
+async fn enqueue_refresh_request(
+  transaction: &mut Transaction<'_, Postgres>,
+  assertion_id: i64,
+  decision: Decision,
+) -> Result<(), CurationError> {
+  query(
+    "INSERT INTO aircraft_read.read_model_refresh_requests(requested_by, reason)
+         VALUES ($1, $2)",
+  )
+  .bind(REFRESH_REQUESTED_BY)
+  .bind(format!("assertion {assertion_id} {}", decision.status_code()))
+  .execute(&mut **transaction)
+  .await
+  .map_err(database_error)?;
+  Ok(())
+}
+
+/// Rebuilds the read model when anything is outstanding and closes the requests
+/// that rebuild satisfied.
+///
+/// Only requests already visible before the rebuild started are closed. One
+/// committed during the rebuild may describe a change the rebuild did not read,
+/// and leaving it outstanding costs one extra refresh, whereas closing it would
+/// leave the read model quietly stale.
+async fn refresh_and_settle(pool: &PgPool) -> Result<RefreshOutcome, PersistenceError> {
+  let outstanding: Vec<i64> = query_scalar(
+    "SELECT id FROM aircraft_read.read_model_refresh_requests
+         WHERE status_code = 'PENDING' ORDER BY id",
+  )
+  .fetch_all(pool)
+  .await
+  .map_err(database_error)?;
+  if outstanding.is_empty() {
+    return Ok(RefreshOutcome::nothing_pending());
+  }
+
+  if let Err(error) =
+    query("SELECT aircraft_read.refresh_search_matviews(FALSE)").execute(pool).await
+  {
+    let failure = database_error(error);
+    record_refresh_failure(pool, &outstanding, &failure).await;
+    return Err(failure);
+  }
+
+  let completed = query(
+    "UPDATE aircraft_read.read_model_refresh_requests
+         SET status_code = 'COMPLETED', completed_at = clock_timestamp()
+         WHERE id = ANY($1) AND status_code = 'PENDING'",
+  )
+  .bind(&outstanding)
+  .execute(pool)
+  .await
+  .map_err(database_error)?
+  .rows_affected();
+  Ok(RefreshOutcome::refreshed(completed))
+}
+
+/// Best-effort diagnostics on the outstanding requests.
+///
+/// The request rows are already durable, so they stay retryable whether or not
+/// this bookkeeping lands; a second failure here must not mask the first.
+async fn record_refresh_failure(pool: &PgPool, outstanding: &[i64], failure: &PersistenceError) {
+  let recorded = query(
+    "UPDATE aircraft_read.read_model_refresh_requests
+         SET attempts = attempts + 1, last_error = $2
+         WHERE id = ANY($1) AND status_code = 'PENDING'",
+  )
+  .bind(outstanding)
+  // `PersistenceError`'s message is already control-stripped and length-bounded
+  // by `database_error`.
+  .bind(failure.to_string())
+  .execute(pool)
+  .await;
+  if let Err(error) = recorded {
+    warn!(error = %error, "could not record a read-model refresh failure");
   }
 }
 
