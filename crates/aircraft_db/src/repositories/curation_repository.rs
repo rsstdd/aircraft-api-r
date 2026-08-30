@@ -61,6 +61,34 @@ const fn market_target(entity_type_code: &str) -> Option<&'static str> {
   }
 }
 
+/// Valuation columns a field name may be compared against.
+///
+/// Whitelisted rather than interpolated: `field_name` is source-derived, and it
+/// reaches a `format!`-built query below.
+const fn valuation_column(field_name: &str) -> Option<&'static str> {
+  match field_name.as_bytes() {
+    b"papi_price_estimate" => Some("papi_price_estimate"),
+    b"for_sale_count" => Some("for_sale_count"),
+    _ => None,
+  }
+}
+
+/// Aggregate-total columns a cost field name may be compared against.
+///
+/// The three `is_aggregate` cost codes (`aircraft_ref.cost_item_types`, seeded by
+/// `database/seeds/002_lookup_seed_data.sql`) are routed to
+/// `aircraft_market.cost_snapshot_totals` rather than `cost_line_items`
+/// (`chk_cli_no_aggregate`, migration 012), so a line-item comparison alone can
+/// never see them. Whitelisted for the same reason as [`valuation_column`].
+const fn cost_total_column(field_name: &str) -> Option<&'static str> {
+  match field_name.as_bytes() {
+    b"TOTAL_COST_ANNUAL" => Some("total_annual_usd"),
+    b"TOTAL_FIXED_COST" => Some("total_fixed_usd"),
+    b"TOTAL_VARIABLE_COST" => Some("total_variable_usd"),
+    _ => None,
+  }
+}
+
 /// Which measurement table, if any, a field name refers to.
 fn measurement_target(field_name: &str) -> Option<(&'static str, &str)> {
   // Identity and market fields carry provenance but have no canonical flag, so
@@ -397,6 +425,45 @@ async fn publish_decision(
     .await
     .map_err(database_error)?;
 
+    if decision.is_accepted()
+      && let Some((asserted, stored)) =
+        market_value_mismatch(transaction, assertion_id, entity_type_code, entity_id, field_name)
+          .await?
+    {
+      return Err(CurationError::ValueMismatch {
+        assertion_id,
+        field_name: field_name.to_owned(),
+        asserted,
+        stored,
+      });
+    }
+
+    // Market snapshots are unique per variant (uq_val_canonical, uq_cs_canonical)
+    // while their assertions are keyed per snapshot row, so the uq_assertion_accepted
+    // guard in `decide` cannot see a sibling snapshot of the same variant -- a
+    // backfilled, next-day, or second-source row. Name the snapshot that stands
+    // instead of letting the curator receive a raw constraint violation naming an
+    // index. The index stays the authority: two curators publishing different
+    // snapshots of one variant concurrently still lose that race there, not here.
+    if still_accepted {
+      let blocking_id: Option<i64> = query_scalar(&format!(
+        "SELECT id FROM {table}
+                 WHERE variant_id = (SELECT variant_id FROM {table} WHERE id = $1)
+                   AND is_canonical AND id <> $1
+                 LIMIT 1"
+      ))
+      .bind(entity_id)
+      .fetch_optional(&mut **transaction)
+      .await
+      .map_err(database_error)?;
+      if let Some(blocking_id) = blocking_id {
+        return Err(CurationError::SnapshotConflict {
+          entity_type_code: entity_type_code.to_owned(),
+          blocking_id,
+        });
+      }
+    }
+
     let affected = query(&format!(
       "UPDATE {table} SET is_canonical = $2
              WHERE id = $1 AND is_canonical IS DISTINCT FROM $2"
@@ -413,6 +480,92 @@ async fn publish_decision(
   Ok((false, false))
 }
 
+/// The value an accepted market assertion would publish, when the row it points
+/// at stores a different one.
+///
+/// Ingestion reuses an existing valuation or cost snapshot when a later artifact
+/// lands on the same (variant, date, source) key -- `uq_val_variant_date_source`
+/// and `ON CONFLICT DO NOTHING` -- while still asserting the newer document's
+/// value against that older row. Publishing on such an assertion would serve a
+/// price or cost the assertion never carried.
+///
+/// A cost assertion is compared against whichever table its code was routed to:
+/// an aggregate total against `cost_snapshot_totals`, everything else against
+/// its `cost_line_items` row.
+///
+/// Only a positively identified disagreement is reported. An assertion with no
+/// numeric value, a field with no comparable column, and a snapshot with no
+/// matching row (an `EXTRA:` key, or a snapshot whose totals row was never
+/// written) all return `None`, so this can refuse a decision only when it can
+/// name both values.
+async fn market_value_mismatch(
+  transaction: &mut Transaction<'_, Postgres>,
+  assertion_id: i64,
+  entity_type_code: &str,
+  entity_id: i64,
+  field_name: &str,
+) -> Result<Option<(String, String)>, CurationError> {
+  let row = match entity_type_code {
+    "VALUATION" => {
+      let Some(column) = valuation_column(field_name) else { return Ok(None) };
+      query(&format!(
+        "SELECT sa.asserted_numeric::text AS asserted, valuation.{column}::text AS stored
+                 FROM aircraft_prov.source_assertions sa
+                 JOIN aircraft_market.valuations valuation ON valuation.id = $2
+                 WHERE sa.id = $1
+                   AND sa.asserted_numeric IS NOT NULL
+                   AND sa.asserted_numeric IS DISTINCT FROM valuation.{column}::numeric"
+      ))
+      .bind(assertion_id)
+      .bind(entity_id)
+      .fetch_optional(&mut **transaction)
+      .await
+      .map_err(database_error)?
+    }
+    "COST_SNAPSHOT" => match cost_total_column(field_name) {
+      Some(column) => query(&format!(
+        "SELECT sa.asserted_numeric::text AS asserted, totals.{column}::text AS stored
+                 FROM aircraft_prov.source_assertions sa
+                 JOIN aircraft_market.cost_snapshot_totals totals ON totals.snapshot_id = $2
+                 WHERE sa.id = $1
+                   AND sa.asserted_numeric IS NOT NULL
+                   AND sa.asserted_numeric IS DISTINCT FROM totals.{column}"
+      ))
+      .bind(assertion_id)
+      .bind(entity_id)
+      .fetch_optional(&mut **transaction)
+      .await
+      .map_err(database_error)?,
+      None => query(
+        "SELECT sa.asserted_numeric::text AS asserted,
+                      COALESCE(line.amount_annual, line.amount_per_hour)::text AS stored
+               FROM aircraft_prov.source_assertions sa
+               JOIN aircraft_market.cost_line_items line
+                 ON line.snapshot_id = $2 AND line.cost_item_type_code = $3
+               WHERE sa.id = $1
+                 AND sa.asserted_numeric IS NOT NULL
+                 AND sa.asserted_numeric
+                     IS DISTINCT FROM COALESCE(line.amount_annual, line.amount_per_hour)",
+      )
+      .bind(assertion_id)
+      .bind(entity_id)
+      .bind(field_name)
+      .fetch_optional(&mut **transaction)
+      .await
+      .map_err(database_error)?,
+    },
+    _ => return Ok(None),
+  };
+
+  Ok(row.and_then(|row| {
+    let asserted: Option<String> = row.get("asserted");
+    let stored: Option<String> = row.get("stored");
+    // A stored NULL is a real disagreement with a non-null assertion, and is
+    // named as such rather than dropped.
+    asserted.map(|asserted| (asserted, stored.unwrap_or_else(|| "no value".to_owned())))
+  }))
+}
+
 fn is_assertion_acceptance_conflict(error: &SqlxError) -> bool {
   error.as_database_error().is_some_and(|error| {
     error.code().as_deref() == Some("23505") && error.constraint() == Some("uq_assertion_accepted")
@@ -421,7 +574,7 @@ fn is_assertion_acceptance_conflict(error: &SqlxError) -> bool {
 
 #[cfg(test)]
 mod tests {
-  use super::{market_target, measurement_target};
+  use super::{cost_total_column, market_target, measurement_target};
 
   #[test]
   fn field_names_route_to_the_table_holding_their_value() {
@@ -448,5 +601,24 @@ mod tests {
     assert_eq!(market_target("VALUATION"), Some("aircraft_market.valuations"));
     assert_eq!(market_target("COST_SNAPSHOT"), Some("aircraft_market.cost_snapshots"));
     assert_eq!(market_target("AIRCRAFT_VARIANT"), None);
+  }
+
+  #[test]
+  fn every_aggregate_cost_code_compares_against_its_totals_column() {
+    // The three is_aggregate codes and their columns, read from
+    // database/seeds/002_lookup_seed_data.sql and migration 012. A code that
+    // stopped being comparable would let curation publish an unasserted total.
+    const CASES: [(&str, Option<&str>); 5] = [
+      ("TOTAL_COST_ANNUAL", Some("total_annual_usd")),
+      ("TOTAL_FIXED_COST", Some("total_fixed_usd")),
+      ("TOTAL_VARIABLE_COST", Some("total_variable_usd")),
+      // Line items and unmapped keys stay with the cost_line_items comparison.
+      ("ANNUAL_INSPECTION", None),
+      ("EXTRA:total_cost_note", None),
+    ];
+
+    for (field_name, expected) in CASES {
+      assert_eq!(cost_total_column(field_name), expected, "field {field_name}");
+    }
   }
 }

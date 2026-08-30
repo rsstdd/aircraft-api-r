@@ -171,6 +171,26 @@ pub enum CurationError {
   /// competing decision has to be withdrawn first.
   #[error("field {field_name} already has an accepted assertion ({accepted_id})")]
   Conflict { field_name: String, accepted_id: i64 },
+  /// A different snapshot of the same variant is already canonical. Market rows
+  /// are unique per variant (`uq_val_canonical`, `uq_cs_canonical`) while their
+  /// assertions are keyed per snapshot row, so `uq_assertion_accepted` cannot
+  /// catch this the way it does for a measurement field. The standing snapshot
+  /// has to be withdrawn before a newer one can be published.
+  #[error(
+    "variant already has a canonical {entity_type_code} snapshot ({blocking_id}); \
+     withdraw it before accepting this one"
+  )]
+  SnapshotConflict { entity_type_code: String, blocking_id: i64 },
+  /// The assertion does not describe the value its row would publish. Ingestion
+  /// reuses an existing valuation or cost snapshot when a later artifact lands
+  /// on the same (variant, date, source) key, recording the newer document's
+  /// value as a fresh assertion against the older stored row. Accepting that
+  /// assertion would publish a value it never asserted.
+  #[error(
+    "assertion {assertion_id} asserts {asserted} but {field_name} stores {stored}; \
+     accepting it would publish a different value"
+  )]
+  ValueMismatch { assertion_id: i64, field_name: String, asserted: String, stored: String },
   #[error(transparent)]
   Persistence(#[from] PersistenceError),
 }
@@ -182,6 +202,8 @@ impl CurationError {
       Self::UnknownAssertion(_) => "UNKNOWN_ASSERTION",
       Self::AlreadyDecided { .. } => "ALREADY_DECIDED",
       Self::Conflict { .. } => "CURATION_CONFLICT",
+      Self::SnapshotConflict { .. } => "SNAPSHOT_CONFLICT",
+      Self::ValueMismatch { .. } => "VALUE_MISMATCH",
       Self::Persistence(error) => error.code(),
     }
   }
@@ -268,6 +290,21 @@ mod tests {
     assert_eq!(
       CurationError::Conflict { field_name: "f".to_owned(), accepted_id: 2 }.code(),
       "CURATION_CONFLICT"
+    );
+    assert_eq!(
+      CurationError::SnapshotConflict { entity_type_code: "VALUATION".to_owned(), blocking_id: 3 }
+        .code(),
+      "SNAPSHOT_CONFLICT"
+    );
+    assert_eq!(
+      CurationError::ValueMismatch {
+        assertion_id: 4,
+        field_name: "papi_price_estimate".to_owned(),
+        asserted: "325000".to_owned(),
+        stored: "310000.00".to_owned(),
+      }
+      .code(),
+      "VALUE_MISMATCH"
     );
   }
 }

@@ -232,7 +232,9 @@ fn curation_failure(error: CurationError) -> CliFailure {
     CurationError::Persistence(_) => 6,
     CurationError::UnknownAssertion(_)
     | CurationError::AlreadyDecided { .. }
-    | CurationError::Conflict { .. } => 8,
+    | CurationError::Conflict { .. }
+    | CurationError::SnapshotConflict { .. }
+    | CurationError::ValueMismatch { .. } => 8,
   };
   CliFailure::new(code, Error::new(error))
 }
