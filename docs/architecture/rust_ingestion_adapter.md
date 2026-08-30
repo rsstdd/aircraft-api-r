@@ -365,9 +365,12 @@ same (variant, date, source) key — `uq_val_variant_date_source` with
 against that older stored row, so its evidence is not lost. Accepting such an
 assertion would otherwise publish a price or cost it never carried, so a decision
 whose asserted value disagrees with the stored one is refused as `VALUE_MISMATCH`,
-naming both values. Only a positively identified disagreement is refused: an
-assertion with no numeric value, a field with no comparable column, and a
-snapshot with no matching line item all pass through untouched.
+naming both values. A cost assertion is compared against whichever table its
+code was routed to: an aggregate total (`TOTAL_COST_ANNUAL`, `TOTAL_FIXED_COST`,
+`TOTAL_VARIABLE_COST`) against `cost_snapshot_totals`, every other code against
+its `cost_line_items` row. Only a positively identified disagreement is refused:
+an assertion with no numeric value, a field with no comparable column, and a
+snapshot with no matching row all pass through untouched.
 
 Migration 020 gives each ingested performance or weight row a nullable,
 uniquely indexed `source_assertion_id`. New ingestion always fills it, so two

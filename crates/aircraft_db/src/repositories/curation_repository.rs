@@ -83,7 +83,7 @@ const fn valuation_column(field_name: &str) -> Option<&'static str> {
 const fn cost_total_column(field_name: &str) -> Option<&'static str> {
   match field_name.as_bytes() {
     b"TOTAL_COST_ANNUAL" => Some("total_annual_usd"),
-    b"TOTAL_FIXED_COST" => None,
+    b"TOTAL_FIXED_COST" => Some("total_fixed_usd"),
     b"TOTAL_VARIABLE_COST" => Some("total_variable_usd"),
     _ => None,
   }
