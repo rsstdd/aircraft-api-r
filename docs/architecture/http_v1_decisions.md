@@ -124,11 +124,12 @@ remain future work.
 
 ### Database migration and SQLx workflow
 
-- Canonical migrations `001` through `024` are checksum-locked and immutable.
+- Every migration in `database/migrations/` is checksum-locked and immutable.
   This includes and strengthens issue #18's original `001` through `019`
-  requirement. Authentication schema work must use migration `025` or a later
-  available migration; it must not reuse the obsolete migration `020` number in
-  the earlier backlog text.
+  requirement, which named a range that has since moved. Authentication schema
+  work must take the next unused number, not the migration `020` named in the
+  earlier backlog text -- that number is already taken by
+  `020_market_curation_gate.sql`.
 - Runtime-checked SQLx queries with bound parameters and explicit row conversion
   remain the supported database workflow. SQLx compile-time query macros are not
   required.

@@ -144,7 +144,7 @@ FROM public.aircraft_schema_migrations
 ORDER BY version;
 ```
 
-The result should contain versions `001` through `021`.
+The result should contain one row per file in `database/migrations/`, in order.
 
 Check the migration count:
 
@@ -376,8 +376,9 @@ database/validation/
 ```
 
 The first file, `000_migration_history_validation.sql`, requires the ledger to
-contain exactly versions `001` through `021`. This prevents a structurally
-partial or unexpectedly versioned database from passing the broader suite.
+contain exactly the versions shipped in `database/migrations/`. This prevents a
+structurally partial or unexpectedly versioned database from passing the broader
+suite.
 
 The command uses `ON_ERROR_STOP=1`, so any SQL error or failed hard invariant stops the recipe with a nonzero exit code.
 
@@ -543,7 +544,7 @@ The local database is ready when all of the following are true:
 - `just db-migrate` succeeds twice.
 - `just db-seed` succeeds twice.
 - `just db-validate` succeeds.
-- Migration history contains versions `001` through `021`.
+- Migration history contains exactly the versions shipped in `database/migrations/`.
 - The canonical seed counts are 38 measurement units and 15 mission profiles.
 - JSON ingestion completes without pending staged records.
 - Re-ingesting identical JSON does not duplicate runs or canonical variants.
