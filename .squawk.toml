@@ -1,7 +1,8 @@
 pg_version = "16.0"
 
-# Migrations 001-018 predate Squawk enforcement and are immutable schema
-# history. Every later migration is linted with the complete default ruleset.
+# Migrations 001-016 predate Squawk enforcement and are immutable schema
+# history. Locked migrations 017-018 use reviewed file-scoped baselines in the
+# justfile; every later migration is linted with the complete default ruleset.
 excluded_paths = [
   "**/001_extensions_schemas_domains_triggers.sql",
   "**/002_core_reference_tables.sql",
@@ -19,6 +20,4 @@ excluded_paths = [
   "**/014_sources_provenance_curation_audit.sql",
   "**/015_mission_profiles_comparison_scoring.sql",
   "**/016_read_models_views_indexes.sql",
-  "**/017_rust_ingestion_adapter.sql",
-  "**/018_staged_aircraft_variant_fk.sql",
 ]

@@ -110,7 +110,26 @@ migrations-policy:
     cargo run --locked --package xtask -- migrations
 
 migrations-lint:
-    npm exec --yes --package squawk-cli@2.51.0 -- squawk --no-error-on-unmatched-pattern 'database/migrations/*.sql'
+    #!/usr/bin/env bash
+    set -euo pipefail
+    squawk=(npm exec --yes --package squawk-cli@2.51.0 -- squawk)
+    # Migrations 017-018 are checksum-locked; keep their reviewed rule baselines
+    # file-scoped while linting every later migration with the full ruleset.
+    "${squawk[@]}" \
+      --exclude=adding-foreign-key-constraint,prefer-bigint-over-int,prefer-bigint-over-smallint,require-concurrent-index-creation,require-concurrent-index-deletion,require-timeout-settings \
+      database/migrations/017_rust_ingestion_adapter.sql
+    "${squawk[@]}" \
+      --exclude=adding-foreign-key-constraint,constraint-missing-not-valid,require-concurrent-index-creation,require-timeout-settings \
+      database/migrations/018_staged_aircraft_variant_fk.sql
+    current_migrations=()
+    for migration in database/migrations/*.sql; do
+      filename="${migration##*/}"
+      version="${filename%%_*}"
+      if ((10#$version >= 19)); then
+        current_migrations+=("$migration")
+      fi
+    done
+    "${squawk[@]}" "${current_migrations[@]}"
 
 compose-check:
     docker compose config --quiet

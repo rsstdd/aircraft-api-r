@@ -9,8 +9,10 @@ use anyhow::{Context, Result, bail};
 use serde::Deserialize;
 use sha2::{Digest, Sha256};
 
+use crate::path_label;
+
 const LOCK_SCHEMA_VERSION: u32 = 1;
-const SQUAWK_BASELINE_LAST_VERSION: u16 = 18;
+const SQUAWK_BASELINE_LAST_VERSION: u16 = 16;
 const VALIDATION_REQUIRED_FROM_VERSION: u16 = 17;
 
 #[derive(Debug, Deserialize)]
@@ -56,7 +58,7 @@ pub fn check(workspace_root: &Path) -> Result<()> {
 
 fn read_migrations(directory: &Path) -> Result<Vec<Migration>> {
   let entries =
-    fs::read_dir(directory).with_context(|| format!("failed to read {}", directory.display()))?;
+    fs::read_dir(directory).with_context(|| format!("failed to read {}", path_label(directory)))?;
   let mut migrations = entries
     .map(|entry| {
       let path = entry?.path();
@@ -81,9 +83,10 @@ fn read_migrations(directory: &Path) -> Result<Vec<Migration>> {
 }
 
 fn read_lock(path: &Path) -> Result<MigrationLock> {
-  let bytes = fs::read(path).with_context(|| format!("failed to read {}", path.display()))?;
-  let lock: MigrationLock = serde_json::from_slice(&bytes)
-    .with_context(|| format!("{} is not valid JSON", path.display()))?;
+  let label = path_label(path);
+  let bytes = fs::read(path).with_context(|| format!("failed to read {label}"))?;
+  let lock: MigrationLock =
+    serde_json::from_slice(&bytes).with_context(|| format!("{label} is not valid JSON"))?;
   if lock.schema_version != LOCK_SCHEMA_VERSION {
     bail!(
       "unsupported migration lock schema version {}; expected {LOCK_SCHEMA_VERSION}",
@@ -155,7 +158,7 @@ fn check_lock(
       continue;
     }
     let bytes = fs::read(&migration.path)
-      .with_context(|| format!("failed to read {}", migration.path.display()))?;
+      .with_context(|| format!("failed to read {}", path_label(&migration.path)))?;
     let actual = format!("{:x}", Sha256::digest(bytes));
     if actual != *expected {
       violations
@@ -168,7 +171,7 @@ fn check_lock(
 fn check_transactions(migrations: &[Migration], violations: &mut Vec<String>) -> Result<()> {
   for migration in migrations {
     let sql = fs::read_to_string(&migration.path)
-      .with_context(|| format!("failed to read {}", migration.path.display()))?;
+      .with_context(|| format!("failed to read {}", path_label(&migration.path)))?;
     let statements = sql.lines().map(str::trim).collect::<BTreeSet<_>>();
     if !statements.contains("BEGIN;") || !statements.contains("COMMIT;") {
       violations
@@ -184,15 +187,26 @@ fn check_installer(
   violations: &mut Vec<String>,
 ) -> Result<()> {
   let installer = fs::read_to_string(installer_path)
-    .with_context(|| format!("failed to read {}", installer_path.display()))?;
+    .with_context(|| format!("failed to read {}", path_label(installer_path)))?;
+  let directives = installer
+    .lines()
+    .enumerate()
+    .filter_map(|(line_number, line)| {
+      let line = line.trim();
+      (!line.starts_with("--"))
+        .then(|| line.strip_prefix("\\ir migrations/").map(|file| (line_number, file)))
+        .flatten()
+    })
+    .collect::<Vec<_>>();
   let mut previous_position = None;
   let expected =
     migrations.iter().map(|migration| migration.file.as_str()).collect::<BTreeSet<_>>();
 
   for migration in migrations {
-    let needle = format!("\\ir migrations/{}", migration.file);
-    let positions =
-      installer.match_indices(&needle).map(|(position, _)| position).collect::<Vec<_>>();
+    let positions = directives
+      .iter()
+      .filter_map(|(line_number, file)| (*file == migration.file).then_some(*line_number))
+      .collect::<Vec<_>>();
     if positions.len() != 1 {
       violations.push(format!(
         "database/install.sql must include {} exactly once; found {}",
@@ -207,10 +221,7 @@ fn check_installer(
     previous_position = Some(positions[0]);
   }
 
-  for line in installer.lines().map(str::trim) {
-    let Some(file) = line.strip_prefix("\\ir migrations/") else {
-      continue;
-    };
+  for (_, file) in directives {
     if !expected.contains(file) {
       violations.push(format!("database/install.sql references unknown migration {file}"));
     }
@@ -224,7 +235,7 @@ fn check_validations(
   violations: &mut Vec<String>,
 ) -> Result<()> {
   let validation_files = fs::read_dir(validations_directory)
-    .with_context(|| format!("failed to read {}", validations_directory.display()))?
+    .with_context(|| format!("failed to read {}", path_label(validations_directory)))?
     .map(|entry| {
       entry?
         .file_name()
@@ -254,7 +265,7 @@ fn check_squawk_exclusions(
   violations: &mut Vec<String>,
 ) -> Result<()> {
   let squawk = fs::read_to_string(squawk_path)
-    .with_context(|| format!("failed to read {}", squawk_path.display()))?;
+    .with_context(|| format!("failed to read {}", path_label(squawk_path)))?;
   let actual = squawk
     .lines()
     .filter_map(|line| line.trim().strip_prefix("\"**/"))
@@ -270,7 +281,7 @@ fn check_squawk_exclusions(
     let unexpected = actual.difference(&expected).copied().collect::<Vec<_>>();
     let missing = expected.difference(&actual).copied().collect::<Vec<_>>();
     violations.push(format!(
-      "Squawk exclusions must equal the immutable 001-018 baseline; unexpected: {unexpected:?}; missing: {missing:?}"
+      "Squawk exclusions must equal the immutable 001-016 baseline; unexpected: {unexpected:?}; missing: {missing:?}"
     ));
   }
   Ok(())
@@ -319,6 +330,19 @@ mod tests {
     let error = require_policy_error(repository.path())?;
 
     assert!(error.to_string().contains("install.sql"));
+    Ok(())
+  }
+
+  #[test]
+  fn commented_installer_directive_is_ignored() -> Result<()> {
+    let repository = valid_repository()?;
+    fs::write(
+      repository.path().join("database/install.sql"),
+      format!("-- \\ir migrations/{MIGRATION_NAME}\n\\ir migrations/{MIGRATION_NAME}\n"),
+    )?;
+
+    check(repository.path())?;
+
     Ok(())
   }
 
