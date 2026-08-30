@@ -257,11 +257,12 @@ Two further divergences are neither better nor worse, only different:
 
 - **Source-record identity.** Legacy keys a variant by concatenated raw names
   (`CESSNA::172S Skyhawk SP`); the adapter uses SHA-256 over
-  `planephd\0<manufacturer>\0<aircraft>`. Because `aircraft_core.variants.slug`
-  is separately unique, two distinct records whose names normalize to one slug
-  would otherwise abort the batch. The later record keeps a slug suffixed with a
-  digest of its own record key — stable across replays — and opens a
-  `SLUG_COLLISION` curation flag rather than being merged or dropped.
+  `planephd\0<raw manufacturer key>\0<raw aircraft key>`. Because
+  `aircraft_core.variants.slug` is separately unique, two distinct records whose
+  names normalize to one slug would otherwise abort the batch. The later record
+  keeps a slug suffixed with a digest of its own record key — stable across
+  replays — and opens a `SLUG_COLLISION` curation flag rather than being merged
+  or dropped.
 - **`captured_from_key`.** The column holds one source key, but several aggregate
   keys can feed one snapshot. Legacy keeps the last writer, the adapter the
   first; the totals themselves match.
