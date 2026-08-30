@@ -17,6 +17,7 @@ const VALIDATION_REQUIRED_FROM_VERSION: u16 = 17;
 const HISTORY_LEDGER_FILE: &str = "000_migration_history_validation.sql";
 const LEDGER_INSERT_PREFIX: &str =
   "INSERT INTO public.aircraft_schema_migrations(version) VALUES ('";
+const LEDGER_DECLARATION_PREFIX: &str = "expected_versions CONSTANT TEXT[] := ARRAY[";
 
 #[derive(Debug, Deserialize)]
 struct MigrationLock {
@@ -324,14 +325,62 @@ fn shipped_versions(migrations: &[Migration]) -> Vec<String> {
 
 /// Extracts the quoted versions from the `expected_versions` array literal.
 fn ledger_versions(sql: &str) -> Option<Vec<String>> {
-  let literal = sql.split_once("expected_versions")?.1.split_once("ARRAY[")?.1.split_once(']')?.0;
-  Some(
-    literal
-      .split(',')
-      .map(|entry| entry.trim().trim_matches('\'').to_owned())
-      .filter(|entry| !entry.is_empty())
-      .collect(),
-  )
+  let active_sql = without_sql_comments(sql)?;
+  let mut lines = active_sql.lines().map(str::trim);
+  let mut literal = lines.find_map(|line| line.strip_prefix(LEDGER_DECLARATION_PREFIX))?.to_owned();
+  while !literal.contains(']') {
+    literal.push_str(lines.next()?);
+  }
+
+  let (entries, suffix) = literal.split_once(']')?;
+  if !suffix.trim_start().starts_with(';') {
+    return None;
+  }
+
+  entries
+    .split(',')
+    .map(|entry| {
+      let version = entry.trim().strip_prefix('\'')?.strip_suffix('\'')?;
+      (version.len() == 3 && version.bytes().all(|byte| byte.is_ascii_digit()))
+        .then(|| version.to_owned())
+    })
+    .collect()
+}
+
+fn without_sql_comments(sql: &str) -> Option<String> {
+  let mut active = String::with_capacity(sql.len());
+  let mut characters = sql.chars().peekable();
+
+  while let Some(character) = characters.next() {
+    if character == '-' && characters.peek() == Some(&'-') {
+      characters.next();
+      for commented in characters.by_ref() {
+        if commented == '\n' {
+          active.push('\n');
+          break;
+        }
+      }
+    } else if character == '/' && characters.peek() == Some(&'*') {
+      characters.next();
+      let mut closed = false;
+      while let Some(commented) = characters.next() {
+        if commented == '\n' {
+          active.push('\n');
+        } else if commented == '*' && characters.peek() == Some(&'/') {
+          characters.next();
+          closed = true;
+          break;
+        }
+      }
+      if !closed {
+        return None;
+      }
+    } else {
+      active.push(character);
+    }
+  }
+
+  Some(active)
 }
 
 fn check_squawk_exclusions(
@@ -474,6 +523,34 @@ mod tests {
     let error = require_policy_error(repository.path())?;
 
     assert!(error.to_string().contains("expects versions"));
+    Ok(())
+  }
+
+  #[test]
+  fn commented_history_ledger_declarations_are_rejected() -> Result<()> {
+    let repository = valid_repository()?;
+    fs::write(
+      repository.path().join("database/validation").join(super::HISTORY_LEDGER_FILE),
+      "-- expected_versions CONSTANT TEXT[] := ARRAY['019'];\n/*\nexpected_versions CONSTANT TEXT[] := ARRAY['019'];\n*/\n",
+    )?;
+
+    let error = require_policy_error(repository.path())?;
+
+    assert!(error.to_string().contains("must declare expected_versions"));
+    Ok(())
+  }
+
+  #[test]
+  fn unrelated_array_after_malformed_history_declaration_is_rejected() -> Result<()> {
+    let repository = valid_repository()?;
+    fs::write(
+      repository.path().join("database/validation").join(super::HISTORY_LEDGER_FILE),
+      "expected_versions TEXT[];\nunrelated_versions CONSTANT TEXT[] := ARRAY['019'];\n",
+    )?;
+
+    let error = require_policy_error(repository.path())?;
+
+    assert!(error.to_string().contains("must declare expected_versions"));
     Ok(())
   }
 
