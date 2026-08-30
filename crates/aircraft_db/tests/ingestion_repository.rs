@@ -647,3 +647,46 @@ async fn a_total_cost_assertion_cannot_publish_a_different_stored_total() -> Tes
   );
   Ok(())
 }
+
+/// `uq_variant_primary_mfr` allows one primary manufacturer per variant, so the
+/// import guards its insert with "this variant has no primary link". A curator
+/// who demotes the standing link satisfies that guard while the row itself still
+/// collides on `(variant_id, org_id)`, and `ON CONFLICT DO NOTHING` used to leave
+/// the variant with no primary manufacturer at all -- a successful import whose
+/// read-model manufacturer had silently gone missing.
+#[tokio::test]
+async fn a_demoted_manufacturer_link_is_promoted_by_the_next_import() -> TestResult {
+  let (_container, pool) = start_postgres(5, Duration::from_secs(30)).await?;
+  install_schema(&pool).await?;
+
+  let store = SqlxIngestionStore::from_pool(pool.clone());
+  let record =
+    normalize_record("CESSNA", "172S", json!({"description": "first identity document"}));
+  import_record(&store, request('a', "1.0.0"), &record).await?;
+
+  let demoted = query("UPDATE aircraft_core.variant_manufacturers SET is_primary = FALSE")
+    .execute(&pool)
+    .await?
+    .rows_affected();
+  assert_eq!(demoted, 1, "the first import must leave exactly one link to demote");
+
+  let second =
+    normalize_record("CESSNA", "172S", json!({"description": "second identity document"}));
+  import_record(&store, request('b', "1.0.0"), &second).await?;
+
+  let links: Vec<bool> =
+    query_scalar("SELECT is_primary FROM aircraft_core.variant_manufacturers ORDER BY org_id")
+      .fetch_all(&pool)
+      .await?;
+  assert_eq!(links, vec![true], "the standing link must be promoted, not duplicated or skipped");
+
+  let published_manufacturer: Option<i64> =
+    query_scalar("SELECT primary_manufacturer_id FROM aircraft_read.mv_variant_search")
+      .fetch_one(&pool)
+      .await?;
+  assert!(
+    published_manufacturer.is_some(),
+    "the read model must serve the manufacturer the import resolved"
+  );
+  Ok(())
+}

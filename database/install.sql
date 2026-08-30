@@ -273,6 +273,17 @@ INSERT INTO public.aircraft_schema_migrations(version) VALUES ('023');
 \echo 'Skipping applied migration 023'
 \endif
 
+SELECT NOT EXISTS (
+    SELECT 1 FROM public.aircraft_schema_migrations WHERE version = '024'
+) AS apply_migration \gset
+\if :apply_migration
+\echo 'Applying migration 024: 024_promote_existing_manufacturer_links.sql'
+\ir migrations/024_promote_existing_manufacturer_links.sql
+INSERT INTO public.aircraft_schema_migrations(version) VALUES ('024');
+\else
+\echo 'Skipping applied migration 024'
+\endif
+
 
 \echo 'Database schema and canonical seed installation complete.'
 SELECT pg_advisory_unlock(hashtextextended(current_database() || ':aircraft-install', 0));

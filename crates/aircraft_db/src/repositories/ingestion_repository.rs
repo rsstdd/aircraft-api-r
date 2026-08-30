@@ -699,8 +699,18 @@ impl SqlxIngestionUnitOfWork {
   }
 
   /// The first manufacturer recorded for a variant keeps the primary role, so a
-  /// replay or a second source adds a link without displacing it. Migration 023
-  /// backfills this projection for variants imported before it existed.
+  /// replay or a second source adds a link without displacing it. Migrations 023
+  /// and 024 backfill this projection for variants imported before it existed.
+  ///
+  /// The `WHERE NOT EXISTS` guard is what defends `uq_variant_primary_mfr`
+  /// (migration 004), so by the time a conflict on the `(variant_id, org_id)`
+  /// primary key is reached the variant provably has no primary link and the
+  /// existing row is the one that should hold the role: promoting it is the only
+  /// outcome that leaves `mv_variant_search` a manufacturer to serve. `DO
+  /// NOTHING` here silently produced an imported variant with no primary
+  /// manufacturer at all. `role` is deliberately left alone -- a curator may have
+  /// set `DESIGNER` on this link, and `is_primary` is the column the read model
+  /// reads.
   async fn link_primary_manufacturer(
     &mut self,
     variant_id: i64,
@@ -713,7 +723,7 @@ impl SqlxIngestionUnitOfWork {
              WHERE NOT EXISTS (
                 SELECT 1 FROM aircraft_core.variant_manufacturers
                 WHERE variant_id=$1 AND is_primary)
-             ON CONFLICT(variant_id,org_id) DO NOTHING",
+             ON CONFLICT(variant_id,org_id) DO UPDATE SET is_primary=TRUE",
     )
     .bind(variant_id)
     .bind(organization)

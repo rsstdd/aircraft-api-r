@@ -59,6 +59,7 @@ pub const SCHEMA_STEPS: &[&str] = &[
   include_str!("../../../database/migrations/021_validate_measurement_assertion_foreign_keys.sql"),
   include_str!("../../../database/migrations/022_read_model_refresh_requests.sql"),
   include_str!("../../../database/migrations/023_backfill_ingestion_identity_projections.sql"),
+  include_str!("../../../database/migrations/024_promote_existing_manufacturer_links.sql"),
   include_str!("../../../database/validation/017_rust_ingestion_adapter_validation.sql"),
   include_str!("../../../database/validation/018_staged_aircraft_variant_fk_validation.sql"),
   include_str!("../../../database/validation/019_weight_metrics_curation_gate_validation.sql"),
@@ -69,6 +70,9 @@ pub const SCHEMA_STEPS: &[&str] = &[
   include_str!("../../../database/validation/022_read_model_refresh_requests_validation.sql"),
   include_str!(
     "../../../database/validation/023_backfill_ingestion_identity_projections_validation.sql"
+  ),
+  include_str!(
+    "../../../database/validation/024_promote_existing_manufacturer_links_validation.sql"
   ),
 ];
 
@@ -100,6 +104,7 @@ pub const COVERED_MIGRATIONS: &[&str] = &[
   "021_validate_measurement_assertion_foreign_keys.sql",
   "022_read_model_refresh_requests.sql",
   "023_backfill_ingestion_identity_projections.sql",
+  "024_promote_existing_manufacturer_links.sql",
 ];
 
 /// A disposable `PostgreSQL` container, force-removed when the guard drops.

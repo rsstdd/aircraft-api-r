@@ -7,8 +7,9 @@
 //! identity projections that Rust ingestion left empty. Both kinds are only
 //! exercised by installing the schema up to the migration, seeding the state it
 //! is written for, and then applying it -- a clean install reaches every one of
-//! them with nothing to match. Each backfill is asserted on its own so a
-//! regression names the table it broke.
+//! them with nothing to match. Migration 024 repairs the one pre-existing shape
+//! 023's `ON CONFLICT ... DO NOTHING` could not. Each backfill is asserted on
+//! its own so a regression names the table it broke.
 
 use std::time::Duration;
 
@@ -125,8 +126,15 @@ async fn the_cost_snapshot_gate_leaves_historical_rows_pending() -> TestResult {
 
 /// Installs the schema up to migration 023, seeds the pre-023 state a Rust
 /// import used to leave behind — a variant with a primary powerplant, a source
-/// document, no `engine_count`, and no manufacturer link — alongside a manually
-/// curated variant with the same gap and no import, then applies 023.
+/// document, no `engine_count`, and no manufacturer link — alongside a variant
+/// whose correct manufacturer link is already present but demoted, and a
+/// manually curated variant with the same gap and no import. Then applies 023
+/// and 024.
+///
+/// The demoted link is the case 023 alone cannot reach: its `INSERT` collides on
+/// `(variant_id, org_id)` and `DO NOTHING` leaves the row untouched, so the
+/// variant keeps no primary manufacturer and 023's own validation — which runs
+/// after every migration, not between them — aborts the upgrade.
 ///
 /// The mid-way assertion is the anti-vacuity guard: without it every test below
 /// would also pass against a migration whose `UPDATE` and `INSERT` matched
@@ -158,6 +166,7 @@ async fn upgrade_across_the_identity_backfill() -> TestResult<(DockerPostgres, P
      FROM aircraft_core.models AS model
      CROSS JOIN (VALUES
          ('backfill-imported', 'Backfill Imported'),
+         ('backfill-relinked', 'Backfill Relinked'),
          ('backfill-curated', 'Backfill Curated')
      ) variants(slug, name)
      WHERE model.slug = 'backfill-model';
@@ -170,7 +179,7 @@ async fn upgrade_across_the_identity_backfill() -> TestResult<(DockerPostgres, P
      SELECT variant.id, engine.id, 2, TRUE, TRUE
      FROM aircraft_core.variants AS variant
      CROSS JOIN aircraft_power.engine_variants AS engine
-     WHERE variant.slug IN ('backfill-imported', 'backfill-curated')
+     WHERE variant.slug IN ('backfill-imported', 'backfill-relinked', 'backfill-curated')
        AND engine.slug = 'backfill-engine';
 
      INSERT INTO aircraft_prov.sources(slug, name)
@@ -185,8 +194,15 @@ async fn upgrade_across_the_identity_backfill() -> TestResult<(DockerPostgres, P
           aircraft_core.variants AS variant,
           aircraft_ingest.ingest_runs AS run
      WHERE source.slug = 'backfill-source'
-       AND variant.slug = 'backfill-imported'
-       AND run.run_label = 'backfill-run';",
+       AND variant.slug IN ('backfill-imported', 'backfill-relinked')
+       AND run.run_label = 'backfill-run';
+
+     INSERT INTO aircraft_core.variant_manufacturers(variant_id, org_id, role, is_primary)
+     SELECT variant.id, org.id, 'MANUFACTURER', FALSE
+     FROM aircraft_core.variants AS variant,
+          aircraft_org.organizations AS org
+     WHERE variant.slug = 'backfill-relinked'
+       AND org.slug = 'backfill-aviation';",
   )
   .execute(&pool)
   .await?;
@@ -194,11 +210,17 @@ async fn upgrade_across_the_identity_backfill() -> TestResult<(DockerPostgres, P
   let projections_are_missing: bool = query_scalar(
     "SELECT NOT EXISTS(
              SELECT 1 FROM aircraft_core.variants WHERE engine_count IS NOT NULL)
-         AND NOT EXISTS(SELECT 1 FROM aircraft_core.variant_manufacturers)",
+         AND NOT EXISTS(
+             SELECT 1 FROM aircraft_core.variant_manufacturers WHERE is_primary)
+         AND EXISTS(SELECT 1 FROM aircraft_core.variant_manufacturers)",
   )
   .fetch_one(&pool)
   .await?;
-  assert!(projections_are_missing, "the seeded pre-023 state must have both projections missing");
+  assert!(
+    projections_are_missing,
+    "the seeded pre-023 state must have no engine count and no primary link, \
+     but must already carry the demoted link 024 has to promote"
+  );
 
   for sql in &SCHEMA_STEPS[backfill_index..] {
     raw_sql(sql).execute(&pool).await?;
@@ -270,5 +292,35 @@ async fn the_identity_backfill_leaves_manually_curated_variants_alone() -> TestR
   .await?;
 
   assert!(curated_variant_untouched, "023 must not touch a variant with no ingestion document");
+  Ok(())
+}
+
+/// Migration 023 cannot repair a variant whose correct manufacturer link is
+/// already present as `is_primary = FALSE`: its `INSERT` passes the "no primary"
+/// predicate, collides on `(variant_id, org_id)`, and `DO NOTHING` leaves the
+/// link demoted. Migration 024 promotes the standing row rather than inserting a
+/// second one.
+#[tokio::test]
+async fn the_identity_backfill_promotes_a_demoted_manufacturer_link() -> TestResult {
+  let (_container, pool) = upgrade_across_the_identity_backfill().await?;
+
+  let links: Vec<bool> = query_scalar(
+    "SELECT link.is_primary
+         FROM aircraft_core.variant_manufacturers AS link
+         JOIN aircraft_core.variants AS variant ON variant.id = link.variant_id
+         JOIN aircraft_org.organizations AS org ON org.id = link.org_id
+         WHERE variant.slug = 'backfill-relinked' AND org.slug = 'backfill-aviation'",
+  )
+  .fetch_all(&pool)
+  .await?;
+  assert_eq!(links, vec![true], "the standing link must be promoted, not duplicated or skipped");
+
+  let published_manufacturer: Option<String> = query_scalar(
+    "SELECT primary_manufacturer_slug FROM aircraft_read.mv_variant_search
+         WHERE slug = 'backfill-relinked'",
+  )
+  .fetch_one(&pool)
+  .await?;
+  assert_eq!(published_manufacturer.as_deref(), Some("backfill-aviation"));
   Ok(())
 }
