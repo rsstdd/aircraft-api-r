@@ -14,10 +14,10 @@ simply because they were parsed successfully.
 > This repository is an incomplete restructuring branch, not a production
 > server. The PlanePHD ingestion vertical slice, the ordered database schema,
 > and several repository automation commands are implemented. The Axum API
-> currently contains only a health contract, and `apps/server` is excluded from
-> the workspace because its source is still legacy Actix/Diesel code that does
-> not match its target manifest. Search, comparison, authentication, and the
-> runnable HTTP service are not implemented end to end. The Rust ingestion path
+> currently contains only a health contract. `apps/server` boots and serves that
+> contract over HTTP, but has no database pool, readiness route, graceful
+> shutdown, or perimeter limits. Search, comparison, and authentication are not
+> implemented end to end. The Rust ingestion path
 > passed all six deployment gates, including the SQL-versus-Rust parity run that
 > justified retiring the legacy loader; that gate is now a golden-snapshot
 > regression check. Run them with `just test` and `just snapshots`. Ingested measurements stay pending until a
@@ -40,7 +40,7 @@ simply because they were parsed successfully.
 
 | Area | Status |
 |---|---|
-| Rust workspace | Cargo resolves ten packages around the ingestion slice, shared libraries, API contract generation, test support, and `xtask` |
+| Rust workspace | Cargo resolves eleven packages around the ingestion slice, the HTTP server, shared libraries, API contract generation, test support, and `xtask` |
 | Database | Canonical migrations `001` through `024`, checksum-locked history, dependency-aware installation, reference seeds, and SQL validation scripts are present |
 | Rust ingestion CLI | `validate`, `import`, `status`, and `curate` (`list`, `accept`, `reject`, `refresh`) are implemented for PlanePHD JSON |
 | Ingestion semantics | Immutable input capture, SHA-256 identity, bounded streaming, preflight validation, transactional promotion, audit history, and idempotent replay are implemented |
@@ -114,8 +114,8 @@ The layer responsibilities are:
 - `aircraft_config`: typed configuration, including secret-protected database
   URLs.
 - `aircraft_observability`: structured tracing initialization.
-- `apps/server`: the future runtime composition root; it is not currently
-  buildable.
+- `apps/server`: the runtime composition root. Loads settings, initializes
+  tracing, binds a listener, and serves `aircraft_api::router()`.
 
 HTTP DTOs, application inputs, domain values, and database rows are separate
 representations. Boundary conversions should remain explicit as the system is

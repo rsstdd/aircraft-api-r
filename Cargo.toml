@@ -2,9 +2,7 @@
 resolver = "3"
 members = [
     "apps/ingest",
-# apps/server stays excluded: its source still depends on retired
-# Actix/Diesel-era crates and does not build in this workspace.
-#    "apps/server",
+    "apps/server",
     "crates/aircraft_api",
     "crates/aircraft_app",
     "crates/aircraft_config",
@@ -17,6 +15,7 @@ members = [
 ]
 default-members = [
     "apps/ingest",
+    "apps/server",
     "crates/aircraft_api",
     "crates/aircraft_app",
     "crates/aircraft_config",

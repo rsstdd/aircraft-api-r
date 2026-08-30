@@ -10,15 +10,17 @@ These instructions apply to the whole repository. A nested `AGENTS.md` overrides
 them only for the directory tree beneath that file.
 
 **State.** The `feat/rust-ingestion` branch is an incomplete restructure with one
-working vertical slice. Cargo currently resolves ten workspace packages. The
+working vertical slice. Cargo currently resolves eleven workspace packages. The
 PlanePHD ingestion CLI implements file/stdin capture, bounded preflight,
 normalization, transactional SQLx persistence, provenance, curation flags,
 idempotent replay, and run/attempt status. The canonical database contains
 migrations `001` through `024`, a checksum lock, ordered seeds, and SQL validation. The API crate
-implements only an Axum health contract and OpenAPI generation. `apps/server` is
-excluded because its source is still incompatible Actix/Diesel-era code. General
-aircraft CRUD, search, comparison, mission scoring, authentication, a runnable
-HTTP server, and SQLx offline metadata are not implemented end to end.
+implements only an Axum health contract and OpenAPI generation. `apps/server`
+boots: it loads HTTP settings, initializes tracing, binds a listener, and serves
+that router, with an end-to-end socket test. It has no database pool, readiness
+route, graceful shutdown, request tracing, or perimeter limits. General
+aircraft CRUD, search, comparison, mission scoring, authentication, and SQLx
+offline metadata are not implemented end to end.
 Canonical-value curation is implemented (`aircraft-ingest curate`), and the
 SQL-versus-Rust parity run served its purpose and was retired with the legacy
 loader; `cargo xtask snapshots` is now a golden-snapshot regression gate. The
@@ -148,9 +150,9 @@ server -> composes adapters and runtime infrastructure
 - **`aircraft_observability` owns telemetry setup.** Use `tracing`; do not add
   `println!` or `dbg!` to library or application paths.
 - **Application binaries are composition roots.** `apps/ingest` wires the
-  working ingestion slice. `apps/server` will wire configuration, telemetry,
-  pools, routes, and shutdown when rebuilt. Business rules do not belong in
-  either `main.rs`.
+  working ingestion slice. `apps/server` wires configuration, telemetry, and
+  routes today, and will gain pools and shutdown. Business rules do not belong
+  in either `main.rs`.
 - **Production packages are not published.** Keep workspace packages
   `publish = false` unless release policy changes explicitly.
 
@@ -224,9 +226,9 @@ server -> composes adapters and runtime infrastructure
 
 | Path | Responsibility | Current status |
 |---|---|---|
-| `Cargo.toml` | Workspace membership, shared dependencies, lints, profiles | Cargo resolves ten packages; `apps/server` is excluded |
+| `Cargo.toml` | Workspace membership, shared dependencies, lints, profiles | Cargo resolves eleven packages |
 | `apps/ingest/` | Ingestion CLI composition root | Working deployment candidate with Docker-backed gates |
-| `apps/server/` | Target HTTP runtime composition | Legacy Actix/Diesel source; not buildable in the target workspace |
+| `apps/server/` | HTTP runtime composition | Boots and serves the health router; no pool, readiness, shutdown, or limits |
 | `crates/aircraft_domain/` | Pure entities, values, units, invariants | Ingestion invariants implemented; broader domain mostly scaffolded |
 | `crates/aircraft_app/` | Use cases and ports | Ingestion orchestration implemented; broader application incomplete |
 | `crates/aircraft_api/` | Axum DTOs, routes, middleware, OpenAPI | Health route and OpenAPI contract only |
@@ -405,8 +407,8 @@ mutation-checked.
   and owning docs over prose in source.
 - **Generated artifacts.** Use deterministic checked-in generation. CI or a
   check command must detect drift from the Rust source.
-- **Legacy code.** Treat `apps/server` and `archive/` as evidence, not a source
-  to revive wholesale. Port only behavior deliberately required by a new slice.
+- **Legacy code.** Treat `archive/` as evidence, not a source to revive
+  wholesale. Port only behavior deliberately required by a new slice.
 
 ## Completion
 
