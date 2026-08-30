@@ -92,6 +92,22 @@ fields map to canonical codes. Unknown measurement fields, units, cost keys,
 invalid image dimensions, and unsupported record fields produce stable warning
 codes. They are retained in staging and become open curation flags.
 
+Unit mapping is metric-independent, so a mapped unit is additionally checked
+against the dimension its metric measures. A known unit that cannot express its
+metric — a mass unit given as an airspeed — is more dangerous than an unmapped
+one, because it would otherwise survive as a well-formed canonical candidate. It
+is demoted to evidence with `INCOMPATIBLE_MEASUREMENT_UNIT`, exactly as an
+unmapped unit is. Metrics and units the mapping does not classify are never
+contradicted, so the check only rejects a pairing it positively understands.
+
+A negative measurement is demoted the same way, with `NEGATIVE_MEASUREMENT`.
+The measurement tables reject negative canonical values
+(`chk_pm_canonical_nonneg`, migration 008), so keeping the parsed number would
+let preflight report a batch clean that the import transaction then aborts on a
+single bad optional value. The raw value and unit survive as assertion evidence
+in every one of these cases; only the canonicalizable numeric or unit is
+withheld.
+
 PlanePHD source confidence is 0.20 and its reliability is `UNVERIFIED`.
 Measurements are non-canonical and assertions remain pending until curation
 explicitly accepts them. Images are metadata only; no binary download occurs.
@@ -111,6 +127,11 @@ Each Rust logical run inserts a distinct source-document row linked by
 `ingest_run_id`. A later artifact or parser version may reuse the stable
 source-record identity, but it never updates the raw JSON, parser version, or
 batch label behind historical assertions.
+
+Promotion links the source manufacturer through
+`aircraft_core.variant_manufacturers` and copies the parsed primary-powerplant
+count to `aircraft_core.variants.engine_count`, which are the projections the
+read model consumes. Migration 023 backfills both for earlier Rust imports.
 
 ## PostgreSQL and Aiven
 
@@ -318,12 +339,35 @@ just curate-reject <assertion-id> # withdraw it again
 
 Each decision is one transaction covering the assertion's status, the
 `is_canonical` flag on the measurement it backs, the curation flags it closes,
-and the read-model refresh, so the read model can never advertise a value whose
-assertion was not accepted. Decisions are reversible — accepting in error can be
+and the request to refresh the read model, so the read model can never advertise
+a value whose assertion was not accepted. The rebuild itself runs after that
+transaction commits. Decisions are reversible — accepting in error can be
 withdrawn — but repeating a decision already recorded is refused, so an unchanged
 state is never reported as a change. Accepting a second assertion for a field
 that already has one fails with `CURATION_CONFLICT` rather than silently racing
 `uq_assertion_accepted`; withdraw the standing decision first.
+
+Market snapshots need a second guard. `uq_val_canonical` and `uq_cs_canonical`
+allow one canonical valuation and one cost snapshot per *variant*, while their
+assertions are keyed per *snapshot row*, so `uq_assertion_accepted` cannot see a
+sibling snapshot the way it does for a measurement field. A variant's second
+snapshot — backfilled by migration 020, or imported the next day or from another
+source — is therefore refused as `SNAPSHOT_CONFLICT`, naming the snapshot that
+currently stands, rather than surfacing a raw constraint violation. Withdraw that
+snapshot's accepted assertion and the newer one publishes. The unique indexes
+remain the authority: two curators publishing different snapshots of one variant
+concurrently still lose that race in the index.
+
+A market assertion is also checked against the row it would publish. Ingestion
+reuses an existing valuation or cost snapshot when a later artifact lands on the
+same (variant, date, source) key — `uq_val_variant_date_source` with
+`ON CONFLICT DO NOTHING` — while still asserting the newer document's value
+against that older stored row, so its evidence is not lost. Accepting such an
+assertion would otherwise publish a price or cost it never carried, so a decision
+whose asserted value disagrees with the stored one is refused as `VALUE_MISMATCH`,
+naming both values. Only a positively identified disagreement is refused: an
+assertion with no numeric value, a field with no comparable column, and a
+snapshot with no matching line item all pass through untouched.
 
 Migration 020 gives each ingested performance or weight row a nullable,
 uniquely indexed `source_assertion_id`. New ingestion always fills it, so two

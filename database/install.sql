@@ -262,6 +262,16 @@ INSERT INTO public.aircraft_schema_migrations(version) VALUES ('022');
 \echo 'Skipping applied migration 022'
 \endif
 
+SELECT NOT EXISTS (
+    SELECT 1 FROM public.aircraft_schema_migrations WHERE version = '023'
+) AS apply_migration \gset
+\if :apply_migration
+\echo 'Applying migration 023: 023_backfill_ingestion_identity_projections.sql'
+\ir migrations/023_backfill_ingestion_identity_projections.sql
+INSERT INTO public.aircraft_schema_migrations(version) VALUES ('023');
+\else
+\echo 'Skipping applied migration 023'
+\endif
 
 
 \echo 'Database schema and canonical seed installation complete.'

@@ -248,7 +248,7 @@ aircraft_read   ──▶  views and materialized views over all of the above
 | `crew_count` | `smallint` | nullable | &mdash; | &mdash; |  |
 | `landing_gear_type_code` | `aircraft_ref.lookup_code` | nullable | &mdash; | aircraft_ref.landing_gear_types(code) ON DELETE NO ACTION | Denormalized for faceted search |
 | `propulsion_category_code` | `aircraft_ref.lookup_code` | nullable | &mdash; | aircraft_ref.propulsion_categories(code) ON DELETE NO ACTION | Denormalized for faceted search |
-| `engine_count` | `smallint` | nullable | &mdash; | &mdash; | Denormalized; authoritative value in `aircraft_power.variant_powerplants` |
+| `engine_count` | `smallint` | nullable | &mdash; | &mdash; | Denormalized from the primary `aircraft_power.variant_powerplants` row. Rust ingestion writes both projections; migration 023 backfills earlier Rust imports. |
 | `is_in_production` | `boolean` | nullable | &mdash; | &mdash; |  |
 | `ingest_key` | `text` | nullable | &mdash; | &mdash; | Opaque ingestion deduplication key. The legacy SQL loader writes concatenated raw names, e.g. "AERONCA::11AC Chief"; the Rust adapter writes SHA-256 over "planephd\0<manufacturer>\0<aircraft>". Prevents duplicate variant rows. Not a semantic business key; superseded by aircraft_prov.source_documents once Phase 14 is populated. |
 | `source_path` | `text` | nullable | &mdash; | &mdash; | URI path from the originating source system used during Phase 17 ingestion. Canonical source URL lives in aircraft_prov.source_documents.source_url. |
@@ -930,6 +930,10 @@ snapshot queries plus committed golden output that guard it.
 | `mv_variant_search` | MATVIEW | 48-column denormalized search surface with 20 indexes total: three GIN/trigram indexes and 17 B-tree/partial indexes; **must be refreshed after data changes** |
 | `refresh_search_matviews(concurrent BOOLEAN)` | FUNCTION | Refreshes `mv_ownership_cost_summary` then `mv_variant_search` in correct order. Pass `FALSE` for initial population (no `CONCURRENTLY`); default `TRUE` for live updates |
 | `read_model_refresh_requests` | TABLE | Durable record that the matviews are stale, added by migration 022. Written in the transaction that changed what they serve, and closed only after `refresh_search_matviews()` succeeds |
+
+Migration 023 backfills source-backed primary manufacturer links and declared
+engine counts that earlier Rust imports stored only on families and powerplant
+links, then refreshes `mv_variant_search` so those projections are visible.
 
 **Recovering a missed refresh.** Curation commits its decision and rebuilds the matviews afterwards, so the rebuild can fail with the decision already durable. The decision therefore enqueues a `read_model_refresh_requests` row inside its own transaction; the row survives a failed rebuild and is closed only by one that succeeded. `aircraft-ingest curate refresh` drains whatever is outstanding, so a stale read model never depends on repeating a decision the state machine would refuse.
 

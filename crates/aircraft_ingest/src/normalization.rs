@@ -248,6 +248,39 @@ fn measurements(
           Some(value),
         ));
       }
+      // A known unit in the wrong dimension is more dangerous than an unmapped
+      // one: it survives as a well-formed candidate and could be canonicalized
+      // as if pounds were an airspeed. Demote it to evidence, exactly as an
+      // unmapped unit already is.
+      let unit_code = match (metric_code.as_deref(), unit_code) {
+        (Some(metric), Some(unit)) if !unit_fits_metric(metric, &unit) => {
+          issues.push(issue(
+            "INCOMPATIBLE_MEASUREMENT_UNIT",
+            IssueSeverity::Warning,
+            &field_path,
+            "unit does not measure this metric and will not be canonicalized",
+            Some(value),
+          ));
+          None
+        }
+        (_, unit) => unit,
+      };
+      // The measurement tables reject negative canonical values
+      // (chk_pm_canonical_nonneg, migration 008), so keeping this numeric would
+      // let preflight pass a batch that the import transaction then aborts.
+      let numeric_value = match numeric_value {
+        Some(parsed) if parsed.starts_with('-') => {
+          issues.push(issue(
+            "NEGATIVE_MEASUREMENT",
+            IssueSeverity::Warning,
+            &field_path,
+            "measurement is negative and will not be canonicalized",
+            Some(value),
+          ));
+          None
+        }
+        other => other,
+      };
       Some(MeasurementInput {
         source_field: field.clone(),
         metric_code,
@@ -583,6 +616,66 @@ fn unit_code(raw: &str) -> Option<&'static str> {
   }
 }
 
+/// Physical dimension a unit measures.
+///
+/// Unit mapping is metric-independent, so this is what stops a known unit being
+/// applied to a metric it cannot express.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Dimension {
+  Speed,
+  Length,
+  ClimbRate,
+  FuelFlow,
+  Mass,
+  Volume,
+  Power,
+  Thrust,
+  Time,
+}
+
+fn unit_dimension(unit: &str) -> Option<Dimension> {
+  match unit {
+    "KIAS" | "KNOTS" | "KTAS" => Some(Dimension::Speed),
+    "NM" | "FT" => Some(Dimension::Length),
+    "FPM" => Some(Dimension::ClimbRate),
+    "GPH" | "PPH" => Some(Dimension::FuelFlow),
+    "LBS" | "KG" => Some(Dimension::Mass),
+    "US_GAL" => Some(Dimension::Volume),
+    "HP" | "KW" => Some(Dimension::Power),
+    "NEWTONS" | "LBF" => Some(Dimension::Thrust),
+    "HRS" => Some(Dimension::Time),
+    _ => None,
+  }
+}
+
+/// Dimensions a metric accepts. An empty slice means the metric is not
+/// classified and therefore cannot be contradicted.
+fn metric_dimensions(metric: &str) -> &'static [Dimension] {
+  match metric {
+    "SPEED_CRUISE_BEST" | "SPEED_STALL_CLEAN" => &[Dimension::Speed],
+    "RANGE_NORMAL"
+    | "CEILING_SERVICE"
+    | "DIST_TO_GROUND_ROLL"
+    | "DIST_TO_50FT"
+    | "DIST_LDG_GROUND_ROLL"
+    | "DIST_LDG_50FT" => &[Dimension::Length],
+    "CLIMB_RATE_SL" => &[Dimension::ClimbRate],
+    "FUEL_BURN_CRUISE" => &[Dimension::FuelFlow],
+    "WEIGHT_EMPTY" | "WEIGHT_MTOW" => &[Dimension::Mass],
+    // Usable fuel is quoted by volume or by weight depending on the source.
+    "FUEL_CAPACITY_USABLE" => &[Dimension::Volume, Dimension::Mass],
+    _ => &[],
+  }
+}
+
+/// Whether a mapped unit can express a mapped metric. Unclassified metrics and
+/// units pass, so this only ever rejects a pairing it positively understands.
+fn unit_fits_metric(metric: &str, unit: &str) -> bool {
+  let Some(actual) = unit_dimension(unit) else { return true };
+  let expected = metric_dimensions(metric);
+  expected.is_empty() || expected.contains(&actual)
+}
+
 fn perf_code(field: &str) -> Option<&'static str> {
   match field {
     "best_cruise_speed" => Some("SPEED_CRUISE_BEST"),
@@ -728,6 +821,58 @@ mod tests {
       Some("SPEED_CRUISE_BEST")
     );
     assert!(record.issues.iter().any(|issue| issue.code == "UNKNOWN_MEASUREMENT_UNIT"));
+  }
+
+  #[test]
+  fn a_unit_that_cannot_measure_the_metric_is_demoted_to_evidence() {
+    // Unit mapping is metric-independent, so "LBS" maps cleanly on its own.
+    // Paired with a speed it must not survive as a canonicalizable candidate.
+    let record =
+      normalize_record("CESSNA", "172S", json!({"performance": {"best_cruise_speed": "124 LBS"}}));
+    let measurement = &record.performance.measurements[0];
+    assert_eq!(measurement.metric_code.as_deref(), Some("SPEED_CRUISE_BEST"));
+    assert_eq!(measurement.unit_code, None, "a mass unit cannot canonicalize a speed");
+    assert_eq!(measurement.raw_value, "124 LBS", "the raw value stays as evidence");
+    assert_eq!(measurement.raw_unit.as_deref(), Some("LBS"), "the raw unit stays as evidence");
+    assert!(record.issues.iter().any(|issue| issue.code == "INCOMPATIBLE_MEASUREMENT_UNIT"));
+  }
+
+  #[test]
+  fn a_unit_matching_its_metric_is_kept() {
+    // Guards the dimension check against rejecting the pairings the fixtures
+    // actually carry, including fuel capacity quoted by volume or by weight.
+    let record = normalize_record(
+      "CESSNA",
+      "172S",
+      json!({
+          "performance": {"best_cruise_speed": "124 KIAS", "ceiling": "14000 FT"},
+          "weights": {"gross_weight": "2550 LBS", "fuel_capacity": "56 GAL"}
+      }),
+    );
+    for measurement in
+      record.performance.measurements.iter().chain(record.weights.measurements.iter())
+    {
+      assert!(
+        measurement.unit_code.is_some(),
+        "{} lost its unit: {measurement:?}",
+        measurement.source_field
+      );
+    }
+    assert!(!record.issues.iter().any(|issue| issue.code == "INCOMPATIBLE_MEASUREMENT_UNIT"));
+  }
+
+  #[test]
+  fn a_negative_measurement_is_demoted_to_evidence() {
+    // chk_pm_canonical_nonneg (migration 008) rejects this, so preflight must
+    // not report a batch clean that the import transaction would then abort.
+    let record =
+      normalize_record("CESSNA", "172S", json!({"performance": {"best_cruise_speed": "-10 KIAS"}}));
+    let measurement = &record.performance.measurements[0];
+    assert_eq!(measurement.numeric_value, None, "a negative value cannot be canonicalized");
+    assert_eq!(measurement.raw_value, "-10 KIAS", "the raw value stays as evidence");
+    assert!(record.issues.iter().any(|issue| issue.code == "NEGATIVE_MEASUREMENT"));
+    // The value parsed, so it must not also be reported as unparseable.
+    assert!(!record.issues.iter().any(|issue| issue.code == "MEASUREMENT_PARSE_FAILURE"));
   }
 
   #[test]

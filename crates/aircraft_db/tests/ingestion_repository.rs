@@ -69,6 +69,40 @@ async fn concurrent_distinct_imports_complete_with_minimum_pool() -> TestResult 
 }
 
 #[tokio::test]
+async fn import_publishes_the_source_manufacturer_and_engine_count() -> TestResult {
+  let (_container, pool) = start_postgres(5, Duration::from_secs(30)).await?;
+  install_schema(&pool).await?;
+
+  let store = SqlxIngestionStore::from_pool(pool.clone());
+  let record = normalize_record(
+    "CESSNA",
+    "310R",
+    json!({
+        "description": "six seats up to 6 plus 2 crew",
+        "performance": {"horsepower": "2 x 285 HP"},
+        "engine": {
+            "manufacturer": "Continental",
+            "model": "IO-520-M",
+            "horsepower": "285 HP"
+        }
+    }),
+  );
+  import_record(&store, request('f', "1.0.0"), &record).await?;
+
+  let published = query(
+    "SELECT search.primary_manufacturer_name, variant.engine_count
+         FROM aircraft_read.mv_variant_search AS search
+         JOIN aircraft_core.variants AS variant ON variant.id = search.variant_id
+         WHERE search.variant_name = '310R'",
+  )
+  .fetch_one(&pool)
+  .await?;
+  assert_eq!(published.get::<String, _>("primary_manufacturer_name"), "Cessna");
+  assert_eq!(published.get::<i16, _>("engine_count"), 2);
+  Ok(())
+}
+
+#[tokio::test]
 #[allow(clippy::too_many_lines)]
 async fn repository_preserves_ingestion_semantics_and_attempt_history() -> TestResult {
   let (_container, pool) = start_postgres(5, Duration::from_secs(30)).await?;
@@ -347,5 +381,269 @@ async fn rolling_back_the_import_transaction_discards_staged_and_promoted_rows()
   };
   assert_eq!(attempt.0, "FAILED", "the audit trail survives the rollback");
   assert_eq!(attempt.1.as_deref(), Some("TEST_ROLLBACK"));
+  Ok(())
+}
+
+/// Market snapshots are unique per variant while their assertions are keyed per
+/// snapshot row, so a variant's second valuation -- backfilled by migration 020,
+/// or imported the next day or from another source -- collides with
+/// `uq_val_canonical` in a way `uq_assertion_accepted` cannot see. The collision
+/// must arrive as a typed decision refusal naming the snapshot that stands,
+/// leave the transaction rolled back, and clear once that snapshot is withdrawn.
+#[tokio::test]
+async fn a_second_market_snapshot_reports_the_snapshot_that_blocks_it() -> TestResult {
+  let (_container, pool) = start_postgres(5, Duration::from_secs(30)).await?;
+  install_schema(&pool).await?;
+
+  let store = SqlxIngestionStore::from_pool(pool.clone());
+  let record = normalize_record(
+    "CESSNA",
+    "172S",
+    json!({"description": "first market document", "papi_price_estimate": "$310,000"}),
+  );
+  import_record(&store, request('a', "1.0.0"), &record).await?;
+
+  let standing =
+    query("SELECT id, variant_id FROM aircraft_market.valuations").fetch_one(&pool).await?;
+  let (standing_valuation, variant_id): (i64, i64) =
+    (standing.get("id"), standing.get("variant_id"));
+  let standing_assertion: i64 = query_scalar(
+    "SELECT id FROM aircraft_prov.source_assertions
+         WHERE entity_type_code = 'VALUATION' AND field_name = 'papi_price_estimate'",
+  )
+  .fetch_one(&pool)
+  .await?;
+
+  let curation = SqlxCurationStore::from_pool(pool.clone());
+  curation.decide(standing_assertion, Decision::Accepted).await?;
+
+  // The next day's snapshot for the same variant, carrying its own assertion.
+  let newer_valuation: i64 = query_scalar(
+    "INSERT INTO aircraft_market.valuations(
+            variant_id, snapshot_date, source_name, papi_price_estimate,
+            currency_code, captured_at)
+         VALUES ($1, CURRENT_DATE + 1, 'PlanePHD', 325000, 'USD', now())
+         RETURNING id",
+  )
+  .bind(variant_id)
+  .fetch_one(&pool)
+  .await?;
+  let document_id: i64 =
+    query_scalar("SELECT id FROM aircraft_prov.source_documents LIMIT 1").fetch_one(&pool).await?;
+  let newer_assertion: i64 = query_scalar(
+    "INSERT INTO aircraft_prov.source_assertions(
+            source_document_id, entity_type_code, entity_id, field_name,
+            raw_value, asserted_numeric, status_code, is_accepted)
+         VALUES ($1, 'VALUATION', $2, 'papi_price_estimate', '$325,000', 325000, 'PENDING', FALSE)
+         RETURNING id",
+  )
+  .bind(document_id)
+  .bind(newer_valuation)
+  .fetch_one(&pool)
+  .await?;
+
+  let refusal = curation.decide(newer_assertion, Decision::Accepted).await;
+  assert!(
+    matches!(
+      &refusal,
+      Err(CurationError::SnapshotConflict { entity_type_code, blocking_id })
+        if entity_type_code == "VALUATION" && *blocking_id == standing_valuation
+    ),
+    "expected a snapshot conflict naming the standing valuation, got {refusal:?}"
+  );
+
+  let refusal_changed_nothing: bool = query_scalar(
+    "SELECT (SELECT is_canonical FROM aircraft_market.valuations WHERE id = $1)
+                AND NOT (SELECT is_canonical FROM aircraft_market.valuations WHERE id = $2)
+                AND (SELECT status_code = 'PENDING' AND NOT is_accepted
+                     FROM aircraft_prov.source_assertions WHERE id = $3)",
+  )
+  .bind(standing_valuation)
+  .bind(newer_valuation)
+  .bind(newer_assertion)
+  .fetch_one(&pool)
+  .await?;
+  assert!(refusal_changed_nothing, "a refused decision must roll back completely");
+
+  // Withdrawing the standing snapshot is the documented way through.
+  curation.decide(standing_assertion, Decision::Rejected).await?;
+  curation.decide(newer_assertion, Decision::Accepted).await?;
+
+  let newest_snapshot_is_served: bool = query_scalar(
+    "SELECT NOT (SELECT is_canonical FROM aircraft_market.valuations WHERE id = $1)
+                AND (SELECT is_canonical FROM aircraft_market.valuations WHERE id = $2)",
+  )
+  .bind(standing_valuation)
+  .bind(newer_valuation)
+  .fetch_one(&pool)
+  .await?;
+  assert!(newest_snapshot_is_served, "the withdrawn snapshot must yield to the newer one");
+  Ok(())
+}
+
+/// `uq_val_variant_date_source` allows one valuation per (variant, date, source),
+/// so a second artifact imported the same day reuses the stored row while still
+/// asserting its own price against it. Accepting that assertion must not publish
+/// the older row's price under the newer one's evidence.
+#[tokio::test]
+async fn a_price_assertion_cannot_publish_a_different_stored_price() -> TestResult {
+  let (_container, pool) = start_postgres(5, Duration::from_secs(30)).await?;
+  install_schema(&pool).await?;
+
+  let store = SqlxIngestionStore::from_pool(pool.clone());
+  let first = normalize_record(
+    "CESSNA",
+    "172S",
+    json!({"description": "morning artifact", "papi_price_estimate": "$310,000"}),
+  );
+  import_record(&store, request('a', "1.0.0"), &first).await?;
+  let second = normalize_record(
+    "CESSNA",
+    "172S",
+    json!({"description": "afternoon artifact", "papi_price_estimate": "$325,000"}),
+  );
+  import_record(&store, request('b', "1.0.0"), &second).await?;
+
+  // One stored row, still holding the morning price, and two competing assertions.
+  let stored_price: String =
+    query_scalar("SELECT papi_price_estimate::text FROM aircraft_market.valuations")
+      .fetch_one(&pool)
+      .await?;
+  assert_eq!(stored_price, "310000.00", "the stored row keeps the value it was created with");
+
+  let newer_assertion: i64 = query_scalar(
+    "SELECT id FROM aircraft_prov.source_assertions
+         WHERE entity_type_code = 'VALUATION' AND field_name = 'papi_price_estimate'
+           AND asserted_numeric = 325000",
+  )
+  .fetch_one(&pool)
+  .await?;
+
+  let curation = SqlxCurationStore::from_pool(pool.clone());
+  let refusal = curation.decide(newer_assertion, Decision::Accepted).await;
+  assert!(
+    matches!(
+      &refusal,
+      Err(CurationError::ValueMismatch { assertion_id, field_name, asserted, stored })
+        if *assertion_id == newer_assertion
+          && field_name == "papi_price_estimate"
+          && asserted == "325000"
+          && stored == "310000.00"
+    ),
+    "expected the mismatch to name both values, got {refusal:?}"
+  );
+
+  let nothing_was_published: bool = query_scalar(
+    "SELECT NOT EXISTS(SELECT 1 FROM aircraft_market.valuations WHERE is_canonical)
+                AND (SELECT status_code = 'PENDING' AND NOT is_accepted
+                     FROM aircraft_prov.source_assertions WHERE id = $1)",
+  )
+  .bind(newer_assertion)
+  .fetch_one(&pool)
+  .await?;
+  assert!(nothing_was_published, "a refused decision must roll back completely");
+
+  // The assertion that does describe the stored row still publishes normally.
+  let matching_assertion: i64 = query_scalar(
+    "SELECT id FROM aircraft_prov.source_assertions
+         WHERE entity_type_code = 'VALUATION' AND field_name = 'papi_price_estimate'
+           AND asserted_numeric = 310000",
+  )
+  .fetch_one(&pool)
+  .await?;
+  curation.decide(matching_assertion, Decision::Accepted).await?;
+  let published_price: String = query_scalar(
+    "SELECT papi_price_estimate::text FROM aircraft_market.valuations WHERE is_canonical",
+  )
+  .fetch_one(&pool)
+  .await?;
+  assert_eq!(published_price, "310000.00", "the published price is the one that was accepted");
+  Ok(())
+}
+
+/// `uq_cs_variant_date_source` allows one cost snapshot per (variant, date,
+/// source), so a second artifact imported the same day reuses the stored
+/// snapshot and its totals row while still asserting its own aggregate totals
+/// against them. Aggregates land in `cost_snapshot_totals` rather than
+/// `cost_line_items`, so they need their own stored-versus-asserted comparison.
+#[tokio::test]
+async fn a_total_cost_assertion_cannot_publish_a_different_stored_total() -> TestResult {
+  let (_container, pool) = start_postgres(5, Duration::from_secs(30)).await?;
+  install_schema(&pool).await?;
+
+  let store = SqlxIngestionStore::from_pool(pool.clone());
+  let first = normalize_record(
+    "CESSNA",
+    "172S",
+    json!({"description": "morning artifact", "ownership_costs": {"total_fixed_cost": "$12,000"}}),
+  );
+  import_record(&store, request('a', "1.0.0"), &first).await?;
+  let second = normalize_record(
+    "CESSNA",
+    "172S",
+    json!({
+        "description": "afternoon artifact",
+        "ownership_costs": {"total_fixed_cost": "$13,000"}
+    }),
+  );
+  import_record(&store, request('b', "1.0.0"), &second).await?;
+
+  let stored_total: String =
+    query_scalar("SELECT total_fixed_usd::text FROM aircraft_market.cost_snapshot_totals")
+      .fetch_one(&pool)
+      .await?;
+  assert_eq!(stored_total, "12000.00", "the stored totals row keeps the value it was created with");
+
+  let newer_assertion: i64 = query_scalar(
+    "SELECT id FROM aircraft_prov.source_assertions
+         WHERE entity_type_code = 'COST_SNAPSHOT' AND field_name = 'TOTAL_FIXED_COST'
+           AND asserted_numeric = 13000",
+  )
+  .fetch_one(&pool)
+  .await?;
+
+  let curation = SqlxCurationStore::from_pool(pool.clone());
+  let refusal = curation.decide(newer_assertion, Decision::Accepted).await;
+  assert!(
+    matches!(
+      &refusal,
+      Err(CurationError::ValueMismatch { assertion_id, field_name, asserted, stored })
+        if *assertion_id == newer_assertion
+          && field_name == "TOTAL_FIXED_COST"
+          && asserted == "13000"
+          && stored == "12000.00"
+    ),
+    "expected the mismatch to name both totals, got {refusal:?}"
+  );
+
+  let nothing_was_published: bool = query_scalar(
+    "SELECT NOT EXISTS(SELECT 1 FROM aircraft_market.cost_snapshots WHERE is_canonical)
+                AND (SELECT status_code = 'PENDING' AND NOT is_accepted
+                     FROM aircraft_prov.source_assertions WHERE id = $1)",
+  )
+  .bind(newer_assertion)
+  .fetch_one(&pool)
+  .await?;
+  assert!(nothing_was_published, "a refused decision must roll back completely");
+
+  // The assertion that does describe the stored totals still publishes normally.
+  let matching_assertion: i64 = query_scalar(
+    "SELECT id FROM aircraft_prov.source_assertions
+         WHERE entity_type_code = 'COST_SNAPSHOT' AND field_name = 'TOTAL_FIXED_COST'
+           AND asserted_numeric = 12000",
+  )
+  .fetch_one(&pool)
+  .await?;
+  curation.decide(matching_assertion, Decision::Accepted).await?;
+  let served_total: Option<String> = query_scalar(
+    "SELECT source_total_fixed_usd::text FROM aircraft_read.mv_ownership_cost_summary",
+  )
+  .fetch_one(&pool)
+  .await?;
+  assert_eq!(
+    served_total.as_deref(),
+    Some("12000.00"),
+    "the served total is the one that was accepted"
+  );
   Ok(())
 }

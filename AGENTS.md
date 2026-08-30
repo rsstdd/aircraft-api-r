@@ -14,7 +14,7 @@ working vertical slice. Cargo currently resolves ten workspace packages. The
 PlanePHD ingestion CLI implements file/stdin capture, bounded preflight,
 normalization, transactional SQLx persistence, provenance, curation flags,
 idempotent replay, and run/attempt status. The canonical database contains
-migrations `001` through `022`, a checksum lock, ordered seeds, and SQL validation. The API crate
+migrations `001` through `023`, a checksum lock, ordered seeds, and SQL validation. The API crate
 implements only an Axum health contract and OpenAPI generation. `apps/server` is
 excluded because its source is still incompatible Actix/Diesel-era code. General
 aircraft CRUD, search, comparison, mission scoring, authentication, a runnable
@@ -236,7 +236,7 @@ server -> composes adapters and runtime infrastructure
 | `crates/aircraft_observability/` | Structured tracing and telemetry | Basic tracing setup implemented; broader telemetry partial |
 | `crates/aircraft_testsupport/` | Disposable PostgreSQL harness shared by integration tests | Dev-only; referenced solely from `[dev-dependencies]` |
 | `crates/aircraft_testsupport/` | Disposable PostgreSQL test harness | Active test-only support crate |
-| `database/migrations/` | Ordered canonical schema | Active source of truth through migration `022` |
+| `database/migrations/` | Ordered canonical schema | Active source of truth through migration `023` |
 | `database/seeds/` | Canonical reference and mission-profile data | Active and dependency ordered |
 | `database/snapshots/` | Ingestion snapshot queries and committed golden output | Regression gate; `cargo xtask snapshots` |
 | `database/validation/` | Post-install SQL verification | Active validation suite |

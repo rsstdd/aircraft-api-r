@@ -22,7 +22,7 @@ This directory owns the SQL lifecycle for the Aircraft Management Engine.
   correction goes in a new migration and in this documentation, never by editing
   an applied one.
 - `validation/000_migration_history_validation.sql`: asserts that migration
-  history contains exactly versions `001` through `022`.
+  history contains exactly versions `001` through `023`.
 - `data_dictionary.md`: detailed reference for principal tables and read models;
   migrations remain authoritative for the complete schema.
 - `implementation_notes.md`: dependency rules, curator workflows, known
@@ -57,6 +57,167 @@ To reapply only canonical data, run `just db-seed`.
 container. `just db-rebuild` performs that destructive reset and then installs,
 seeds, and validates the database. Do not use either command when local data
 must be preserved.
+
+## Explore a seeded local database
+
+Check the Compose database and open its configured `psql` session:
+
+```bash
+just db-status
+just db-ready
+just db-psql
+```
+
+The following `psql` cheat sheet runs inside a read-only transaction. Canonical
+seeding populates reference and mission-profile data; aircraft, ingestion, and
+curation queries remain empty until source data has been imported.
+
+```sql
+\conninfo
+\timing on
+\x auto
+\pset null '<null>'
+
+BEGIN READ ONLY;
+SET LOCAL statement_timeout = '10s';
+
+-- Discover schemas and relations.
+\dn
+\dt aircraft_ref.*
+\dt aircraft_core.*
+\dt aircraft_compare.*
+\dt aircraft_ingest.*
+\dt aircraft_prov.*
+\dv aircraft_read.*
+\dm aircraft_read.*
+
+-- Confirm the installed schema history.
+SELECT version, applied_at
+FROM public.aircraft_schema_migrations
+ORDER BY version;
+
+-- Inspect canonical reference data.
+SELECT unit_category_code, count(*) AS units
+FROM aircraft_ref.measurement_units
+GROUP BY unit_category_code
+ORDER BY unit_category_code;
+
+SELECT code, label, canonical_unit_code
+FROM aircraft_ref.performance_metric_types
+ORDER BY sort_order, code;
+
+SELECT code, label, role_group
+FROM aircraft_ref.aircraft_roles
+ORDER BY sort_order, code;
+
+-- Check mission profiles and their criterion weights.
+SELECT
+    mp.slug,
+    mp.title,
+    count(mc.id) AS criteria,
+    coalesce(sum(mc.weight), 0) AS total_weight
+FROM aircraft_compare.mission_profiles AS mp
+LEFT JOIN aircraft_compare.mission_criteria AS mc
+    ON mc.mission_profile_id = mp.id
+GROUP BY mp.id, mp.slug, mp.title, mp.sort_order
+ORDER BY mp.sort_order;
+
+-- Find populated application tables.
+SELECT schemaname, relname, n_live_tup AS estimated_rows
+FROM pg_stat_user_tables
+WHERE schemaname LIKE 'aircraft_%'
+ORDER BY n_live_tup DESC, schemaname, relname;
+
+-- Browse imported variants and the published read model.
+SELECT id, slug, name, service_status_code, passenger_capacity, engine_count
+FROM aircraft_core.variants
+ORDER BY slug
+LIMIT 50;
+
+SELECT
+    slug,
+    variant_name,
+    primary_manufacturer_name,
+    cruise_speed_kias,
+    range_nm,
+    service_ceiling_ft,
+    gross_weight_lb,
+    papi_price_usd
+FROM aircraft_read.mv_variant_search
+ORDER BY primary_manufacturer_name, variant_name
+LIMIT 50;
+
+-- Inspect ingestion history.
+SELECT
+    id,
+    source_slug,
+    status,
+    staged_aircraft,
+    promoted_aircraft,
+    flagged_aircraft,
+    warning_count,
+    started_at,
+    finished_at
+FROM aircraft_ingest.ingest_runs
+ORDER BY started_at DESC
+LIMIT 20;
+
+-- Inspect pending curation work.
+SELECT status_code, count(*)
+FROM aircraft_prov.source_assertions
+GROUP BY status_code
+ORDER BY status_code;
+
+SELECT
+    id,
+    entity_type_code,
+    entity_id,
+    field_name,
+    raw_value,
+    asserted_numeric,
+    status_code
+FROM aircraft_prov.source_assertions
+WHERE status_code = 'PENDING'
+ORDER BY created_at, id
+LIMIT 50;
+
+SELECT
+    priority,
+    entity_type_code,
+    entity_id,
+    field_name,
+    issue_type,
+    issue_description
+FROM aircraft_prov.curation_flags
+WHERE status_code = 'OPEN'
+ORDER BY priority, created_at
+LIMIT 50;
+
+-- Check whether a read-model refresh is outstanding.
+SELECT
+    id,
+    requested_by,
+    reason,
+    status_code,
+    attempts,
+    requested_at,
+    completed_at,
+    last_error
+FROM aircraft_read.read_model_refresh_requests
+ORDER BY requested_at DESC
+LIMIT 50;
+
+ROLLBACK;
+\q
+```
+
+The CLI also exposes read-only ingestion and curation summaries:
+
+```bash
+just ingest-status --limit 20
+just ingest-status-json --limit 20
+just curate-list --limit 20
+```
 
 Use the Rust ingestion adapter for source JSON:
 

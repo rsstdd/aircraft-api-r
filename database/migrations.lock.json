@@ -88,6 +88,10 @@
     {
       "file": "022_read_model_refresh_requests.sql",
       "sha256": "037113e42f9dbe48bfc4daee7165dee25f3c686e8a3f0582812cdaa64e711652"
+    },
+    {
+      "file": "023_backfill_ingestion_identity_projections.sql",
+      "sha256": "e63d72c1920c5142274da372fe2523e1117d05f134813de980a4fae2ae0a227d"
     }
   ]
 }

@@ -654,21 +654,22 @@ impl SqlxIngestionUnitOfWork {
     let row = query(
       "INSERT INTO aircraft_core.variants(
                 model_id,name,slug,description,production_start_year,production_end_year,
-                is_in_production,passenger_capacity,crew_count,source_path,ingest_key)
+                is_in_production,passenger_capacity,crew_count,engine_count,source_path,ingest_key)
              VALUES($1,$2,
                 (SELECT CASE
                     WHEN EXISTS (
                         SELECT 1 FROM aircraft_core.variants existing
                         WHERE existing.slug = candidate.slug
-                          AND existing.ingest_key IS DISTINCT FROM $11)
-                    THEN candidate.slug || '-' || substr(md5($11),1,8)
+                          AND existing.ingest_key IS DISTINCT FROM $12)
+                    THEN candidate.slug || '-' || substr(md5($12),1,8)
                     ELSE candidate.slug
                  END
                  FROM (SELECT aircraft_ref.slugify($3 || '-' || $2 || '-v1') AS slug)
                     AS candidate),
-                $4,$5,$6,$7,$8,$9,$10,$11)
+                $4,$5,$6,$7,$8,$9,$10,$11,$12)
              ON CONFLICT(ingest_key) WHERE ingest_key IS NOT NULL DO UPDATE SET
-                description=EXCLUDED.description
+                description=EXCLUDED.description,
+                engine_count=COALESCE(aircraft_core.variants.engine_count,EXCLUDED.engine_count)
              RETURNING id,
                 slug <> aircraft_ref.slugify($3 || '-' || $2 || '-v1') AS disambiguated,
                 slug",
@@ -682,17 +683,44 @@ impl SqlxIngestionUnitOfWork {
     .bind(record.lifecycle.is_in_production)
     .bind(record.lifecycle.passenger_capacity)
     .bind(record.lifecycle.crew_count)
+    .bind(record.propulsion.engine_count)
     .bind(&record.identity.source_link)
     .bind(&record.source_record_key)
     .fetch_one(&mut *self.transaction)
     .await
     .map_err(database_error)?;
     let variant_id: i64 = row.get("id");
+    self.link_primary_manufacturer(variant_id, organization).await?;
     if row.get::<bool, _>("disambiguated") {
       let slug: String = row.get("slug");
       self.flag_slug_collision(variant_id, &slug).await?;
     }
     Ok(variant_id)
+  }
+
+  /// The first manufacturer recorded for a variant keeps the primary role, so a
+  /// replay or a second source adds a link without displacing it. Migration 023
+  /// backfills this projection for variants imported before it existed.
+  async fn link_primary_manufacturer(
+    &mut self,
+    variant_id: i64,
+    organization: i64,
+  ) -> Result<(), PersistenceError> {
+    query(
+      "INSERT INTO aircraft_core.variant_manufacturers(
+                variant_id,org_id,role,is_primary)
+             SELECT $1,$2,'MANUFACTURER',TRUE
+             WHERE NOT EXISTS (
+                SELECT 1 FROM aircraft_core.variant_manufacturers
+                WHERE variant_id=$1 AND is_primary)
+             ON CONFLICT(variant_id,org_id) DO NOTHING",
+    )
+    .bind(variant_id)
+    .bind(organization)
+    .execute(&mut *self.transaction)
+    .await
+    .map_err(database_error)?;
+    Ok(())
   }
 
   /// An ambiguous identity is evidence, not a hard failure: the record is kept
