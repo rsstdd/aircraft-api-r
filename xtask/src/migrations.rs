@@ -14,6 +14,10 @@ use crate::path_label;
 const LOCK_SCHEMA_VERSION: u32 = 1;
 const SQUAWK_BASELINE_LAST_VERSION: u16 = 16;
 const VALIDATION_REQUIRED_FROM_VERSION: u16 = 17;
+const HISTORY_LEDGER_FILE: &str = "000_migration_history_validation.sql";
+const LEDGER_INSERT_PREFIX: &str =
+  "INSERT INTO public.aircraft_schema_migrations(version) VALUES ('";
+const LEDGER_DECLARATION_PREFIX: &str = "expected_versions CONSTANT TEXT[] := ARRAY[";
 
 #[derive(Debug, Deserialize)]
 struct MigrationLock {
@@ -45,6 +49,11 @@ pub fn check(workspace_root: &Path) -> Result<()> {
   check_transactions(&migrations, &mut violations)?;
   check_installer(&migrations, &database.join("install.sql"), &mut violations)?;
   check_validations(&migrations, &database.join("validation"), &mut violations)?;
+  check_history_ledger(
+    &migrations,
+    &database.join("validation").join(HISTORY_LEDGER_FILE),
+    &mut violations,
+  )?;
   check_squawk_exclusions(&migrations, &workspace_root.join(".squawk.toml"), &mut violations)?;
 
   if !violations.is_empty() {
@@ -226,6 +235,25 @@ fn check_installer(
       violations.push(format!("database/install.sql references unknown migration {file}"));
     }
   }
+
+  // The installer, not the migration files, writes the ledger rows that
+  // `000_migration_history_validation.sql` asserts against. A migration applied
+  // by an `\\ir` directive but never recorded here installs cleanly and then
+  // fails validation, so the two lists are checked separately.
+  let recorded = installer
+    .lines()
+    .map(str::trim)
+    .filter(|line| !line.starts_with("--"))
+    .filter_map(|line| line.strip_prefix(LEDGER_INSERT_PREFIX))
+    .filter_map(|rest| rest.split_once('\'').map(|(version, _)| version.to_owned()))
+    .collect::<Vec<_>>();
+  let versions = shipped_versions(migrations);
+  if recorded != versions {
+    violations.push(format!(
+      "database/install.sql records ledger versions {recorded:?}, but database/migrations/ ships \
+       {versions:?}"
+    ));
+  }
   Ok(())
 }
 
@@ -257,6 +285,102 @@ fn check_validations(
     }
   }
   Ok(())
+}
+
+/// Compares the hardcoded ledger assertion against the migrations directory.
+///
+/// `000_migration_history_validation.sql` enumerates the exact versions the
+/// installer must have recorded, but it only executes against a live database,
+/// so a stale array survives every static gate and fails much later during
+/// `just db-validate`. Comparing it here turns that into a policy failure at the
+/// same moment the migration is added.
+fn check_history_ledger(
+  migrations: &[Migration],
+  ledger_path: &Path,
+  violations: &mut Vec<String>,
+) -> Result<()> {
+  let label = path_label(ledger_path);
+  let sql = fs::read_to_string(ledger_path).with_context(|| format!("failed to read {label}"))?;
+  let Some(declared) = ledger_versions(&sql) else {
+    violations.push(format!("{label} must declare expected_versions as an ARRAY[...] literal"));
+    return Ok(());
+  };
+
+  // Compared as ordered sequences, not sets: the assertion aggregates with
+  // ORDER BY version, so a correctly populated but misordered literal fails at
+  // runtime just as a missing version does.
+  let expected = shipped_versions(migrations);
+  if declared != expected {
+    violations.push(format!(
+      "{label} expects versions {declared:?}, but database/migrations/ ships {expected:?}"
+    ));
+  }
+  Ok(())
+}
+
+/// The zero-padded versions of the migrations that ship on disk, in apply order.
+fn shipped_versions(migrations: &[Migration]) -> Vec<String> {
+  migrations.iter().map(|migration| format!("{:03}", migration.version)).collect()
+}
+
+/// Extracts the quoted versions from the `expected_versions` array literal.
+fn ledger_versions(sql: &str) -> Option<Vec<String>> {
+  let active_sql = without_sql_comments(sql)?;
+  let mut lines = active_sql.lines().map(str::trim);
+  let mut literal = lines.find_map(|line| line.strip_prefix(LEDGER_DECLARATION_PREFIX))?.to_owned();
+  while !literal.contains(']') {
+    literal.push_str(lines.next()?);
+  }
+
+  let (entries, suffix) = literal.split_once(']')?;
+  if !suffix.trim_start().starts_with(';') {
+    return None;
+  }
+
+  entries
+    .split(',')
+    .map(|entry| {
+      let version = entry.trim().strip_prefix('\'')?.strip_suffix('\'')?;
+      (version.len() == 3 && version.bytes().all(|byte| byte.is_ascii_digit()))
+        .then(|| version.to_owned())
+    })
+    .collect()
+}
+
+fn without_sql_comments(sql: &str) -> Option<String> {
+  let mut active = String::with_capacity(sql.len());
+  let mut characters = sql.chars().peekable();
+
+  while let Some(character) = characters.next() {
+    if character == '-' && characters.peek() == Some(&'-') {
+      characters.next();
+      for commented in characters.by_ref() {
+        if commented == '\n' {
+          active.push('\n');
+          break;
+        }
+      }
+    } else if character == '/' && characters.peek() == Some(&'*') {
+      characters.next();
+      let mut closed = false;
+      while let Some(commented) = characters.next() {
+        if commented == '\n' {
+          active.push('\n');
+        } else if commented == '*' && characters.peek() == Some(&'/') {
+          characters.next();
+          closed = true;
+          break;
+        }
+      }
+      if !closed {
+        return None;
+      }
+    } else {
+      active.push(character);
+    }
+  }
+
+  Some(active)
 }
 
 fn check_squawk_exclusions(
@@ -298,6 +422,7 @@ mod tests {
   const MIGRATION: &str = "BEGIN;\nCOMMIT;\n";
   const MIGRATION_SHA256: &str = "cd9cf0971f79cb424a67ff0d93db0b805cb4d461ed4a2c3cf496fdf46ea7b7ae";
   const MIGRATION_NAME: &str = "019_weight_metrics_curation_gate.sql";
+  const SECOND_MIGRATION_NAME: &str = "020_market_curation_gate.sql";
 
   #[test]
   fn valid_migration_policy_is_accepted() -> Result<()> {
@@ -338,7 +463,7 @@ mod tests {
     let repository = valid_repository()?;
     fs::write(
       repository.path().join("database/install.sql"),
-      format!("-- \\ir migrations/{MIGRATION_NAME}\n\\ir migrations/{MIGRATION_NAME}\n"),
+      format!("-- \\ir migrations/{MIGRATION_NAME}\n{}", installer(&[MIGRATION_NAME])),
     )?;
 
     check(repository.path())?;
@@ -374,6 +499,92 @@ mod tests {
   }
 
   #[test]
+  fn migration_applied_but_not_recorded_in_the_ledger_is_rejected() -> Result<()> {
+    let repository = valid_repository()?;
+    fs::write(
+      repository.path().join("database/install.sql"),
+      format!("\\ir migrations/{MIGRATION_NAME}\n"),
+    )?;
+
+    let error = require_policy_error(repository.path())?;
+
+    assert!(error.to_string().contains("records ledger versions"));
+    Ok(())
+  }
+
+  #[test]
+  fn stale_history_ledger_is_rejected() -> Result<()> {
+    let repository = valid_repository()?;
+    fs::write(
+      repository.path().join("database/validation").join(super::HISTORY_LEDGER_FILE),
+      history_ledger("'018', '019'"),
+    )?;
+
+    let error = require_policy_error(repository.path())?;
+
+    assert!(error.to_string().contains("expects versions"));
+    Ok(())
+  }
+
+  #[test]
+  fn commented_history_ledger_declarations_are_rejected() -> Result<()> {
+    let repository = valid_repository()?;
+    fs::write(
+      repository.path().join("database/validation").join(super::HISTORY_LEDGER_FILE),
+      "-- expected_versions CONSTANT TEXT[] := ARRAY['019'];\n/*\nexpected_versions CONSTANT TEXT[] := ARRAY['019'];\n*/\n",
+    )?;
+
+    let error = require_policy_error(repository.path())?;
+
+    assert!(error.to_string().contains("must declare expected_versions"));
+    Ok(())
+  }
+
+  #[test]
+  fn unrelated_array_after_malformed_history_declaration_is_rejected() -> Result<()> {
+    let repository = valid_repository()?;
+    fs::write(
+      repository.path().join("database/validation").join(super::HISTORY_LEDGER_FILE),
+      "expected_versions TEXT[];\nunrelated_versions CONSTANT TEXT[] := ARRAY['019'];\n",
+    )?;
+
+    let error = require_policy_error(repository.path())?;
+
+    assert!(error.to_string().contains("must declare expected_versions"));
+    Ok(())
+  }
+
+  #[test]
+  fn misordered_history_ledger_is_rejected() -> Result<()> {
+    let repository = valid_repository()?;
+    fs::write(
+      repository.path().join("database/migrations").join(SECOND_MIGRATION_NAME),
+      MIGRATION,
+    )?;
+    fs::write(
+      repository.path().join("database/validation/020_market_curation_gate_validation.sql"),
+      "SELECT true;\n",
+    )?;
+    fs::write(
+      repository.path().join("database/install.sql"),
+      installer(&[MIGRATION_NAME, SECOND_MIGRATION_NAME]),
+    )?;
+    fs::write(
+      repository.path().join("database/migrations.lock.json"),
+      two_migration_lock_document(),
+    )?;
+    fs::write(
+      repository.path().join("database/validation").join(super::HISTORY_LEDGER_FILE),
+      history_ledger("'020', '019'"),
+    )?;
+
+    let error = require_policy_error(repository.path())?;
+
+    assert!(error.to_string().contains("expects versions"));
+    Ok(())
+  }
+
+  #[test]
   fn non_transactional_migration_is_rejected() -> Result<()> {
     let repository = valid_repository()?;
     fs::write(repository.path().join("database/migrations").join(MIGRATION_NAME), "SELECT 1;\n")?;
@@ -398,7 +609,11 @@ mod tests {
       database.join("validation/019_weight_metrics_curation_gate_validation.sql"),
       "SELECT true;\n",
     )?;
-    fs::write(database.join("install.sql"), format!("\\ir migrations/{MIGRATION_NAME}\n"))?;
+    fs::write(
+      database.join("validation").join(super::HISTORY_LEDGER_FILE),
+      history_ledger("'019'"),
+    )?;
+    fs::write(database.join("install.sql"), installer(&[MIGRATION_NAME]))?;
     fs::write(database.join("migrations.lock.json"), lock_document(MIGRATION_SHA256))?;
     fs::write(repository.path().join(".squawk.toml"), "excluded_paths = []\n")?;
     Ok(repository)
@@ -409,6 +624,34 @@ mod tests {
       Ok(()) => anyhow::bail!("migration policy unexpectedly passed"),
       Err(error) => Ok(error),
     }
+  }
+
+  /// Builds an installer that applies `files` and records the matching versions,
+  /// mirroring the shape of the checked-in `database/install.sql`.
+  fn installer(files: &[&str]) -> String {
+    use std::fmt::Write as _;
+
+    let mut document = String::new();
+    for file in files {
+      let version = &file[..3];
+      let prefix = super::LEDGER_INSERT_PREFIX;
+      let _ = write!(document, "\\ir migrations/{file}\n{prefix}{version}');\n");
+    }
+    document
+  }
+
+  /// Builds a ledger assertion whose array literal holds `versions`, matching the
+  /// shape of the checked-in `000_migration_history_validation.sql`.
+  fn history_ledger(versions: &str) -> String {
+    format!(
+      "DO $validation$\nDECLARE\n    expected_versions CONSTANT TEXT[] := ARRAY[\n        {versions}\n    ];\nBEGIN\nEND\n$validation$;\n"
+    )
+  }
+
+  fn two_migration_lock_document() -> String {
+    format!(
+      "{{\n  \"schema_version\": 1,\n  \"migrations\": [\n    {{\n      \"file\": \"{MIGRATION_NAME}\",\n      \"sha256\": \"{MIGRATION_SHA256}\"\n    }},\n    {{\n      \"file\": \"{SECOND_MIGRATION_NAME}\",\n      \"sha256\": \"{MIGRATION_SHA256}\"\n    }}\n  ]\n}}\n"
+    )
   }
 
   fn lock_document(sha256: &str) -> String {

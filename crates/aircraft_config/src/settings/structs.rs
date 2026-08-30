@@ -32,8 +32,18 @@ pub struct IngestArtifactSettings {
 }
 
 impl Settings {
+  /// Loads HTTP settings, defaulting to loopback so a fresh clone can start the
+  /// server without a `.env`.
+  ///
+  /// The default host is deliberately `127.0.0.1` rather than `0.0.0.0`: a
+  /// process that binds every interface the moment it is run should be an
+  /// explicit deployment choice, not what happens when configuration is absent.
   pub fn load() -> Result<Self, ConfigError> {
-    base_config().build()?.try_deserialize()
+    base_config()
+      .set_default("http.host", "127.0.0.1")?
+      .set_default("http.port", 8080_u16)?
+      .build()?
+      .try_deserialize()
   }
 
   #[must_use]

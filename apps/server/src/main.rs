@@ -1,74 +1,26 @@
-#[macro_use]
-extern crate diesel_migrations;
+//! `aircraft-server` composition root.
+//!
+//! Configuration, telemetry, and routing are each owned by their own crate, so
+//! this binary only resolves them in order and hands the bound socket to
+//! [`aircraft_server::serve`]. Graceful shutdown, the database pool, readiness,
+//! and perimeter limits are separate stories and are deliberately absent.
 
-use actix::prelude::*;
-use actix_web::{web::Data, *};
-use aircraft_db_schema::{get_database_url_from_env, source::secret::Secret};
-use aircraft_utils::{
-    AircraftError,
-    rate_limit::{RateLimit, rate_limiter::RateLimiter},
-    request::build_user_agent,
-    settings::structs::Settings,
-};
-use diesel::{
-    PgConnection,
-    r2d2::{ConnectionManager, Pool},
-};
-use doku::json::{AutoComments, Formatting};
-use reqwest::Client;
-use std::{env, sync::Arc, thread};
-use tokio::sync::Mutex;
+use aircraft_config::Settings;
+use anyhow::{Context, Result};
+use tokio::net::TcpListener;
 
-#[actix_web::main]
-async fn main() -> io::Result<()> {
-    dotenv().ok();
-    let database_url = env::var("DATABASE_URL").expect("DATABASE_URL is not set in .env file");
-    let conn_str = PgPool::new(database_url).await.unwrap();
+#[tokio::main]
+async fn main() -> Result<()> {
+  aircraft_observability::logging::init();
 
-    env_logger::init();
-    let settings = Settings::init().expect("Couldn't initialize settings.");
+  let settings = Settings::load().context("loading HTTP settings")?;
+  let address = settings.bind_address();
+  let listener = TcpListener::bind(&address).await.with_context(|| format!("binding {address}"))?;
 
-    let manager = ConnectionManager::<PgConnection>::new(&db_url);
-    let pool = Pool::builder()
-        .max_size(settings.database.pool_size)
-        .build(manager)
-        .unwrap_or_else(|_| panic!("Error connecting to {}", db_url));
+  // The bound address is logged rather than the configured one: binding port 0
+  // is legitimate, and only the listener knows what the OS assigned.
+  let bound = listener.local_addr().context("reading the bound address")?;
+  tracing::info!(address = %bound, "aircraft-server listening");
 
-    let pool2 = pool.clone();
-    thread::spawn(move || {
-        scheduled_tasks::setup(pool2).expect("Couldn't set up scheduled_tasks");
-    });
-
-    // Initialize the secrets
-    let conn = pool.get()?;
-    let secret = Secret::init(&conn).expect("Couldn't initialize secrets.");
-
-    println!("Starting http server at {}:{}", settings.bind, settings.port);
-
-    let client = Client::builder().user_agent(build_user_agent(&settings)).build()?;
-
-    // let activity_queue = create_activity_queue();
-
-    // Create Http server with websocket support
-    let settings_bind = settings.clone();
-    HttpServer::new(move || {
-        let context = AircraftContext::create(
-            pool.clone(),
-            chat_server.to_owned(),
-            client.clone(),
-            activity_queue.to_owned(),
-            settings.to_owned(),
-            secret.to_owned(),
-        );
-        let rate_limiter = rate_limiter.clone();
-        App::new()
-            .wrap(middleware::Logger::default())
-            .app_data(Data::new(context))
-            .configure(|cfg| api_routes::config(cfg, &rate_limiter))
-    })
-    .bind((settings_bind.bind, settings_bind.port))?
-    .run()
-    .await?;
-
-    Ok(())
+  aircraft_server::serve(listener).await
 }

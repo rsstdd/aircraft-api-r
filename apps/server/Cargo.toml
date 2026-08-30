@@ -6,6 +6,10 @@ version.workspace = true
 license.workspace = true
 publish.workspace = true
 
+[lib]
+name = "aircraft_server"
+path = "src/lib.rs"
+
 [[bin]]
 name = "aircraft-server"
 path = "src/main.rs"
@@ -19,5 +23,6 @@ aircraft_config.workspace = true
 aircraft_observability.workspace = true
 
 anyhow.workspace = true
+axum.workspace = true
 tokio.workspace = true
 tracing.workspace = true

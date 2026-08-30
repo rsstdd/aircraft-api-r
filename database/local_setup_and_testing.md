@@ -88,7 +88,7 @@ This command performs the following operations in order:
 2. Waits until PostgreSQL accepts connections.
 3. Reconciles a verified legacy Phase 1/2 prefix when necessary.
 4. Runs the dependency-aware installer.
-5. Applies all 21 schema migrations.
+5. Applies every migration file in `database/migrations/`, the source of truth.
 6. Applies canonical seeds at their required dependency boundaries.
 7. Runs every database validation script, beginning with exact migration-history validation.
 
@@ -144,7 +144,7 @@ FROM public.aircraft_schema_migrations
 ORDER BY version;
 ```
 
-The result should contain versions `001` through `021`.
+The result should contain one row per file in `database/migrations/`, in order.
 
 Check the migration count:
 
@@ -153,11 +153,7 @@ SELECT COUNT(*) AS migration_count
 FROM public.aircraft_schema_migrations;
 ```
 
-Expected result:
-
-```text
-21
-```
+The count must equal the number of migration files in `database/migrations/`.
 
 Check representative canonical seed counts:
 
@@ -316,7 +312,8 @@ public.aircraft_schema_migrations
 
 It should still complete successfully because the canonical seeds are idempotent.
 
-Confirm that the migration count remains 21:
+Confirm that the migration history still contains one row per file in
+`database/migrations/`:
 
 ```bash
 just db-psql
@@ -376,8 +373,9 @@ database/validation/
 ```
 
 The first file, `000_migration_history_validation.sql`, requires the ledger to
-contain exactly versions `001` through `021`. This prevents a structurally
-partial or unexpectedly versioned database from passing the broader suite.
+contain exactly the versions shipped in `database/migrations/`. This prevents a
+structurally partial or unexpectedly versioned database from passing the broader
+suite.
 
 The command uses `ON_ERROR_STOP=1`, so any SQL error or failed hard invariant stops the recipe with a nonzero exit code.
 
@@ -485,10 +483,10 @@ SELECT COUNT(*) FROM aircraft_ref.measurement_units;
 SELECT COUNT(*) FROM aircraft_compare.mission_profiles;
 ```
 
-Expected results:
+The migration count must equal the number of migration files in
+`database/migrations/`. Expected seed results:
 
 ```text
-21 migrations
 38 measurement units
 15 mission profiles
 ```
@@ -543,7 +541,7 @@ The local database is ready when all of the following are true:
 - `just db-migrate` succeeds twice.
 - `just db-seed` succeeds twice.
 - `just db-validate` succeeds.
-- Migration history contains versions `001` through `021`.
+- Migration history contains exactly the versions shipped in `database/migrations/`.
 - The canonical seed counts are 38 measurement units and 15 mission profiles.
 - JSON ingestion completes without pending staged records.
 - Re-ingesting identical JSON does not duplicate runs or canonical variants.

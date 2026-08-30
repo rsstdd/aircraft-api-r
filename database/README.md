@@ -21,8 +21,10 @@ This directory owns the SQL lifecycle for the Aircraft Management Engine.
   once written; `cargo xtask migrations` fails if a file's contents change, so a
   correction goes in a new migration and in this documentation, never by editing
   an applied one.
-- `validation/000_migration_history_validation.sql`: asserts that migration
-  history contains exactly versions `001` through `024`.
+- `validation/000_migration_history_validation.sql`: asserts that the applied
+  ledger matches the shipped migrations exactly. Its version list is compared to
+  `migrations/` by `cargo xtask migrations`, so adding a migration without
+  extending it fails the policy check rather than the next `just db-validate`.
 - `data_dictionary.md`: detailed reference for principal tables and read models;
   migrations remain authoritative for the complete schema.
 - `implementation_notes.md`: dependency rules, curator workflows, known

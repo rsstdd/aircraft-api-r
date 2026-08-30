@@ -148,6 +148,19 @@ dependencies = [
 ]
 
 [[package]]
+name = "aircraft_server"
+version = "0.1.0"
+dependencies = [
+ "aircraft_api",
+ "aircraft_config",
+ "aircraft_observability",
+ "anyhow",
+ "axum",
+ "tokio",
+ "tracing",
+]
+
+[[package]]
 name = "aircraft_testsupport"
 version = "0.1.0"
 dependencies = [
