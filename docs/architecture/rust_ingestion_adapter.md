@@ -124,11 +124,11 @@ it never reaches the process argument list:
 ```bash
 export INGEST_ROLE_PASSWORD='...'
 
-psql "$MIGRATION_DATABASE_URL" \
+psql -X -v ON_ERROR_STOP=1 "$MIGRATION_DATABASE_URL" \
   -v ingest_role=aircraft_ingest_app \
   -f database/roles/create_ingest_role.sql
 
-psql "$MIGRATION_DATABASE_URL" \
+psql -X -v ON_ERROR_STOP=1 "$MIGRATION_DATABASE_URL" \
   -v ingest_role=aircraft_ingest_app \
   -f database/roles/ingest_grants.sql
 ```

@@ -45,6 +45,44 @@ WHERE NOT EXISTS (
 )
 \gexec
 
+-- An existing role is not assumed to be the role this file would have created.
+-- ingest_grants.sql must never widen a privileged or membership-bearing
+-- account, so an existing role has to satisfy the same restricted contract
+-- before the grant step is allowed to run against it.
+SELECT coalesce(
+    bool_and(
+        rolcanlogin
+        AND NOT (
+            rolsuper
+            OR rolcreatedb
+            OR rolcreaterole
+            OR rolreplication
+            OR rolbypassrls
+        )
+        AND NOT EXISTS (
+            SELECT 1
+            FROM pg_catalog.pg_auth_members
+            WHERE member = pg_roles.oid
+        )
+    ),
+    false
+)::TEXT AS ingest_role_conforms
+FROM pg_catalog.pg_roles
+WHERE rolname = :'ingest_role'
+\gset
+
+\if :ingest_role_conforms
+\else
+\echo 'nonconforming ingest role:' :ingest_role
+DO $nonconforming_role$ BEGIN
+    RAISE EXCEPTION
+        'existing ingest role must be a LOGIN role that is NOSUPERUSER, '
+        'NOCREATEDB, NOCREATEROLE, NOREPLICATION, NOBYPASSRLS and holds no '
+        'role memberships; do not run ingest_grants.sql against it';
+END $nonconforming_role$;
+\quit
+\endif
+
 SELECT CASE
     WHEN EXISTS (SELECT 1 FROM pg_roles WHERE rolname = :'ingest_role')
     THEN format('role %I is present; run ingest_grants.sql next', :'ingest_role')
