@@ -15,7 +15,23 @@ Configure the default branch ruleset to require:
 - signed commits and linear history;
 - all current CI, dependency review, security analysis, and CodeQL checks;
 - branches to be up to date before merge;
-- no force pushes, deletions, or bypasses.
+- no force pushes or deletions.
+
+The admin repository role is the one bypass actor, and it bypasses always.
+This is a deliberate concession to a single-maintainer repository, not an
+oversight. `CODEOWNERS` names one owner, and GitHub does not let anyone approve
+their own pull request, so the one-approving-review rule is unsatisfiable by
+the only person able to satisfy it: every pull request would deadlock. The
+bypass was added to merge #4 and is recorded here rather than left as
+undocumented drift between the hosted ruleset and this directory.
+
+What the bypass does **not** relax: it is a merge-time override for an admin
+only. Required status checks, signed commits, linear history, and conversation
+resolution remain in force for every other actor, and CI remains the real gate
+— an admin merging past review still cannot merge past a red build without
+consciously choosing `--admin`. Grant the admin role to a second person and
+this concession should be revisited, because at that point review is
+satisfiable and the deadlock argument no longer holds.
 
 The policy also enables secret scanning, push protection, Dependabot alerts,
 and Dependabot security updates. It restricts GitHub Actions to the exact
