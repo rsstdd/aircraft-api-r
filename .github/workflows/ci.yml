@@ -71,9 +71,9 @@ jobs:
         with:
           file_glob: docs/openapi.json
           spectral_ruleset: .spectral.yaml
-      - run: >-
-          npm exec --yes --package squawk-cli@2.51.0 -- squawk
-          --no-error-on-unmatched-pattern 'database/migrations/*.sql'
+      # The same script `just migrations-lint` runs, so the hosted check and the
+      # local one cannot diverge on the reviewed 017-018 baselines.
+      - run: scripts/migrations-lint.sh
       - if: github.event_name == 'pull_request'
         uses: oasdiff/oasdiff-action/breaking@b7c3adeb54330db1903d27c61db520e5661ad55b # v0.1.11
         with:
