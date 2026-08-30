@@ -91,7 +91,7 @@ impl InputArtifact {
   }
 }
 
-fn hex_digest(bytes: &[u8]) -> String {
+pub(crate) fn hex_digest(bytes: &[u8]) -> String {
   const HEX: &[u8; 16] = b"0123456789abcdef";
   let mut output = String::with_capacity(bytes.len() * 2);
   for byte in bytes {

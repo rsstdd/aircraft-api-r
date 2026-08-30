@@ -37,7 +37,8 @@ assertions, and flags — is in scope, per
 - `planephd_minimal.json` — one clean record, the happy path.
 - `planephd_edge_cases.json` — three records across two manufacturers, covering
   sentinels, unknown units, unmapped fields and costs, malformed images and
-  dimensions, an unsupported URL scheme, a non-integer count, and a twin engine.
+  dimensions, an unsupported URL scheme, a non-integer count, a twin engine,
+  and identical ceiling assertions on two distinct variants.
 
 `just snapshots` runs both. Adding a fixture means recording its golden output:
 

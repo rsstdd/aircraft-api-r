@@ -122,10 +122,10 @@ impl SqlxIngestionStore {
       attempt_id,
       status: ImportStatus::Succeeded,
       content_sha256: request.artifact.content_sha256.clone(),
-      staged_records: nonnegative(row.try_get("staged_aircraft").ok()),
-      promoted_records: nonnegative(row.try_get("promoted_aircraft").ok()),
-      flagged_records: nonnegative(row.try_get("flagged_aircraft").ok()),
-      warning_count: nonnegative(row.try_get("warning_count").ok()),
+      staged_records: decoded_count(&row, "staged_aircraft")?,
+      promoted_records: decoded_count(&row, "promoted_aircraft")?,
+      flagged_records: decoded_count(&row, "flagged_aircraft")?,
+      warning_count: decoded_count(&row, "warning_count")?,
       already_imported: true,
     }))
   }
@@ -795,7 +795,7 @@ impl SqlxIngestionUnitOfWork {
                         variant_id,metric_type_code,raw_value,raw_unit_code,canonical_value,
                         is_canonical,confidence,source_assertion_id)
                      SELECT $1,$2,$3::numeric,$4,
-                        aircraft_ref.to_canonical($3::numeric,$4),
+                        trim_scale(aircraft_ref.to_canonical($3::numeric,$4)),
                         FALSE,$5::numeric,$6",
         )
         .bind(variant_id)
@@ -831,7 +831,7 @@ impl SqlxIngestionUnitOfWork {
                         variant_id,metric_type_code,raw_value,raw_unit_code,canonical_value,
                         confidence,source_assertion_id)
                      VALUES($1,$2,$3::numeric,$4,
-                        aircraft_ref.to_canonical($3::numeric,$4),$5::numeric,$6)",
+                        trim_scale(aircraft_ref.to_canonical($3::numeric,$4)),$5::numeric,$6)",
         )
         .bind(variant_id)
         .bind(code)
@@ -1173,10 +1173,10 @@ fn row_to_status(row: &sqlx_postgres::PgRow) -> Result<RunStatus, PersistenceErr
     content_sha256: row.get("content_sha256"),
     status: parse_status(&status)?,
     input_locator: row.get("input_locator"),
-    staged_records: nonnegative(row.try_get("staged_aircraft").ok()),
-    promoted_records: nonnegative(row.try_get("promoted_aircraft").ok()),
-    flagged_records: nonnegative(row.try_get("flagged_aircraft").ok()),
-    warning_count: nonnegative(row.try_get("warning_count").ok()),
+    staged_records: decoded_count(row, "staged_aircraft")?,
+    promoted_records: decoded_count(row, "promoted_aircraft")?,
+    flagged_records: decoded_count(row, "flagged_aircraft")?,
+    warning_count: decoded_count(row, "warning_count")?,
     attempts: Vec::new(),
     failure_code: row.try_get("failure_code").ok(),
     failure_message: row.try_get("failure_message").ok(),
@@ -1192,10 +1192,10 @@ fn row_to_attempt_status(row: &sqlx_postgres::PgRow) -> Result<AttemptStatus, Pe
     attempt_number: u32::try_from(row.get::<i32, _>("attempt_number"))
       .map_err(|_| PersistenceError::Invariant("attempt number must be positive".to_owned()))?,
     status: parse_status(&status)?,
-    staged_records: nonnegative(row.try_get("staged_aircraft").ok()),
-    promoted_records: nonnegative(row.try_get("promoted_aircraft").ok()),
-    flagged_records: nonnegative(row.try_get("flagged_aircraft").ok()),
-    warning_count: nonnegative(row.try_get("warning_count").ok()),
+    staged_records: decoded_count(row, "staged_aircraft")?,
+    promoted_records: decoded_count(row, "promoted_aircraft")?,
+    flagged_records: decoded_count(row, "flagged_aircraft")?,
+    warning_count: decoded_count(row, "warning_count")?,
     failure_code: row.try_get("failure_code").ok(),
     failure_message: row.try_get("failure_message").ok(),
     started_at: row.get("started_at"),
@@ -1216,6 +1216,11 @@ fn parse_status(status: &str) -> Result<ImportStatus, PersistenceError> {
 
 fn nonnegative(value: Option<i32>) -> u64 {
   value.and_then(|value| u64::try_from(value).ok()).unwrap_or_default()
+}
+
+fn decoded_count(row: &sqlx_postgres::PgRow, column: &str) -> Result<u64, PersistenceError> {
+  let value = row.try_get::<Option<i32>, _>(column).map_err(database_error)?;
+  Ok(nonnegative(value))
 }
 
 fn to_i32(value: u64) -> Result<i32, PersistenceError> {

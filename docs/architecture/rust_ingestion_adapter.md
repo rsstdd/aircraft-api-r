@@ -168,7 +168,7 @@ database import, idempotency, and status behavior must pass before deployment.
 
 ```bash
 just test      # unit tests plus the containerized gates below
-just snapshots    # SQL-versus-Rust parity
+just snapshots # golden-snapshot regression check against committed snapshots
 ```
 
 `apps/ingest/tests/gates.rs` drives the shipped `aircraft-ingest` binary against

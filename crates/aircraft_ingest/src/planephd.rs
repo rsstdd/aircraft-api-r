@@ -14,7 +14,10 @@ use sha2::{Digest, Sha256};
 use thiserror::Error;
 use tokio::sync::mpsc;
 
-use crate::{artifact::InputArtifact, normalization::normalize_record};
+use crate::{
+  artifact::{InputArtifact, hex_digest},
+  normalization::normalize_record,
+};
 
 pub trait SourceAdapter: Send + Sync {
   fn descriptor(&self) -> SourceDescriptor;
@@ -230,16 +233,6 @@ where
     Ok(())
   }
 }
-fn hex_digest(bytes: &[u8]) -> String {
-  use std::fmt::Write as _;
-
-  let mut output = String::with_capacity(bytes.len() * 2);
-  for byte in bytes {
-    let _ = write!(output, "{byte:02x}");
-  }
-  output
-}
-
 #[derive(Debug, Error)]
 pub enum SourceError {
   #[error(transparent)]

@@ -5,10 +5,10 @@
 //!
 //! `docs/architecture/rust_ingestion_adapter.md` makes production promotion
 //! conditional on clean-database import, migration, transaction rollback,
-//! idempotency, status-history, and SQL-versus-Rust parity. These tests close
-//! the first five by driving the shipped `aircraft-ingest` binary against a
-//! disposable database carrying the canonical schema; parity lives in
-//! `cargo xtask snapshots`.
+//! idempotency, status-history, and snapshot regression coverage. These tests
+//! drive the shipped `aircraft-ingest` binary against a disposable database
+//! carrying the canonical schema; golden snapshots live in `cargo xtask
+//! snapshots`.
 
 use std::{
   path::{Path, PathBuf},
@@ -78,7 +78,8 @@ fn describe(output: &Output) -> String {
   )
 }
 
-/// `predicate` is appended verbatim, so callers must pass only literals.
+/// `table` may include an inline `WHERE` clause and is interpolated verbatim, so
+/// callers must pass only literal SQL.
 async fn count(pool: &PgPool, table: &str) -> TestResult<i64> {
   Ok(query_scalar(&format!("SELECT COUNT(*) FROM {table}")).fetch_one(pool).await?)
 }

@@ -1,5 +1,3 @@
-use std::fmt::Write as _;
-
 use aircraft_app::ingestion::{
   AircraftIdentityInput, CostItemInput, ImageMetadataInput, IngestIssue, IssueSeverity,
   LifecycleInput, MeasurementInput, OperatingCostInput, PerformanceInput, PreparedAircraftRecord,
@@ -9,6 +7,8 @@ use aircraft_domain::ingestion::{Confidence, ProductionYears};
 use serde_json::{Map, Value};
 use sha2::{Digest, Sha256};
 use url::Url;
+
+use crate::artifact::hex_digest;
 
 const KNOWN_FIELDS: &[&str] = &[
   "source_link",
@@ -221,7 +221,7 @@ fn measurements(
           Some(value),
         ));
       }
-      if numeric_value.is_none() && parse_sentinel(&raw_value).is_some() {
+      if numeric_value.is_none() {
         issues.push(issue(
           "MEASUREMENT_PARSE_FAILURE",
           IssueSeverity::Warning,
@@ -687,12 +687,7 @@ fn source_record_key(manufacturer: &str, aircraft: &str) -> String {
   hash.update(manufacturer.as_bytes());
   hash.update(b"\0");
   hash.update(aircraft.as_bytes());
-  let digest = hash.finalize();
-  let mut output = String::with_capacity(64);
-  for byte in digest {
-    let _ = write!(output, "{byte:02x}");
-  }
-  output
+  hex_digest(&hash.finalize())
 }
 
 fn issue(

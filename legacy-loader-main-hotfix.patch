@@ -48,7 +48,7 @@
 +                -- Rust adapter, which drops it with an IMAGE_HREF_MISSING
 +                -- warning and imports the rest.
 +                CONTINUE WHEN jsonb_typeof(v_img) <> 'object'
-+                           OR v_img->>'href' IS NULL;
++                           OR NULLIF(btrim(v_img->>'href'), '') IS NULL;
 +
                  INSERT INTO aircraft_ingest.staged_images (
                      staged_aircraft_id, array_position,
