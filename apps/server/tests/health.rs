@@ -26,6 +26,7 @@ use tokio::{
 
 /// How long the binary gets to report its bound address, or to exit.
 const STARTUP: Duration = Duration::from_secs(20);
+const NETWORK_IO_TIMEOUT: Duration = Duration::from_secs(20);
 
 /// Builds a command for the shipped binary with a clean configuration
 /// environment, so an `APP__` variable in the developer's shell cannot decide
@@ -101,16 +102,25 @@ async fn start() -> Result<(Child, SocketAddr)> {
 /// `Connection: close` makes the server close the socket after responding,
 /// which is what lets `read_to_string` terminate without parsing lengths.
 async fn get(address: SocketAddr, path: &str) -> Result<(u16, String)> {
-  let mut stream = TcpStream::connect(address).await.context("connecting to the server")?;
-  stream
-    .write_all(
-      format!("GET {path} HTTP/1.1\r\nHost: {address}\r\nConnection: close\r\n\r\n").as_bytes(),
-    )
+  let mut stream = timeout(NETWORK_IO_TIMEOUT, TcpStream::connect(address))
     .await
-    .context("sending the request")?;
+    .context("timed out connecting to the server")?
+    .context("connecting to the server")?;
+  timeout(
+    NETWORK_IO_TIMEOUT,
+    stream.write_all(
+      format!("GET {path} HTTP/1.1\r\nHost: {address}\r\nConnection: close\r\n\r\n").as_bytes(),
+    ),
+  )
+  .await
+  .context("timed out sending the request")?
+  .context("sending the request")?;
 
   let mut response = String::new();
-  stream.read_to_string(&mut response).await.context("reading the response")?;
+  timeout(NETWORK_IO_TIMEOUT, stream.read_to_string(&mut response))
+    .await
+    .context("timed out reading the response")?
+    .context("reading the response")?;
 
   let status = response
     .split_whitespace()
