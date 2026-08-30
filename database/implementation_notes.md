@@ -99,6 +99,19 @@ required Phase 2 seed boundary.
 
 **Resolved.** `SqlxCurationStore::decide` (`crates/aircraft_db/src/repositories/curation_repository.rs`) is the `promote_assertion` step this note anticipated: it flips `is_accepted` and the backing canonical row together, refuses a second accepted assertion for a field with `CURATION_CONFLICT` rather than racing `uq_assertion_accepted`, and supports withdrawal so a decision can be reversed. What remains deferred is *automatic* selection between competing sources by confidence; today a curator chooses.
 
+**Stale comment in migration 014.** The `COMMENT ON COLUMN` for
+`aircraft_prov.source_assertions.is_accepted` in
+`database/migrations/014_sources_provenance_curation_audit.sql` still reads
+"Phase 17 ingestion sets is_accepted = TRUE for the first assertion per field".
+Ingestion has never done that on this branch: it writes every assertion
+`PENDING` and unaccepted, and `is_accepted` is set only by a curation decision.
+`imported_values_stay_pending_and_out_of_the_read_model`
+(`apps/ingest/tests/gates.rs`) pins the implemented behavior. Applied migrations
+are immutable and hashed in `migrations.lock.json`, so the comment is corrected
+here rather than in 014; the rest of that comment — at most one `TRUE` per
+`(entity_type_code, entity_id, field_name)`, enforced by `uq_assertion_accepted`
+— remains accurate.
+
 ### 2.2 Engine Manufacturer Matching
 
 **Current state.** The Phase 17 promotion step creates `engine_variants` rows with `manufacturer_org_id = NULL` and `manufacturer_name_raw` set to the raw source string (e.g. `'Cont Motor'`, `'Ivchenko'`). A GIN-indexed `name_aliases TEXT[]` column on `aircraft_org.organizations` supports alias resolution, but the Phase 3 seed data only includes ~27 organizations.
@@ -488,8 +501,8 @@ ALTER TABLE aircraft_prov.source_assertions SET (
 |---|---|---|
 | Local legacy reconciliation | database/reconcile_local_legacy.sql | Verify and adopt complete pre-ledger Phase 1/2 local schemas; reject partial states |
 | Installer | database/install.sql | Dependency-aware migration and canonical-seed orchestration |
-| Migrations | database/migrations/001_*.sql through 023_*.sql | Canonical ordered schema history; immutable once written, hashed in migrations.lock.json |
+| Migrations | database/migrations/001_*.sql through 024_*.sql | Canonical ordered schema history; immutable once written, hashed in migrations.lock.json |
 | Canonical seeds | database/seeds/001_*.sql through 003_*.sql | Units, lookup data, and mission profiles |
 | Ingestion | apps/ingest + database/snapshots/ | Rust CLI import, snapshot queries, and committed golden output |
-| Verification | database/validation/000_migration_history_validation.sql and remaining database/validation/*.sql | Exact 001-023 ledger assertion plus phase-specific structural and behavioral checks |
+| Verification | database/validation/000_migration_history_validation.sql and remaining database/validation/*.sql | Exact 001-024 ledger assertion plus phase-specific structural and behavioral checks |
 | Documentation | database/README.md, data_dictionary.md, implementation_notes.md | Lifecycle, schema meaning, and operational guidance |

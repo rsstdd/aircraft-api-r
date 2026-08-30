@@ -131,7 +131,8 @@ batch label behind historical assertions.
 Promotion links the source manufacturer through
 `aircraft_core.variant_manufacturers` and copies the parsed primary-powerplant
 count to `aircraft_core.variants.engine_count`, which are the projections the
-read model consumes. Migration 023 backfills both for earlier Rust imports.
+read model consumes. Migrations 023 and 024 backfill both for earlier Rust
+imports.
 
 ## PostgreSQL and Aiven
 
@@ -198,7 +199,11 @@ a disposable `postgres:16-alpine` database carrying the canonical schema, and
 covers clean-database import, idempotency, hard-validation rollback, status
 history, stale-attempt recovery, and the documented exit codes.
 `crates/aircraft_db/tests/ingestion_repository.rs` covers rollback of the long
-staging transaction and concurrent imports at the minimum pool size. The schema
+staging transaction, concurrent imports at the minimum pool size, and the
+curation decisions that publish or withhold a market snapshot.
+`crates/aircraft_testsupport/tests/migration_upgrade.rs` covers the backfill
+migrations, which a clean install reaches with nothing to match and so can only
+be exercised by upgrading a database seeded with the state they repair. The schema
 those tests install is the real `database/migrations/` sequence, and
 `schema_steps_cover_every_migration` fails if a new migration is not gated.
 
@@ -210,9 +215,20 @@ two paths differ there by design — see below.
 
 ### Gate status
 
-All six gates pass on `feat/rust-ingestion`. Closing them required three fixes to
-the legacy loader, which had stopped promoting anything against the current
-schema:
+Every gate passes on `feat/rust-ingestion`: 89 tests across the workspace, of
+which the containerized ones are the 16 binary-driven gates in
+`apps/ingest/tests/gates.rs`, the 9 repository gates in
+`crates/aircraft_db/tests/ingestion_repository.rs`, and the 7 upgrade gates in
+`crates/aircraft_testsupport/tests/migration_upgrade.rs`. `just snapshots` is
+clean on both fixtures. Count the tests rather than trusting a number written
+here; this paragraph is the one thing in this document that goes stale on every
+added gate.
+
+**Historical.** The three fixes below were made to the legacy SQL loader while
+the SQL-versus-Rust parity run was still a gate. That run was retired with the
+loader (see *Retirement of the legacy SQL loader*), so these no longer describe
+anything the current gates exercise. They are kept because `main` still carries
+the loader and `legacy-loader-main-hotfix.patch` still carries the fixes:
 
 - `ON CONFLICT (source_id, source_system_key)` in `902` no longer matched an
   index, because migration 017 replaced `uq_sd_source_key` with the narrower
@@ -314,9 +330,9 @@ Market data is gated at the snapshot rather than the row.
 `mv_ownership_cost_summary` wraps its sums in `COALESCE(..., 0)`, so filtering
 individual line items would publish a confident `$0.00 annual cost` for an
 uncurated aircraft — worse than withholding it. Filtering the snapshot removes the
-row entirely and the `LEFT JOIN` yields NULL. Accepting any assertion on a
-snapshot publishes it; it stays published while any of its assertions remains
-accepted.
+row entirely and the `LEFT JOIN` yields NULL. What that gate then requires of
+curation — a snapshot is served only once every field asserted on it is
+accepted — is stated later in this section.
 
 Migration 020 also had to rebuild `mv_variant_search`, which reads
 `aircraft_market.valuations` directly in a LATERAL rather than through
@@ -346,6 +362,19 @@ withdrawn — but repeating a decision already recorded is refused, so an unchan
 state is never reported as a change. Accepting a second assertion for a field
 that already has one fails with `CURATION_CONFLICT` rather than silently racing
 `uq_assertion_accepted`; withdraw the standing decision first.
+
+Market snapshots publish as a unit, because the schema gates them that way: one
+`is_canonical` flag covers every column of a valuation and every line item and
+total of a cost snapshot, which migration 020 records on the column itself as
+"Published as a unit: the snapshot's totals are only meaningful together". A
+snapshot is therefore served only once every field asserted on it has an accepted
+assertion, and withdrawing any one of them takes the whole snapshot back down.
+Publishing on the first acceptance would have served a valuation's
+`for_sale_count`, or a cost snapshot's remaining line items, while their own
+assertions were still pending — the one thing the paragraph above says a decision
+must never do. Decisions stay per-assertion: each field is accepted on its own
+evidence and value-checked against the row it would publish, and the snapshot
+appears when the last of them lands.
 
 Market snapshots need a second guard. `uq_val_canonical` and `uq_cs_canonical`
 allow one canonical valuation and one cost snapshot per *variant*, while their

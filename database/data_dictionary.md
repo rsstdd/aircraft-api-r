@@ -934,6 +934,12 @@ snapshot queries plus committed golden output that guard it.
 Migration 023 backfills source-backed primary manufacturer links and declared
 engine counts that earlier Rust imports stored only on families and powerplant
 links, then refreshes `mv_variant_search` so those projections are visible.
+Migration 024 completes that backfill for the one case 023 cannot reach: a
+variant whose correct `variant_manufacturers` row already exists as
+`is_primary = FALSE` satisfies 023's "no primary link" predicate but collides on
+`(variant_id, org_id)`, so `ON CONFLICT ... DO NOTHING` leaves it demoted and
+023's own validation then aborts the upgrade. 024 promotes the standing row
+rather than inserting a second one, and `role` is left as curation set it.
 
 **Recovering a missed refresh.** Curation commits its decision and rebuilds the matviews afterwards, so the rebuild can fail with the decision already durable. The decision therefore enqueues a `read_model_refresh_requests` row inside its own transaction; the row survives a failed rebuild and is closed only by one that succeeded. `aircraft-ingest curate refresh` drains whatever is outstanding, so a stale read model never depends on repeating a decision the state machine would refuse.
 
