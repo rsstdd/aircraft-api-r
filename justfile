@@ -41,19 +41,19 @@ ingest-status-json *args:
 
 # Show assertions ingestion left pending for a curator.
 curate-list *args:
-    cargo run --package aircraft-ingest -- curate list {{ args }}
+    cargo run --locked --package aircraft-ingest -- curate list {{ args }}
 
 # Accept a pending assertion, publishing its value to the read model.
 curate-accept assertion_id:
-    cargo run --package aircraft-ingest -- curate accept --assertion-id {{ assertion_id }}
+    cargo run --locked --package aircraft-ingest -- curate accept --assertion-id {{ assertion_id }}
 
 # Withdraw a value from the read model.
 curate-reject assertion_id:
-    cargo run --package aircraft-ingest -- curate reject --assertion-id {{ assertion_id }}
+    cargo run --locked --package aircraft-ingest -- curate reject --assertion-id {{ assertion_id }}
 
 # Rebuild the read model for decisions whose refresh did not complete.
 curate-refresh *args:
-    cargo run --package aircraft-ingest -- curate refresh {{ args }}
+    cargo run --locked --package aircraft-ingest -- curate refresh {{ args }}
 
 # Import each fixture through the Rust adapter into a disposable database and
 # diff the normalized business snapshots against their committed golden output.
@@ -114,26 +114,7 @@ migrations-policy:
     cargo run --locked --package xtask -- migrations
 
 migrations-lint:
-    #!/usr/bin/env bash
-    set -euo pipefail
-    squawk=(npm exec --yes --package squawk-cli@2.51.0 -- squawk)
-    # Migrations 017-018 are checksum-locked; keep their reviewed rule baselines
-    # file-scoped while linting every later migration with the full ruleset.
-    "${squawk[@]}" \
-      --exclude=adding-foreign-key-constraint,prefer-bigint-over-int,prefer-bigint-over-smallint,require-concurrent-index-creation,require-concurrent-index-deletion,require-timeout-settings \
-      database/migrations/017_rust_ingestion_adapter.sql
-    "${squawk[@]}" \
-      --exclude=adding-foreign-key-constraint,constraint-missing-not-valid,require-concurrent-index-creation,require-timeout-settings \
-      database/migrations/018_staged_aircraft_variant_fk.sql
-    current_migrations=()
-    for migration in database/migrations/*.sql; do
-      filename="${migration##*/}"
-      version="${filename%%_*}"
-      if ((10#$version >= 19)); then
-        current_migrations+=("$migration")
-      fi
-    done
-    "${squawk[@]}" "${current_migrations[@]}"
+    scripts/migrations-lint.sh
 
 compose-check:
     docker compose config --quiet
