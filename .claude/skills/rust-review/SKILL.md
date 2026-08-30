@@ -104,7 +104,7 @@ nothing.
 
 ## Checks to run before concluding
 
-```
+```shell
 cargo fmt --all -- --check
 cargo clippy --workspace --all-targets --all-features --locked -- -D warnings
 cargo nextest run --workspace --locked        # just test; needs Docker
