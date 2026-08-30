@@ -355,9 +355,8 @@ Fact table — one row per `(variant, approval_type)`.
 | `condition_power_setting` | `text` | nullable | &mdash; | &mdash; | Engine power / thrust setting at test conditions. TEXT CHECK (10 stable values). NULL when power setting is not published by the source. |
 | `condition_surface_type` | `text` | nullable | &mdash; | &mdash; | Runway or water surface type for takeoff/landing distance metrics. NULL for airborne metrics (speeds, ceilings, range). TEXT CHECK (6 stable surface type values). |
 | `conditions_notes` | `text` | nullable | &mdash; | &mdash; | Free-text condition qualifiers from source |
-| `source_assertion_id` | `bigint` | nullable | &mdash; | aircraft_prov.source_assertions(id) | The exact assertion that produced this measurement, so curation flips `is_canonical` only on the row its decision refers to rather than every row sharing a metric code. Added by migration 020; the FK is validated by 021. |
+| `source_assertion_id` | `bigint` | nullable | &mdash; | aircraft_prov.source_assertions(id); UNIQUE when non-NULL | The exact assertion that produced this measurement, so curation flips `is_canonical` only on the row its decision refers to rather than every row sharing a metric code. Added by migration 020 and validated by migration 021; historical rows remain nullable rather than inferring the wrong source. |
 | `is_canonical` | `boolean` | NOT NULL | `false` | &mdash; | TRUE = this row is the designated cross-fleet comparison value for this (variant, metric_type) pair. At most one TRUE per pair (enforced by uq_perf_canonical partial UNIQUE index). The ingestion adapter writes every value is_canonical = FALSE; curation must explicitly promote one. |
-| `source_assertion_id` | `bigint` | nullable | &mdash; | aircraft_prov.source_assertions(id); UNIQUE when non-NULL | Exact assertion that produced this measurement; added by migration 020. Historical rows remain nullable rather than inferring the wrong source. |
 | `is_estimated` | `boolean` | NOT NULL | `false` | &mdash; |  |
 | `confidence` | `aircraft_ref.confidence_score` | nullable | &mdash; | &mdash; |  |
 | `source_notes` | `text` | nullable | &mdash; | &mdash; |  |
@@ -383,9 +382,8 @@ read model on import while every other measurement waited.
 | `canonical_value` | `numeric` | nullable | &mdash; | &mdash; | Value in the metric-type canonical unit. For mass: LBS. For fuel: US_GAL. For dimensionless metrics (LOAD_FACTOR_*, WING_LOADING): equals raw_value. Populated by Phase 17 ingestion. |
 | `configuration` | `text` | nullable | &mdash; | &mdash; |  |
 | `is_estimated` | `boolean` | NOT NULL | `false` | &mdash; |  |
-| `source_assertion_id` | `bigint` | nullable | &mdash; | aircraft_prov.source_assertions(id) | The exact assertion that produced this measurement. Added by migration 020; the FK is validated by 021. |
+| `source_assertion_id` | `bigint` | nullable | &mdash; | aircraft_prov.source_assertions(id); UNIQUE when non-NULL | The exact assertion that produced this measurement, so curation changes only the row its decision backs. Added by migration 020 and validated by migration 021; historical rows remain nullable rather than inferring the wrong source. |
 | `is_canonical` | `boolean` | NOT NULL | `false` | uq_wm_canonical (partial UNIQUE) | TRUE = served through `aircraft_read.mv_variant_search`. The Rust adapter writes FALSE and leaves promotion to curation. At most one TRUE per `(variant, metric_type)`. Added by migration 019. |
-| `source_assertion_id` | `bigint` | nullable | &mdash; | aircraft_prov.source_assertions(id); UNIQUE when non-NULL | Exact assertion that produced this measurement; added by migration 020. Historical rows remain nullable rather than inferring the wrong source. |
 | `confidence` | `aircraft_ref.confidence_score` | nullable | &mdash; | &mdash; |  |
 | `source_notes` | `text` | nullable | &mdash; | &mdash; |  |
 | `created_at` | `timestamp with time zone` | NOT NULL | `now()` | &mdash; |  |

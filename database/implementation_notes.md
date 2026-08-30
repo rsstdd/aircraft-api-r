@@ -242,17 +242,9 @@ provenance write, flag resolution, and audit write atomically:
 ```sql
 BEGIN;
 
--- 1. Insert the canonical value (example: glide_ratio -> a new metric type).
-INSERT INTO aircraft_specs.performance_metrics
-    (variant_id, metric_type_code, raw_value, raw_unit_code, canonical_value,
-     is_canonical, confidence)
-VALUES
-    (:variant_id, 'GLIDE_RATIO', :parsed_value, NULL, :parsed_value,
-     TRUE, 0.20);
-
--- 2. Record the accepted assertion. Ingestion does not create this row for an
--- unmapped field, so the curator must supply the source document. For a mapped
--- field, prefer `aircraft-ingest curate accept` over hand-written SQL.
+-- 1. Record and accept the assertion. For a mapped field with an existing
+-- assertion, prefer `aircraft-ingest curate accept` over hand-written SQL.
+-- A manually promoted unmapped field must name its source document explicitly.
 INSERT INTO aircraft_prov.source_assertions
     (source_document_id, entity_type_code, entity_id, field_name,
      raw_value, asserted_value, asserted_numeric, status_code,
@@ -260,7 +252,16 @@ INSERT INTO aircraft_prov.source_assertions
 VALUES
     (:source_document_id, 'AIRCRAFT_VARIANT', :variant_id,
      'performance.GLIDE_RATIO', :raw_value, :parsed_value::text,
-     :parsed_value, 'ACCEPTED', TRUE, 0.20);
+     :parsed_value, 'ACCEPTED', TRUE, 0.20)
+RETURNING id AS promoted_assertion_id \gset
+
+-- 2. Insert the canonical value with the assertion that produced it.
+INSERT INTO aircraft_specs.performance_metrics
+    (variant_id, metric_type_code, raw_value, raw_unit_code, canonical_value,
+     is_canonical, confidence, source_assertion_id)
+VALUES
+    (:variant_id, 'GLIDE_RATIO', :parsed_value, NULL, :parsed_value,
+     TRUE, 0.20, :promoted_assertion_id);
 
 -- 3. Resolve the flag.
 UPDATE aircraft_prov.curation_flags

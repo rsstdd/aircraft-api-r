@@ -1,10 +1,13 @@
 use std::time::Duration;
 
-use aircraft_app::ingestion::{
-  ImportReport, ImportRequest, ImportStatus, IngestionStore, PreparedAircraftRecord,
-  REPORT_SCHEMA_VERSION, RecordDisposition,
+use aircraft_app::{
+  curation::{CurationError, CurationStore, Decision},
+  ingestion::{
+    ImportReport, ImportRequest, ImportStatus, IngestionStore, PreparedAircraftRecord,
+    REPORT_SCHEMA_VERSION, RecordDisposition,
+  },
 };
-use aircraft_db::SqlxIngestionStore;
+use aircraft_db::{SqlxCurationStore, SqlxIngestionStore};
 use aircraft_ingest::normalization::normalize_record;
 use aircraft_testsupport::{TestResult, install_schema, ready, request, start_postgres};
 use serde_json::json;
@@ -169,23 +172,19 @@ async fn repository_preserves_ingestion_semantics_and_attempt_history() -> TestR
   .await?;
   assert!(uncurated_values_are_withheld, "imported values must stay out of the read model");
 
-  // Stand in for the curation step that does not exist yet: accept both metric
-  // families, which is what a curator will ultimately do.
-  query(
-    "UPDATE aircraft_specs.performance_metrics
-         SET is_canonical = TRUE
-         WHERE metric_type_code IN ('SPEED_CRUISE_BEST', 'RANGE_NORMAL')",
-  )
-  .execute(&pool)
-  .await?;
-  query(
-    "UPDATE aircraft_specs.weight_metrics
-         SET is_canonical = TRUE
-         WHERE metric_type_code = 'WEIGHT_MTOW'",
-  )
-  .execute(&pool)
-  .await?;
-  query("SELECT aircraft_read.refresh_search_matviews(FALSE)").execute(&pool).await?;
+  let curation = SqlxCurationStore::from_pool(pool.clone());
+  for field_name in
+    ["performance.SPEED_CRUISE_BEST", "performance.RANGE_NORMAL", "weight.WEIGHT_MTOW"]
+  {
+    let assertion_id: i64 = query_scalar(
+      "SELECT id FROM aircraft_prov.source_assertions
+           WHERE field_name = $1 ORDER BY id DESC LIMIT 1",
+    )
+    .bind(field_name)
+    .fetch_one(&pool)
+    .await?;
+    curation.decide(assertion_id, Decision::Accepted).await?;
+  }
 
   let curated_import_values_are_searchable: bool = query_scalar(
     "SELECT cruise_speed_kias = 125
@@ -247,6 +246,49 @@ async fn repository_preserves_ingestion_semantics_and_attempt_history() -> TestR
 
   current_work.rollback().await?;
   store.mark_failed(run_id, current_attempt_id, "TEST_CLEANUP", "integration test cleanup").await?;
+  Ok(())
+}
+
+#[tokio::test]
+async fn concurrent_competing_acceptances_report_one_conflict() -> TestResult {
+  let (_container, pool) = start_postgres(5, Duration::from_secs(5)).await?;
+  install_schema(&pool).await?;
+
+  let ingestion = SqlxIngestionStore::from_pool(pool.clone());
+  let first =
+    normalize_record("CESSNA", "172S", json!({"performance": {"best_cruise_speed": "124 KIAS"}}));
+  let second =
+    normalize_record("CESSNA", "172S", json!({"performance": {"best_cruise_speed": "125 KIAS"}}));
+  import_record(&ingestion, request('a', "1.0.0"), &first).await?;
+  import_record(&ingestion, request('b', "1.0.0"), &second).await?;
+
+  let assertion_ids: Vec<i64> = query_scalar(
+    "SELECT id FROM aircraft_prov.source_assertions
+         WHERE field_name = 'performance.SPEED_CRUISE_BEST' ORDER BY id",
+  )
+  .fetch_all(&pool)
+  .await?;
+  assert_eq!(assertion_ids.len(), 2);
+
+  let curation = SqlxCurationStore::from_pool(pool.clone());
+  let (first_result, second_result) = tokio::join!(
+    curation.decide(assertion_ids[0], Decision::Accepted),
+    curation.decide(assertion_ids[1], Decision::Accepted),
+  );
+  let results: [_; 2] = (first_result, second_result).into();
+  assert_eq!(results.iter().filter(|result| result.is_ok()).count(), 1);
+  assert_eq!(
+    results.iter().filter(|result| matches!(result, Err(CurationError::Conflict { .. }))).count(),
+    1,
+  );
+
+  let accepted: i64 = query_scalar(
+    "SELECT count(*) FROM aircraft_prov.source_assertions
+         WHERE field_name = 'performance.SPEED_CRUISE_BEST' AND is_accepted",
+  )
+  .fetch_one(&pool)
+  .await?;
+  assert_eq!(accepted, 1);
   Ok(())
 }
 

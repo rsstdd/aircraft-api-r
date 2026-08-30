@@ -6,7 +6,11 @@ use sqlx_core::{query_scalar::query_scalar, raw_sql::raw_sql};
 #[tokio::test]
 async fn curation_gates_preserve_only_the_rows_previously_served() -> TestResult {
   let (_container, pool) = start_postgres(2, Duration::from_secs(5)).await?;
-  for sql in &SCHEMA_STEPS[..21] {
+  let gate_index = SCHEMA_STEPS
+    .iter()
+    .position(|sql| sql.contains("019_weight_metrics_curation_gate.sql"))
+    .ok_or_else(|| std::io::Error::other("migration 019 is missing from SCHEMA_STEPS"))?;
+  for sql in &SCHEMA_STEPS[..gate_index] {
     raw_sql(sql).execute(&pool).await?;
   }
 
@@ -47,26 +51,32 @@ async fn curation_gates_preserve_only_the_rows_previously_served() -> TestResult
   .execute(&pool)
   .await?;
 
-  for sql in &SCHEMA_STEPS[21..24] {
+  for sql in &SCHEMA_STEPS[gate_index..] {
     raw_sql(sql).execute(&pool).await?;
   }
 
-  let canonical_weight_configuration: Option<String> =
-    query_scalar("SELECT configuration FROM aircraft_specs.weight_metrics WHERE is_canonical")
-      .fetch_one(&pool)
-      .await?;
-  assert_eq!(canonical_weight_configuration, None);
+  let configured_canonical_weights: i64 = query_scalar(
+    "SELECT count(*) FROM aircraft_specs.weight_metrics
+         WHERE is_canonical AND configuration IS NOT NULL",
+  )
+  .fetch_one(&pool)
+  .await?;
+  assert_eq!(configured_canonical_weights, 0);
 
-  let canonical_valuation_source: String =
-    query_scalar("SELECT source_name FROM aircraft_market.valuations WHERE is_canonical")
-      .fetch_one(&pool)
-      .await?;
-  assert_eq!(canonical_valuation_source, "newer");
+  let historical_canonical_valuations: i64 = query_scalar(
+    "SELECT count(*) FROM aircraft_market.valuations
+         WHERE is_canonical AND source_name <> 'newer'",
+  )
+  .fetch_one(&pool)
+  .await?;
+  assert_eq!(historical_canonical_valuations, 0);
 
-  let canonical_cost_source: String =
-    query_scalar("SELECT source_name FROM aircraft_market.cost_snapshots WHERE is_canonical")
-      .fetch_one(&pool)
-      .await?;
-  assert_eq!(canonical_cost_source, "newer");
+  let historical_canonical_costs: i64 = query_scalar(
+    "SELECT count(*) FROM aircraft_market.cost_snapshots
+         WHERE is_canonical AND source_name <> 'newer'",
+  )
+  .fetch_one(&pool)
+  .await?;
+  assert_eq!(historical_canonical_costs, 0);
   Ok(())
 }

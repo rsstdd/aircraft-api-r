@@ -2,9 +2,8 @@
 //!
 //! Accepting an assertion has to move three things together — the assertion's
 //! own status, the canonical flag on the measurement it backs, and any curation
-//! flags it closes — and then rebuild the read model. All of it commits or none
-//! of it does, so the read model can never advertise a value whose assertion was
-//! not accepted.
+//! flags it closes. The decision commits before the read model is rebuilt, so a
+//! refresh never holds the curation transaction open.
 
 use aircraft_app::curation::{
   CurationError, CurationOutcome, CurationStore, Decision, PendingAssertion, PendingFilter,
@@ -13,8 +12,8 @@ use aircraft_app::ingestion::PersistenceError;
 use async_trait::async_trait;
 use chrono::{DateTime, Utc};
 use sqlx_core::transaction::Transaction;
-use sqlx_core::{query::query, query_scalar::query_scalar, row::Row};
-use sqlx_postgres::{PgPool, Postgres};
+use sqlx_core::{error::Error as SqlxError, query::query, query_scalar::query_scalar, row::Row};
+use sqlx_postgres::{PgPool, PgRow, Postgres};
 
 use super::ingestion_repository::database_error;
 
@@ -95,21 +94,22 @@ impl CurationStore for SqlxCurationStore {
 
     rows
       .iter()
-      .map(|row| {
+      .map(|row| -> Result<PendingAssertion, SqlxError> {
         Ok(PendingAssertion {
           assertion_id: row.get("id"),
           entity_type_code: row.get("entity_type_code"),
           entity_id: row.get("entity_id"),
-          entity_label: row.try_get("entity_label").ok(),
+          entity_label: row.try_get::<Option<String>, _>("entity_label")?,
           field_name: row.get("field_name"),
-          raw_value: row.try_get("raw_value").ok(),
-          raw_unit: row.try_get("raw_unit").ok(),
-          asserted_numeric: row.try_get("asserted_numeric").ok(),
-          source_slug: row.try_get("source_slug").ok(),
+          raw_value: row.try_get::<Option<String>, _>("raw_value")?,
+          raw_unit: row.try_get::<Option<String>, _>("raw_unit")?,
+          asserted_numeric: row.try_get::<Option<String>, _>("asserted_numeric")?,
+          source_slug: row.try_get::<Option<String>, _>("source_slug")?,
           created_at: row.get::<DateTime<Utc>, _>("created_at"),
         })
       })
-      .collect()
+      .collect::<Result<_, _>>()
+      .map_err(database_error)
   }
 
   async fn decide(
@@ -119,25 +119,11 @@ impl CurationStore for SqlxCurationStore {
   ) -> Result<CurationOutcome, CurationError> {
     let mut transaction = self.pool.begin().await.map_err(database_error)?;
 
-    // Lock the assertion first so two curators cannot both accept a competing
-    // value for the same field and race the partial unique index.
-    let row = query(
-      "SELECT entity_type_code, entity_id, field_name, status_code
-             FROM aircraft_prov.source_assertions
-             WHERE id = $1
-             FOR UPDATE",
-    )
-    .bind(assertion_id)
-    .fetch_optional(&mut *transaction)
-    .await
-    .map_err(database_error)?;
+    let assertions = lock_assertion_field(&mut transaction, assertion_id).await?;
 
-    let Some(row) = row else {
+    let Some(row) = assertions.iter().find(|row| row.get::<i64, _>("id") == assertion_id) else {
       return Err(CurationError::UnknownAssertion(assertion_id));
     };
-    // Changing your mind is allowed — a curator must be able to withdraw a value
-    // they accepted in error. Only repeating the decision already recorded is
-    // refused, so a no-op cannot masquerade as a change.
     let status: String = row.get("status_code");
     if status == decision.status_code() {
       return Err(CurationError::AlreadyDecided { assertion_id, status });
@@ -147,25 +133,16 @@ impl CurationStore for SqlxCurationStore {
     let field_name: String = row.get("field_name");
 
     if decision.is_accepted() {
-      let competitor: Option<i64> = query_scalar(
-        "SELECT id FROM aircraft_prov.source_assertions
-                 WHERE entity_type_code = $1 AND entity_id = $2 AND field_name = $3
-                   AND is_accepted AND id <> $4
-                 LIMIT 1",
-      )
-      .bind(&entity_type_code)
-      .bind(entity_id)
-      .bind(&field_name)
-      .bind(assertion_id)
-      .fetch_optional(&mut *transaction)
-      .await
-      .map_err(database_error)?;
+      let competitor = assertions
+        .iter()
+        .find(|row| row.get::<i64, _>("id") != assertion_id && row.get::<bool, _>("is_accepted"))
+        .map(|row| row.get::<i64, _>("id"));
       if let Some(accepted_id) = competitor {
         return Err(CurationError::Conflict { field_name, accepted_id });
       }
     }
 
-    query(
+    let updated = query(
       "UPDATE aircraft_prov.source_assertions
              SET status_code = $2, is_accepted = $3
              WHERE id = $1",
@@ -174,8 +151,27 @@ impl CurationStore for SqlxCurationStore {
     .bind(decision.status_code())
     .bind(decision.is_accepted())
     .execute(&mut *transaction)
-    .await
-    .map_err(database_error)?;
+    .await;
+    if let Err(error) = updated {
+      if decision.is_accepted() && is_assertion_acceptance_conflict(&error) {
+        transaction.rollback().await.map_err(database_error)?;
+        let accepted_id: i64 = query_scalar(
+          "SELECT id FROM aircraft_prov.source_assertions
+                 WHERE entity_type_code = $1 AND entity_id = $2 AND field_name = $3
+                   AND is_accepted AND id <> $4
+                 LIMIT 1",
+        )
+        .bind(&entity_type_code)
+        .bind(entity_id)
+        .bind(&field_name)
+        .bind(assertion_id)
+        .fetch_one(&self.pool)
+        .await
+        .map_err(database_error)?;
+        return Err(CurationError::Conflict { field_name, accepted_id });
+      }
+      return Err(database_error(error).into());
+    }
 
     let mut outcome = CurationOutcome::new(assertion_id, decision);
     let (canonicalized, refreshed) = publish_decision(
@@ -208,18 +204,35 @@ impl CurationStore for SqlxCurationStore {
     .rows_affected();
     outcome.flags_resolved = flags;
 
-    // Refreshing is the expensive part, so it is skipped when the decision
-    // changed nothing the read model exposes.
+    transaction.commit().await.map_err(database_error)?;
     if outcome.read_model_refreshed {
       query("SELECT aircraft_read.refresh_search_matviews(FALSE)")
-        .execute(&mut *transaction)
+        .execute(&self.pool)
         .await
         .map_err(database_error)?;
     }
-
-    transaction.commit().await.map_err(database_error)?;
     Ok(outcome)
   }
+}
+
+async fn lock_assertion_field(
+  transaction: &mut Transaction<'_, Postgres>,
+  assertion_id: i64,
+) -> Result<Vec<PgRow>, CurationError> {
+  query(
+    "SELECT id, entity_type_code, entity_id, field_name, status_code, is_accepted
+           FROM aircraft_prov.source_assertions
+           WHERE (entity_type_code, entity_id, field_name) = (
+             SELECT entity_type_code, entity_id, field_name
+             FROM aircraft_prov.source_assertions WHERE id = $1
+           )
+           ORDER BY id
+           FOR UPDATE",
+  )
+  .bind(assertion_id)
+  .fetch_all(&mut **transaction)
+  .await
+  .map_err(|error| database_error(error).into())
 }
 
 /// Applies an accepted or withdrawn decision to whatever the assertion backs,
@@ -273,17 +286,26 @@ async fn publish_decision(
     .await
     .map_err(database_error)?;
 
-    let affected = query(&format!("UPDATE {table} SET is_canonical = $2 WHERE id = $1"))
-      .bind(entity_id)
-      .bind(still_accepted)
-      .execute(&mut **transaction)
-      .await
-      .map_err(database_error)?
-      .rows_affected();
+    let affected = query(&format!(
+      "UPDATE {table} SET is_canonical = $2
+             WHERE id = $1 AND is_canonical IS DISTINCT FROM $2"
+    ))
+    .bind(entity_id)
+    .bind(still_accepted)
+    .execute(&mut **transaction)
+    .await
+    .map_err(database_error)?
+    .rows_affected();
     return Ok((still_accepted && affected > 0, affected > 0));
   }
 
   Ok((false, false))
+}
+
+fn is_assertion_acceptance_conflict(error: &SqlxError) -> bool {
+  error.as_database_error().is_some_and(|error| {
+    error.code().as_deref() == Some("23505") && error.constraint() == Some("uq_assertion_accepted")
+  })
 }
 
 #[cfg(test)]

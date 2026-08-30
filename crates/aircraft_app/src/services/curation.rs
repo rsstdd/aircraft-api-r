@@ -103,9 +103,10 @@ pub trait CurationStore: Send + Sync {
     filter: &PendingFilter,
   ) -> Result<Vec<PendingAssertion>, PersistenceError>;
 
-  /// Applies one decision atomically: the assertion's status, the canonical
-  /// flag on any measurement it backs, the curation flags it closes, and the
-  /// read-model refresh either all commit or none do.
+  /// Applies the assertion status, canonical flag, and curation-flag changes in
+  /// one transaction, then refreshes the read model after commit when needed.
+  /// A refresh error is therefore reported after the decision is already
+  /// durable; callers must not assume that an error rolled the decision back.
   async fn decide(
     &self,
     assertion_id: i64,
