@@ -75,7 +75,7 @@ jobs:
       # local one cannot diverge on the reviewed 017-018 baselines.
       - run: scripts/migrations-lint.sh
       - if: github.event_name == 'pull_request'
-        uses: oasdiff/oasdiff-action/breaking@b7c3adeb54330db1903d27c61db520e5661ad55b # v0.1.11
+        uses: oasdiff/oasdiff-action/breaking@2649ebe137aeb72a95707671204e829f86e091fc # v0.1.13
         with:
           base: origin/${{ github.base_ref }}:docs/openapi.json
           revision: HEAD:docs/openapi.json
