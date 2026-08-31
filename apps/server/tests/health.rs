@@ -227,6 +227,42 @@ async fn the_running_binary_serves_health_over_a_real_socket() -> Result<()> {
   Ok(())
 }
 
+/// The readiness route through the shipped binary, against the pool the binary
+/// actually built. `aircraft_db`'s own gates prove the probe; this proves the
+/// composition root wired that probe rather than something that always answers.
+#[tokio::test]
+async fn the_running_binary_reports_readiness_against_its_own_pool() -> Result<()> {
+  let container = database().await?;
+  let (mut server, address) = start(&container.database_url).await?;
+
+  let (status, body) = get(address, "/ready").await?;
+  assert_eq!(status, 200, "readiness must be served: {body}");
+  assert_eq!(body, r#"{"status":"ready"}"#);
+
+  server.kill().await?;
+  Ok(())
+}
+
+/// The version the binary reports is its own package version, not the API
+/// crate's. They match today, which is exactly why this asserts the value from
+/// `CARGO_PKG_VERSION` rather than a literal: the gate has to keep meaning
+/// something after the two versions diverge.
+#[tokio::test]
+async fn the_running_binary_reports_its_own_package_version() -> Result<()> {
+  let container = database().await?;
+  let (mut server, address) = start(&container.database_url).await?;
+
+  let (status, body) = get(address, "/version").await?;
+  assert_eq!(status, 200, "version must be served: {body}");
+  assert!(
+    body.contains(&format!(r#""version":"{}""#, env!("CARGO_PKG_VERSION"))),
+    "the binary must report its own version: {body}"
+  );
+
+  server.kill().await?;
+  Ok(())
+}
+
 /// The composition root mounts `aircraft_api::router()` and nothing else, so a
 /// path that crate does not declare must reach no handler. Without this, the
 /// gate above would still pass against a root that had quietly bolted on a

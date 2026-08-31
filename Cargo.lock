@@ -39,6 +39,7 @@ dependencies = [
  "aircraft_app",
  "aircraft_domain",
  "anyhow",
+ "async-trait",
  "axum",
  "chrono",
  "serde",
