@@ -248,6 +248,30 @@ db-grants ingest_role="aircraft_ingest_app":
         -v "ingest_role={{ ingest_role }}" \
         -f "/workspace/database/roles/ingest_grants.sql"
 
+# Create the restricted server login role that db-grant-app-role expects.
+# install.sql deliberately does not create roles. The password comes from
+# API_ROLE_PASSWORD in the environment, never from a recipe argument, so it
+# stays out of the process argument list. Re-running this leaves an existing
+# role and its password untouched.
+db-create-app-role app_role="aircraft_api_app":
+    docker compose exec -T -e API_ROLE_PASSWORD {{ DB_SERVICE }} \
+      psql -X -v ON_ERROR_STOP=1 \
+        -U "{{ POSTGRES_USER }}" \
+        -d "{{ POSTGRES_DB }}" \
+        -v "app_role={{ app_role }}" \
+        -f "/workspace/database/roles/create_app_role.sql"
+
+# Grant the dedicated server role. Requires an administrator connection and an
+# existing role; run db-create-app-role first. The default matches the role name
+# in .env.example.
+db-grant-app-role app_role="aircraft_api_app":
+    docker compose exec -T {{ DB_SERVICE }} \
+      psql -X -v ON_ERROR_STOP=1 \
+        -U "{{ POSTGRES_USER }}" \
+        -d "{{ POSTGRES_DB }}" \
+        -v "app_role={{ app_role }}" \
+        -f "/workspace/database/roles/app_grants.sql"
+
 db-bootstrap: db-up db-wait db-migrate db-validate
 
 # Destructive full local rebuild: reset, install/seeds, then validate.

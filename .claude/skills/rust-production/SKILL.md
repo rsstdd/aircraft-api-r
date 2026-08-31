@@ -192,7 +192,9 @@ Named so they are visible, with no rule attached — do not infer one from this 
 
 - **The HTTP runtime.** `aircraft_api` has a health route and a generated contract; request-size
   limits, timeouts, rate limits, authentication, authorization, and middleware ordering are
-  designed in `AGENTS.md` but not implemented, and `apps/server` is excluded legacy source.
+  designed in `AGENTS.md` but not implemented. `apps/server` is a working composition root that
+  boots, builds a bounded pool, and serves the health router; it is no longer excluded legacy
+  source.
   Writing the first real route means proposing those rules, not inferring them from this file.
 - **Performance method.** Nothing here says what earns a benchmark or how to measure before
   optimizing.

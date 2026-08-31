@@ -197,8 +197,9 @@ fails before counting it.
 - **A moved function is not an unchanged function.** Verifying that a refactor preserved behavior
   answers "did I break it", never "was it right". When a diff moves code that mirrors a migration
   or a validation file, re-read it against that SQL, not only against its previous self.
-- **`apps/server` is excluded legacy Actix/Diesel source and `archive/` is read-only.** Do not
-  revive either to make something compile, and do not cite an empty aircraft/search/comparison
-  scaffold as an example to imitate.
+- **`archive/` is read-only.** Do not revive it to make something compile, and do not cite an
+  empty aircraft/search/comparison scaffold as an example to imitate. `apps/server` is no longer
+  the excluded legacy Actix/Diesel source it once was: it is the working Axum composition root,
+  and its gates in `apps/server/tests/health.rs` drive the shipped binary.
 - **Private aircraft datasets, database dumps, `.env`, and production diagnostic payloads never
   enter Git, CI, fixtures, snapshots, or logs.** Small synthetic fixtures only.

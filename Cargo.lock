@@ -154,9 +154,12 @@ version = "0.1.0"
 dependencies = [
  "aircraft_api",
  "aircraft_config",
+ "aircraft_db",
  "aircraft_observability",
+ "aircraft_testsupport",
  "anyhow",
  "axum",
+ "secrecy",
  "tokio",
  "tracing",
 ]

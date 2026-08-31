@@ -17,9 +17,10 @@ idempotent replay, and run/attempt status. The canonical database contains
 the migrations under `database/migrations/`, a checksum lock, ordered seeds, and
 SQL validation. The API crate implements only an Axum health contract and
 OpenAPI generation. `apps/server`
-boots: it loads HTTP settings, initializes tracing, binds a listener, and serves
-that router, with an end-to-end socket test. It has no database pool, readiness
-route, graceful shutdown, request tracing, or perimeter limits. General
+boots: it loads HTTP and database settings, initializes tracing, builds a
+bounded database pool, binds a listener, and serves that router, with
+end-to-end socket tests. It has no readiness route, graceful shutdown, request
+tracing, or perimeter limits, and no route reads from the pool yet. General
 aircraft CRUD, search, comparison, mission scoring, authentication, and SQLx
 offline metadata are not implemented end to end.
 Canonical-value curation is implemented (`aircraft-ingest curate`), and the
@@ -229,13 +230,13 @@ server -> composes adapters and runtime infrastructure
 |---|---|---|
 | `Cargo.toml` | Workspace membership, shared dependencies, lints, profiles | Cargo resolves eleven packages |
 | `apps/ingest/` | Ingestion CLI composition root | Working deployment candidate with Docker-backed gates |
-| `apps/server/` | HTTP runtime composition | Boots and serves the health router; no pool, readiness, shutdown, or limits |
+| `apps/server/` | HTTP runtime composition | Boots, builds a verified database pool, and serves the health router; no readiness, shutdown, or limits |
 | `crates/aircraft_domain/` | Pure entities, values, units, invariants | Ingestion invariants implemented; broader domain mostly scaffolded |
 | `crates/aircraft_app/` | Use cases and ports | Ingestion orchestration implemented; broader application incomplete |
 | `crates/aircraft_api/` | Axum DTOs, routes, middleware, OpenAPI | Health route and OpenAPI contract only |
 | `crates/aircraft_db/` | SQLx repositories and schema mappings | Ingestion repository implemented; broader persistence incomplete |
 | `crates/aircraft_ingest/` | Source capture, parsing, normalization | PlanePHD adapter implemented |
-| `crates/aircraft_config/` | Typed runtime configuration | Ingestion, HTTP, and database-URL settings implemented; pool, limit, and CORS settings land with their consumers |
+| `crates/aircraft_config/` | Typed runtime configuration | Ingestion, HTTP, database-URL, and database pool settings implemented; limit and CORS settings land with their consumers |
 | `crates/aircraft_observability/` | Structured tracing and telemetry | Basic tracing setup implemented; broader telemetry partial |
 | `crates/aircraft_testsupport/` | Disposable PostgreSQL harness shared by integration tests | Dev-only; referenced solely from `[dev-dependencies]` |
 | `crates/aircraft_testsupport/` | Disposable PostgreSQL test harness | Active test-only support crate |
@@ -270,7 +271,7 @@ when a requested vertical slice needs them.
 | Migration dependencies and limitations | `database/implementation_notes.md` | Guidance reconciled with DDL and installer |
 | Database lifecycle | `database/README.md`, `database/local_setup_and_testing.md` | Documented SQL-first workflow |
 | Runtime configuration | `.env.example`, `crates/aircraft_config/` | Parsed types and environment mapping; never commit `.env` |
-| Integration-test patterns | `apps/ingest/tests/`, `crates/aircraft_db/tests/`, `crates/aircraft_testsupport/` | Disposable PostgreSQL harness and behavioral gates |
+| Integration-test patterns | `apps/ingest/tests/`, `apps/server/tests/`, `crates/aircraft_db/tests/`, `crates/aircraft_testsupport/` | Disposable PostgreSQL harness and behavioral gates |
 | Historical implementation | `archive/` | Reference only |
 
 ## Commands
@@ -342,12 +343,12 @@ database-backed test against shared or production data.
 | SQLx repository | Disposable-PostgreSQL tests using canonical migrations; commit, rollback, concurrency, idempotency, history |
 | Migration or seed | Install into a clean disposable database, run all relevant SQL validation, verify ordering and ledger |
 | API route or DTO | Router tests for request/response/status/limits and `just generate-docs --check` |
-| Server composition | Targeted build plus running end-to-end health/shutdown exercise once the server is bootable |
+| Server composition | Targeted build plus the `apps/server/tests/` gates, which drive the shipped binary against a disposable PostgreSQL |
 | Configuration or secrets | Precedence, invalid values, secret redaction, and boundary-value tests |
 | Security boundary | Oversized input, malformed data, path/diagnostic redaction, SQL injection resistance, permissions |
 
-Integration tests under `apps/ingest/tests/` and `crates/aircraft_db/tests/`
-start disposable `postgres:16-alpine` containers. Report Docker or missing-tool
+Integration tests under `apps/ingest/tests/`, `apps/server/tests/`, and
+`crates/aircraft_db/tests/` start disposable `postgres:16-alpine` containers. Report Docker or missing-tool
 failures as environment limitations, not successes.
 
 A green test run is not verification on its own. Confirm a new test can fail:
