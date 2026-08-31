@@ -24,6 +24,9 @@ config = { workspace = true}
 # Secret Hygiene & Zeroization Protection
 secrecy = { workspace = true, features = ["serde"] }
 
+# Connection-String Parsing
+url.workspace = true
+
 [dev-dependencies]
-# For asserting correct parsing cascades across mock environment spaces
-serial_test.workspace = true
+# Hermetic override-file directories for the source-precedence tests
+tempfile.workspace = true

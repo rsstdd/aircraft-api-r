@@ -17,8 +17,10 @@ async fn main() -> Result<()> {
   let address = settings.bind_address();
   let listener = TcpListener::bind(&address).await.with_context(|| format!("binding {address}"))?;
 
-  // The bound address is logged rather than the configured one: binding port 0
-  // is legitimate, and only the listener knows what the OS assigned.
+  // The bound address is read back from the listener rather than reused from
+  // configuration, so the log names what is actually being served: a host that
+  // resolves through DNS reaches the socket under an address the settings never
+  // spelled out.
   let bound = listener.local_addr().context("reading the bound address")?;
   tracing::info!(address = %bound, "aircraft-server listening");
 

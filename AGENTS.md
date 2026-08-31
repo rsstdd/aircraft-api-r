@@ -235,7 +235,7 @@ server -> composes adapters and runtime infrastructure
 | `crates/aircraft_api/` | Axum DTOs, routes, middleware, OpenAPI | Health route and OpenAPI contract only |
 | `crates/aircraft_db/` | SQLx repositories and schema mappings | Ingestion repository implemented; broader persistence incomplete |
 | `crates/aircraft_ingest/` | Source capture, parsing, normalization | PlanePHD adapter implemented |
-| `crates/aircraft_config/` | Typed runtime configuration | Ingestion settings implemented; other configuration remains partial |
+| `crates/aircraft_config/` | Typed runtime configuration | Ingestion, HTTP, and database-URL settings implemented; pool, limit, and CORS settings land with their consumers |
 | `crates/aircraft_observability/` | Structured tracing and telemetry | Basic tracing setup implemented; broader telemetry partial |
 | `crates/aircraft_testsupport/` | Disposable PostgreSQL harness shared by integration tests | Dev-only; referenced solely from `[dev-dependencies]` |
 | `crates/aircraft_testsupport/` | Disposable PostgreSQL test harness | Active test-only support crate |

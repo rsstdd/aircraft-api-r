@@ -9,10 +9,12 @@
 //! from configuration, serves the router over TCP, and fails a bind with a
 //! non-zero status instead of panicking.
 //!
-//! The port is read back from the startup log rather than chosen in advance.
-//! Picking a free port and then spawning races anything else on the machine
-//! that binds in between; asking for port 0 and letting the process report what
-//! the OS gave it cannot race.
+//! The port is probed rather than fixed, and then read back from the startup
+//! log. A hard-coded port collides with whatever else the machine is running,
+//! and `APP__HTTP__PORT=0` is not available either: configuration rejects it,
+//! because an OS-assigned port leaves nothing able to reach a deployed process.
+//! Probing binds a port and releases it, which leaves a window for another
+//! process to take it, so [`start`] retries a lost port instead of failing.
 
 use std::{net::SocketAddr, process::Stdio, time::Duration};
 
@@ -27,6 +29,13 @@ use tokio::{
 /// How long the binary gets to report its bound address, or to exit.
 const STARTUP: Duration = Duration::from_secs(20);
 const NETWORK_IO_TIMEOUT: Duration = Duration::from_secs(20);
+
+/// How many probed ports may be lost to another process before `start` gives up.
+///
+/// Losing the probe-to-spawn race is rare and independent per attempt, so a
+/// small bound already makes a spurious failure negligible; losing it eight
+/// times running is a machine problem worth reporting rather than absorbing.
+const BIND_ATTEMPTS: usize = 8;
 
 /// Builds a command for the shipped binary with a clean configuration
 /// environment, so an `APP__` variable in the developer's shell cannot decide
@@ -72,29 +81,52 @@ fn strip_ansi(line: &str) -> String {
   plain
 }
 
-/// Starts the binary on an OS-assigned port and returns it with the address it
+/// Reserves a free port and releases it, so the spawned binary has a concrete
+/// port to ask for.
+async fn probe_port() -> Result<u16> {
+  let probe = TcpListener::bind("127.0.0.1:0").await.context("probing for a free port")?;
+  let port = probe.local_addr().context("reading the probed port")?.port();
+  drop(probe);
+  Ok(port)
+}
+
+/// Starts the binary on a probed port and returns it with the address it
 /// reported listening on.
+///
+/// A port lost between the probe and the spawn shows up as the binary exiting
+/// with its own bind diagnostic on the first stderr line, and only that is
+/// retried. Any other first line is a real startup failure and is returned
+/// immediately, so a broken binary fails once instead of once per attempt.
 async fn start() -> Result<(Child, SocketAddr)> {
-  let mut child = server_command("0").spawn().context("spawning aircraft-server")?;
-  let stderr = child.stderr.take().ok_or_else(|| anyhow!("no stderr pipe"))?;
-  let mut lines = BufReader::new(stderr).lines();
+  let mut lost = Vec::new();
 
-  let line = timeout(STARTUP, lines.next_line())
-    .await
-    .context("aircraft-server did not log a listening address in time")?
-    .context("reading aircraft-server stderr")?
-    .ok_or_else(|| anyhow!("aircraft-server exited before logging an address"))?;
+  for _ in 0..BIND_ATTEMPTS {
+    let port = probe_port().await?;
+    let mut child =
+      server_command(&port.to_string()).spawn().context("spawning aircraft-server")?;
+    let stderr = child.stderr.take().ok_or_else(|| anyhow!("no stderr pipe"))?;
+    let mut lines = BufReader::new(stderr).lines();
 
-  let plain = strip_ansi(&line);
-  let address = plain
-    .rsplit_once("address=")
-    .ok_or_else(|| anyhow!("no bound address in startup log: {line:?}"))?
-    .1
-    .trim()
-    .parse()
-    .context("parsing the logged address")?;
+    let line = timeout(STARTUP, lines.next_line())
+      .await
+      .context("aircraft-server did not log a listening address in time")?
+      .context("reading aircraft-server stderr")?
+      .ok_or_else(|| anyhow!("aircraft-server exited before logging an address"))?;
 
-  Ok((child, address))
+    let plain = strip_ansi(&line);
+    if let Some((_, reported)) = plain.rsplit_once("address=") {
+      let address = reported.trim().parse().context("parsing the logged address")?;
+      return Ok((child, address));
+    }
+
+    if !plain.contains(&format!("binding 127.0.0.1:{port}")) {
+      return Err(anyhow!("aircraft-server failed to start: {plain}"));
+    }
+    child.wait().await.context("reaping a server that lost its port")?;
+    lost.push(port);
+  }
+
+  Err(anyhow!("every probed port was taken before aircraft-server could bind it: {lost:?}"))
 }
 
 /// Issues one HTTP/1.1 request and returns the status code and body.
@@ -187,5 +219,24 @@ async fn a_port_already_in_use_exits_non_zero_with_a_safe_diagnostic() -> Result
     "the diagnostic must name the address it could not bind: {stderr}"
   );
   assert!(!stderr.contains("panicked"), "a bind failure must not panic: {stderr}");
+  Ok(())
+}
+
+/// Criterion 3 at the deployment boundary. The unit test in `aircraft_config`
+/// proves the rejection; this proves nothing downstream re-accepts it, and that
+/// the binary treats it as ordinary misconfiguration rather than a crash.
+#[tokio::test]
+async fn an_os_assigned_port_request_is_refused_before_binding() -> Result<()> {
+  let child = server_command("0").spawn().context("spawning aircraft-server")?;
+  let output = timeout(STARTUP, child.wait_with_output())
+    .await
+    .context("aircraft-server did not exit after rejecting port zero")?
+    .context("collecting aircraft-server output")?;
+
+  assert!(!output.status.success(), "port zero must not start a server: {:?}", output.status);
+
+  let stderr = String::from_utf8(output.stderr).context("aircraft-server stderr is not UTF-8")?;
+  assert!(stderr.contains("http.port"), "the diagnostic must name the setting path: {stderr}");
+  assert!(!stderr.contains("panicked"), "a rejected setting must not panic: {stderr}");
   Ok(())
 }
