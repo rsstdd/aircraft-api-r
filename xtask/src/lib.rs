@@ -1,6 +1,7 @@
 #![allow(clippy::print_stdout)]
 
 pub mod boundaries;
+pub mod deny_pins;
 pub mod migrations;
 pub mod snapshots;
 

@@ -19,12 +19,21 @@ enum Commands {
   InstallDeps(InstallDepsArgs),
   /// Check dependency advisories, licenses, bans, and sources
   Deny,
+  /// Reconcile the `deny.toml` build-script allowlist with the lockfile
+  DenyPins(DenyPinsArgs),
   /// Verify immutable migration history and database integration contracts
   Migrations,
   /// Compile API contracts and write an API schema document
   GenerateDocs(GenerateDocsArgs),
   /// Check ingestion output against the committed golden snapshots
   Snapshots(SnapshotArgs),
+}
+
+#[derive(Debug, Args)]
+struct DenyPinsArgs {
+  /// Rewrite the allowlist instead of only reporting the drift
+  #[arg(long)]
+  fix: bool,
 }
 
 #[derive(Debug, Args)]
@@ -71,6 +80,9 @@ fn main() -> anyhow::Result<()> {
       xtask::install_deps(&runner, InstallDepsOptions { check_only: args.check })
     }
     Commands::Deny => xtask::deny(&runner, &workspace_root),
+    Commands::DenyPins(args) => {
+      xtask::deny_pins::check(&workspace_root, &xtask::deny_pins::Options { fix: args.fix })
+    }
     Commands::Migrations => xtask::migrations::check(&workspace_root),
     Commands::GenerateDocs(args) => xtask::generate_docs(
       &workspace_root,
