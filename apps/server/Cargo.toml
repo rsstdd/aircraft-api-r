@@ -20,9 +20,16 @@ workspace = true
 [dependencies]
 aircraft_api.workspace = true
 aircraft_config.workspace = true
+aircraft_db.workspace = true
 aircraft_observability.workspace = true
 
 anyhow.workspace = true
 axum.workspace = true
+secrecy.workspace = true
 tokio.workspace = true
 tracing.workspace = true
+
+[dev-dependencies]
+# The composition root now builds a pool, so the gates that drive the shipped
+# binary need a disposable PostgreSQL to point it at.
+aircraft_testsupport.workspace = true

@@ -10,6 +10,7 @@
 
 use std::{
   error::Error,
+  io::Write as _,
   process::{Command, Stdio},
   time::Duration,
 };
@@ -203,6 +204,75 @@ pub async fn install_schema(pool: &PgPool) -> TestResult {
     raw_sql(sql).execute(pool).await.map_err(|error| {
       std::io::Error::other(format!("schema step {} failed: {error:?}", index + 1))
     })?;
+  }
+  Ok(())
+}
+
+/// Runs a psql script inside the container, for SQL that `SQLx` cannot execute.
+///
+/// The role files under `database/roles/` are psql programs -- `\if`, `\getenv`,
+/// `\gexec` -- so a test that wants to assert what the *shipped* provisioning
+/// does has to run them the way an administrator does. The script arrives on
+/// stdin rather than through a bind mount, so the caller embeds the shipped file
+/// with `include_str!` and cannot drift from it.
+///
+/// `variables` become `-v name=value` psql variables. `environment` is passed by
+/// **name only** to `docker exec`, with the value set on this process, so a
+/// password reaches the container without ever entering an argument list -- the
+/// rule `database/roles/create_app_role.sql` states for its own invocation.
+///
+/// # Errors
+///
+/// Returns an error if `docker exec` cannot be started, the script cannot be
+/// written, or psql exits non-zero. `ON_ERROR_STOP` is set, so any failing
+/// statement fails the call.
+pub fn run_psql(
+  container: &DockerPostgres,
+  sql: &str,
+  variables: &[(&str, &str)],
+  environment: &[(&str, &str)],
+) -> TestResult {
+  let mut command = Command::new("docker");
+  command.args(["exec", "--interactive"]);
+  for (name, value) in environment {
+    command.args(["--env", name]).env(name, value);
+  }
+  command.arg(&container.container_id).args([
+    "psql",
+    "-X",
+    "-v",
+    "ON_ERROR_STOP=1",
+    "-U",
+    "postgres",
+    "-d",
+    "postgres",
+  ]);
+  for (name, value) in variables {
+    command.arg("-v").arg(format!("{name}={value}"));
+  }
+  let mut child = command
+    .arg("-f")
+    .arg("-")
+    .stdin(Stdio::piped())
+    .stdout(Stdio::piped())
+    .stderr(Stdio::piped())
+    .spawn()?;
+
+  child
+    .stdin
+    .take()
+    .ok_or_else(|| std::io::Error::other("docker exec provided no stdin"))?
+    .write_all(sql.as_bytes())?;
+
+  let output = child.wait_with_output()?;
+  if !output.status.success() {
+    return Err(
+      std::io::Error::other(format!(
+        "psql failed: {}",
+        String::from_utf8_lossy(&output.stderr).trim()
+      ))
+      .into(),
+    );
   }
   Ok(())
 }
