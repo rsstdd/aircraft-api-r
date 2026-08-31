@@ -183,7 +183,10 @@ aircraft-api-r/
 ```
 
 `archive/` contains restructure snapshots and retired template-derived code. It
-is reference material and is not part of the active implementation.
+is reference material and is not part of the active implementation. Its
+manifests are kept as `Cargo.toml.retired`, matching the existing
+`Cargo.toml.before` and `Cargo.toml.proposed` snapshots, so that the retired
+dependencies they record are not read as requirements of this workspace.
 
 ## Development environment
 

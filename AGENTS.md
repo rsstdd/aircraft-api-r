@@ -73,6 +73,9 @@ real. Proposed decisions do not authorize scope.
   that merely restate names or signatures.
 - Fix the cause. If a workaround is unavoidable, state why and how it is bounded.
 - Do not restore dependencies from `archive/` merely to compile legacy code.
+  Its manifests are stored as `Cargo.toml.retired` so that neither Cargo nor a
+  dependency scanner reads retired third-party requirements as this project's.
+  Do not rename them back.
 - Do not claim a command or check passed unless it ran successfully. Report the
   exact failure and distinguish existing scaffold limitations from regressions.
 
@@ -246,7 +249,7 @@ server -> composes adapters and runtime infrastructure
 | `database/snapshots/` | Snapshot queries and committed golden output | Active; driven by `cargo xtask snapshots` |
 | `tests/fixtures/` | Source fixtures for Rust tests | Two synthetic PlanePHD fixtures: minimal and edge cases |
 | `xtask/` | Typed repository automation | Tooling, boundary checks, migration policy, docs, dependency policy, and snapshot gate implemented |
-| `archive/` | Restructure snapshots and retired templates | Read-only reference; do not compile or extend |
+| `archive/` | Restructure snapshots and retired templates | Read-only reference; do not compile or extend; manifests are suffixed `.retired` |
 
 Absent target modules are planned, not automatically missing work. Add them only
 when a requested vertical slice needs them.
