@@ -40,6 +40,60 @@
           }
         }
       }
+    },
+    "/ready": {
+      "get": {
+        "tags": [
+          "health"
+        ],
+        "summary": "Check readiness to serve database-backed traffic",
+        "description": "Report whether the database is reachable and answering statements.",
+        "operationId": "ready",
+        "responses": {
+          "200": {
+            "description": "The database answered",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ReadyResponse"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "The database could not be reached within the probe deadline",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemDetails"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/version": {
+      "get": {
+        "tags": [
+          "health"
+        ],
+        "summary": "Report the running build",
+        "description": "Report the package version and, when it was stamped in at build time, the commit.",
+        "operationId": "version",
+        "responses": {
+          "200": {
+            "description": "The running build",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/VersionResponse"
+                }
+              }
+            }
+          }
+        }
+      }
     }
   },
   "components": {
@@ -51,6 +105,65 @@
         ],
         "properties": {
           "status": {
+            "type": "string"
+          }
+        }
+      },
+      "ProblemDetails": {
+        "type": "object",
+        "required": [
+          "type",
+          "title",
+          "status",
+          "detail",
+          "instance"
+        ],
+        "properties": {
+          "detail": {
+            "type": "string"
+          },
+          "instance": {
+            "type": "string"
+          },
+          "status": {
+            "type": "integer",
+            "format": "int32",
+            "minimum": 0
+          },
+          "title": {
+            "type": "string"
+          },
+          "type": {
+            "type": "string",
+            "description": "A URI reference identifying the problem type. Relative by design: it\nresolves against the request URL, so no environment has to agree on a\nhostname for the link to be correct."
+          }
+        }
+      },
+      "ReadyResponse": {
+        "type": "object",
+        "required": [
+          "status"
+        ],
+        "properties": {
+          "status": {
+            "type": "string"
+          }
+        }
+      },
+      "VersionResponse": {
+        "type": "object",
+        "required": [
+          "version"
+        ],
+        "properties": {
+          "build_commit": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Absent rather than null when the binary was built without a commit\nstamped in, so a deployment that cannot report one is distinguishable\nfrom one reporting an empty value."
+          },
+          "version": {
             "type": "string"
           }
         }

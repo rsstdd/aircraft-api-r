@@ -15,12 +15,14 @@ PlanePHD ingestion CLI implements file/stdin capture, bounded preflight,
 normalization, transactional SQLx persistence, provenance, curation flags,
 idempotent replay, and run/attempt status. The canonical database contains
 the migrations under `database/migrations/`, a checksum lock, ordered seeds, and
-SQL validation. The API crate implements only an Axum health contract and
-OpenAPI generation. `apps/server`
+SQL validation. The API crate implements Axum health, readiness, and version
+contracts with OpenAPI generation. `apps/server`
 boots: it loads HTTP and database settings, initializes tracing, builds a
 bounded database pool, binds a listener, and serves that router, with
-end-to-end socket tests. It has no readiness route, graceful shutdown, request
-tracing, or perimeter limits, and no route reads from the pool yet. General
+end-to-end socket tests. `/ready` reads from the pool through an application
+port under a fixed 250 ms deadline, and reports failure as an RFC 9457 problem
+document that carries no diagnostic. There is no graceful shutdown, request
+tracing, or perimeter limits. General
 aircraft CRUD, search, comparison, mission scoring, authentication, and SQLx
 offline metadata are not implemented end to end.
 Canonical-value curation is implemented (`aircraft-ingest curate`), and the
@@ -233,10 +235,10 @@ server -> composes adapters and runtime infrastructure
 |---|---|---|
 | `Cargo.toml` | Workspace membership, shared dependencies, lints, profiles | Cargo resolves eleven packages |
 | `apps/ingest/` | Ingestion CLI composition root | Working deployment candidate with Docker-backed gates |
-| `apps/server/` | HTTP runtime composition | Boots, builds a verified database pool, and serves the health router; no readiness, shutdown, or limits |
+| `apps/server/` | HTTP runtime composition | Boots, builds a verified database pool, and serves health, readiness, and version; no shutdown or limits |
 | `crates/aircraft_domain/` | Pure entities, values, units, invariants | Ingestion invariants implemented; broader domain mostly scaffolded |
 | `crates/aircraft_app/` | Use cases and ports | Ingestion orchestration implemented; broader application incomplete |
-| `crates/aircraft_api/` | Axum DTOs, routes, middleware, OpenAPI | Health route and OpenAPI contract only |
+| `crates/aircraft_api/` | Axum DTOs, routes, middleware, OpenAPI | Health, readiness, and version routes, RFC 9457 problem documents, and the OpenAPI contract |
 | `crates/aircraft_db/` | SQLx repositories and schema mappings | Ingestion repository implemented; broader persistence incomplete |
 | `crates/aircraft_ingest/` | Source capture, parsing, normalization | PlanePHD adapter implemented |
 | `crates/aircraft_config/` | Typed runtime configuration | Ingestion, HTTP, database-URL, and database pool settings implemented; limit and CORS settings land with their consumers |

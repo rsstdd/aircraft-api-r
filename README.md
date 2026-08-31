@@ -14,9 +14,9 @@ simply because they were parsed successfully.
 > This repository is an incomplete restructuring branch, not a production
 > server. The PlanePHD ingestion vertical slice, the ordered database schema,
 > and several repository automation commands are implemented. The Axum API
-> currently contains only a health contract. `apps/server` boots and serves that
-> contract over HTTP and builds a verified database pool, but has no readiness
-> route, graceful shutdown, or perimeter limits. Search, comparison, and authentication are not
+> currently contains health, readiness, and version contracts. `apps/server`
+> boots and serves them over HTTP and builds a verified database pool, but has
+> no graceful shutdown or perimeter limits. Search, comparison, and authentication are not
 > implemented end to end. The Rust ingestion path
 > passed all six deployment gates, including the SQL-versus-Rust parity run that
 > justified retiring the legacy loader; that gate is now a golden-snapshot
@@ -46,8 +46,8 @@ simply because they were parsed successfully.
 | Ingestion semantics | Immutable input capture, SHA-256 identity, bounded streaming, preflight validation, transactional promotion, audit history, and idempotent replay are implemented |
 | Persistence | SQLx ingestion repository implemented; the broader repository surface remains incomplete |
 | Domain and application | Ingestion rules and orchestration are implemented; most general aircraft, mission, search, and comparison behavior remains scaffolded |
-| HTTP API | Axum health route and generated OpenAPI contract only; no product routes, readiness route, or perimeter limits |
-| Server | Runnable Axum server in the workspace; it serves health and builds a verified, bounded database pool, but has no graceful shutdown and no route reads from the pool |
+| HTTP API | Axum health, readiness, and version routes with a generated OpenAPI contract; no product routes or perimeter limits |
+| Server | Runnable Axum server in the workspace; it serves health, readiness, and version, and builds a verified, bounded database pool, but has no graceful shutdown |
 | Repository automation | Boundaries, migration policy, OpenAPI compatibility, dependency review, supply-chain policy, workflow linting, secret scanning, CodeQL, and ingestion golden snapshots are enforced locally or in CI |
 | Tests | Meaningful unit, application, property, repository, and disposable-PostgreSQL ingestion tests. The three placeholder files under `tests/` were deleted; that directory now holds only fixtures |
 | Production readiness | Not ready; target-environment gates remain, and the authenticated HTTP product is incomplete |
@@ -116,8 +116,10 @@ The layer responsibilities are:
 - `aircraft_observability`: structured tracing initialization.
 - `apps/server`: the runtime composition root. Loads settings, initializes
   tracing, builds the database pool, binds a listener, and serves
-  `aircraft_api::router()`. The pool is held for the lifetime of the process;
-  no route reads from it yet.
+  `aircraft_api::router()`. The pool is held for the lifetime of the process by
+  the readiness probe in the router state. `/version` reports this crate's
+  package version, plus the commit when `BUILD_COMMIT` was set at build time;
+  a source build without it reports the version alone.
 
 HTTP DTOs, application inputs, domain values, and database rows are separate
 representations. Boundary conversions should remain explicit as the system is
@@ -160,9 +162,9 @@ contracts.
 aircraft-api-r/
 ├── apps/
 │   ├── ingest/                 # Working ingestion CLI composition root
-│   └── server/                 # Excluded legacy source; target server root
+│   └── server/                 # HTTP runtime composition root
 ├── crates/
-│   ├── aircraft_api/           # Minimal Axum health/OpenAPI contract
+│   ├── aircraft_api/           # Axum health/readiness/version and OpenAPI
 │   ├── aircraft_app/           # Use cases and ports; ingestion is implemented
 │   ├── aircraft_config/        # Typed configuration
 │   ├── aircraft_db/            # SQLx persistence; ingestion is implemented
@@ -459,8 +461,8 @@ evidence.
   detailed local lifecycle and migration-ledger behavior
 - [Rust ingestion adapter](docs/architecture/rust_ingestion_adapter.md) — source
   contract, transaction semantics, configuration, and deployment gates
-- [Generated OpenAPI document](docs/openapi.json) — current minimal health
-  contract, not evidence of a runnable server
+- [Generated OpenAPI document](docs/openapi.json) — current health, readiness,
+  and version contracts, not evidence of a complete product API
 
 ## License status
 
