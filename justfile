@@ -263,7 +263,8 @@ db-create-app-role app_role="aircraft_api_app":
 
 # Grant the dedicated server role. Requires an administrator connection and an
 # existing role; run db-create-app-role first. The default matches the role name
-# in .env.example.
+# in .env.example. This also revokes the database's default TEMPORARY grant from
+# PUBLIC, which reaches every non-superuser on that database, not just app_role.
 db-grant-app-role app_role="aircraft_api_app":
     docker compose exec -T {{ DB_SERVICE }} \
       psql -X -v ON_ERROR_STOP=1 \
