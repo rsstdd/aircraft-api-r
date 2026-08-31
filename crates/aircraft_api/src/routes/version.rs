@@ -11,6 +11,10 @@ pub struct VersionResponse {
   /// stamped in, so a deployment that cannot report one is distinguishable
   /// from one reporting an empty value.
   #[serde(skip_serializing_if = "Option::is_none")]
+  // `utoipa` renders any `Option<T>` as a nullable union without reading
+  // `skip_serializing_if`, so without this the published contract would offer a
+  // `null` this endpoint never emits.
+  #[schema(nullable = false)]
   pub build_commit: Option<&'static str>,
 }
 

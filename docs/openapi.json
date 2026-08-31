@@ -157,10 +157,7 @@
         ],
         "properties": {
           "build_commit": {
-            "type": [
-              "string",
-              "null"
-            ],
+            "type": "string",
             "description": "Absent rather than null when the binary was built without a commit\nstamped in, so a deployment that cannot report one is distinguishable\nfrom one reporting an empty value."
           },
           "version": {

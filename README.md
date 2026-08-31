@@ -116,10 +116,10 @@ The layer responsibilities are:
 - `aircraft_observability`: structured tracing initialization.
 - `apps/server`: the runtime composition root. Loads settings, initializes
   tracing, builds the database pool, binds a listener, and serves
-  `aircraft_api::router()`. The pool is held for the lifetime of the process by
-  the readiness probe in the router state. `/version` reports this crate's
-  package version, plus the commit when `BUILD_COMMIT` was set at build time;
-  a source build without it reports the version alone.
+  `aircraft_api::router(state)`. The pool is held for the lifetime of the
+  process by the readiness probe in the router state. `/version` reports this
+  crate's package version, plus the commit when `BUILD_COMMIT` was set at build
+  time; a source build without it reports the version alone.
 
 HTTP DTOs, application inputs, domain values, and database rows are separate
 representations. Boundary conversions should remain explicit as the system is
