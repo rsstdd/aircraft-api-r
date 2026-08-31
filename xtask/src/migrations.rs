@@ -168,13 +168,31 @@ fn check_lock(
     }
     let bytes = fs::read(&migration.path)
       .with_context(|| format!("failed to read {}", path_label(&migration.path)))?;
-    let actual = format!("{:x}", Sha256::digest(bytes));
+    let actual = hex_digest(&Sha256::digest(bytes));
     if actual != *expected {
       violations
         .push(format!("{} checksum changed: expected {expected}, found {actual}", migration.file));
     }
   }
   Ok(())
+}
+
+/// Renders a digest as lowercase hex, the form `database/migrations.lock.json`
+/// stores.
+///
+/// Written out rather than formatted with `{:x}` because `sha2` 0.11 returns a
+/// `hybrid_array::Array`, which implements no `LowerHex`. `aircraft_ingest`'s
+/// `hex_digest` is the same six lines for the same reason; xtask cannot share
+/// it, since that helper is crate-private and this crate is repository tooling
+/// rather than a consumer of the ingestion library.
+fn hex_digest(bytes: &[u8]) -> String {
+  const HEX: &[u8; 16] = b"0123456789abcdef";
+  let mut output = String::with_capacity(bytes.len() * 2);
+  for byte in bytes {
+    output.push(char::from(HEX[usize::from(byte >> 4)]));
+    output.push(char::from(HEX[usize::from(byte & 0x0f)]));
+  }
+  output
 }
 
 fn check_transactions(migrations: &[Migration], violations: &mut Vec<String>) -> Result<()> {
