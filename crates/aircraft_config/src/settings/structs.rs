@@ -14,6 +14,13 @@ pub struct Settings {
 pub struct HttpSettings {
   pub host: String,
   pub port: u16,
+  /// How long shutdown waits for in-flight requests before cancelling them.
+  ///
+  /// Zero is accepted and means "cancel immediately". It is a coherent
+  /// operational choice, and rejecting it here while `aircraft_server::serve`
+  /// accepts a zero [`std::time::Duration`] would put two different contracts
+  /// on one value.
+  pub shutdown_grace_seconds: u64,
 }
 
 /// The `PostgreSQL` connection and pool bounds the server's runtime role uses.
@@ -66,6 +73,10 @@ impl Settings {
     let settings: Self = base_config(directory, environment)
       .set_default("http.host", "127.0.0.1")?
       .set_default("http.port", 8080_u16)?
+      // Thirty seconds sits inside the termination grace period a container
+      // orchestrator allows by default, so a rollout finishes draining before
+      // the platform escalates to SIGKILL and takes the choice away.
+      .set_default("http.shutdown_grace_seconds", 30_u64)?
       .build()?
       .try_deserialize()?;
 
@@ -397,6 +408,26 @@ mod tests {
       assert!(
         error.to_string().contains("http.host"),
         "the failure must name its setting path for host {host:?}: {error}"
+      );
+    }
+  }
+
+  /// Acceptance criterion 4 of the graceful-shutdown story: the default is 30
+  /// seconds and the value stays configurable. Zero is asserted as *accepted*
+  /// rather than rejected, because the drain window is the one HTTP bound here
+  /// whose zero is a decision rather than a mistake.
+  #[test]
+  fn the_drain_window_defaults_to_thirty_seconds_and_stays_configurable() {
+    let default = load_http(&[]).expect("HTTP settings must load without any environment");
+    assert_eq!(default.http.shutdown_grace_seconds, 30);
+
+    for (configured, expected) in [("0", 0_u64), ("5", 5), ("120", 120)] {
+      let settings = load_http(&[("APP__HTTP__SHUTDOWN_GRACE_SECONDS", configured)])
+        .expect("a drain window must load from the environment");
+
+      assert_eq!(
+        settings.http.shutdown_grace_seconds, expected,
+        "the configured window {configured} did not reach the settings"
       );
     }
   }

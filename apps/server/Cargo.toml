@@ -33,3 +33,10 @@ tracing.workspace = true
 # The composition root now builds a pool, so the gates that drive the shipped
 # binary need a disposable PostgreSQL to point it at.
 aircraft_testsupport.workspace = true
+
+# The drain gates call `serve` in process, so they implement the readiness port
+# with a probe they control rather than starting a container, and read back the
+# warning the expired window emits.
+aircraft_app.workspace = true
+async-trait.workspace = true
+tracing-subscriber.workspace = true

@@ -158,6 +158,11 @@ async fn start(database_url: &str) -> Result<(Child, SocketAddr)> {
       let plain = strip_ansi(&line);
       if let Some((_, reported)) = plain.rsplit_once("address=") {
         let address = reported.trim().parse().context("parsing the logged address")?;
+        // The reader is kept alive and drained for the rest of the child's
+        // life. Dropping it here would close the read end of the pipe, and a
+        // server that logs anything afterwards -- everything a shutdown emits
+        // -- would be writing to a broken pipe.
+        tokio::spawn(async move { while let Ok(Some(_)) = lines.next_line().await {} });
         return Ok((child, address));
       }
       if plain.contains(&format!("binding 127.0.0.1:{port}")) {
@@ -413,5 +418,40 @@ async fn an_unreachable_database_is_reported_before_the_port_is_taken() -> Resul
     "the bind must not be attempted before the pool: {stderr}"
   );
   assert!(stderr.contains("database"), "the database failure must be the one reported: {stderr}");
+  Ok(())
+}
+
+/// The only gate that proves `main` asked for the signal at all. Every drain
+/// test in `apps/server/tests/shutdown.rs` hands `serve` its own shutdown
+/// future, so all of them would still pass against a binary that installed no
+/// handler and died on the default disposition.
+///
+/// The health check before the signal is load-bearing: without it, a zero exit
+/// could be a process that had already finished starting and stopped on its
+/// own.
+#[tokio::test]
+async fn sigterm_shuts_the_binary_down_and_exits_zero() -> Result<()> {
+  let container = database().await?;
+  let (mut server, address) = start(&container.database_url).await?;
+
+  let (status, body) = get(address, "/health").await?;
+  assert_eq!(status, 200, "the server must be serving before it is signalled: {body}");
+
+  let pid = server.id().ok_or_else(|| anyhow!("the running server reported no process id"))?;
+  // Discrete checked arguments, never a shell string: the only value here is a
+  // process id this test just read back from the child it spawned.
+  let signalled = Command::new("kill")
+    .arg("-TERM")
+    .arg(pid.to_string())
+    .status()
+    .await
+    .context("sending SIGTERM to aircraft-server")?;
+  assert!(signalled.success(), "kill -TERM did not succeed: {signalled:?}");
+
+  let exit = timeout(STARTUP, server.wait())
+    .await
+    .context("aircraft-server did not exit after SIGTERM")?
+    .context("reaping aircraft-server")?;
+  assert!(exit.success(), "a graceful shutdown must exit zero: {exit:?}");
   Ok(())
 }
