@@ -15,11 +15,11 @@ simply because they were parsed successfully.
 > server. The PlanePHD ingestion vertical slice, the ordered database schema,
 > and several repository automation commands are implemented. The Axum API
 > currently contains health, readiness, and version contracts. `apps/server`
-> boots and serves them over HTTP and builds a verified database pool, but has
-> no graceful shutdown or perimeter limits. Search, comparison, and authentication are not
-> implemented end to end. The Rust ingestion path
-> passed all six deployment gates, including the SQL-versus-Rust parity run that
-> justified retiring the legacy loader; that gate is now a golden-snapshot
+> boots and serves them over HTTP, builds a verified database pool, and drains
+> in-flight requests on SIGINT or SIGTERM, but has no perimeter limits.
+> Search, comparison, and authentication are not implemented end to end. The
+> Rust ingestion path passed all six deployment gates, including the
+> SQL-versus-Rust parity run that justified retiring the legacy loader; that gate is now a golden-snapshot
 > regression check. Run them with `just test` and `just snapshots`. Ingested measurements stay pending until a
 > curator accepts them with `just curate-accept`.
 
@@ -47,7 +47,7 @@ simply because they were parsed successfully.
 | Persistence | SQLx ingestion repository implemented; the broader repository surface remains incomplete |
 | Domain and application | Ingestion rules and orchestration are implemented; most general aircraft, mission, search, and comparison behavior remains scaffolded |
 | HTTP API | Axum health, readiness, and version routes with a generated OpenAPI contract; no product routes or perimeter limits |
-| Server | Runnable Axum server in the workspace; it serves health, readiness, and version, and builds a verified, bounded database pool, but has no graceful shutdown |
+| Server | Runnable Axum server in the workspace; it serves health, readiness, and version, builds a verified, bounded database pool, and drains in-flight requests on SIGINT or SIGTERM, but has no perimeter limits |
 | Repository automation | Boundaries, migration policy, OpenAPI compatibility, dependency review, supply-chain policy, workflow linting, secret scanning, CodeQL, and ingestion golden snapshots are enforced locally or in CI |
 | Tests | Meaningful unit, application, property, repository, and disposable-PostgreSQL ingestion tests. The three placeholder files under `tests/` were deleted; that directory now holds only fixtures |
 | Production readiness | Not ready; target-environment gates remain, and the authenticated HTTP product is incomplete |
@@ -304,6 +304,7 @@ Server settings:
 |---|---|
 | `APP__HTTP__HOST` | Bind host; defaults to `127.0.0.1`, and must not be blank |
 | `APP__HTTP__PORT` | Bind port; defaults to `8080`, and must be 1-65535. Zero is rejected: it asks the OS for an arbitrary port, which no client could be told to reach |
+| `APP__HTTP__SHUTDOWN_GRACE_SECONDS` | How long shutdown waits for in-flight requests before cancelling them; defaults to `30`. Zero is accepted and cancels immediately |
 | `APP__DATABASE__URL` | PostgreSQL URL for the server's runtime role; required, and must parse as a URL with a `postgres://` or `postgresql://` scheme naming a host or a database |
 | `APP__DATABASE__MAX_CONNECTIONS` | Pool size; defaults to `10`, and must be greater than zero |
 | `APP__DATABASE__ACQUIRE_TIMEOUT_SECONDS` | How long a caller waits for a pooled connection; defaults to `5`, and must be greater than zero |

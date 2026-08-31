@@ -2,6 +2,7 @@
 
 pub mod problem;
 pub mod routes;
+pub mod shutdown;
 
 use std::sync::Arc;
 
@@ -9,17 +10,24 @@ use aircraft_app::readiness::ReadinessProbe;
 use axum::{Router, routing::get};
 use utoipa::OpenApi;
 
+use crate::shutdown::ShutdownState;
+
 /// What the router needs from its composition root.
 ///
 /// The readiness probe arrives as a port rather than a pool because
 /// `cargo run -p xtask -- boundaries` refuses `aircraft_db` and `SQLx` here;
 /// the build identity arrives as data because this crate has no business
 /// knowing which binary embedded it.
+///
+/// The shutdown state is shared with the composition root rather than owned
+/// here: the router reads it to refuse new work, and `aircraft_server::serve`
+/// writes it when a signal arrives.
 #[derive(Clone)]
 pub struct ApiState {
   pub readiness: Arc<dyn ReadinessProbe>,
   pub version: &'static str,
   pub build_commit: Option<&'static str>,
+  pub shutdown: ShutdownState,
 }
 
 /// Written by hand because a trait object cannot derive it, and requiring
@@ -31,6 +39,7 @@ impl std::fmt::Debug for ApiState {
       .debug_struct("ApiState")
       .field("version", &self.version)
       .field("build_commit", &self.build_commit)
+      .field("draining", &self.shutdown.is_draining())
       .finish_non_exhaustive()
   }
 }
@@ -66,10 +75,13 @@ struct ApiDoc;
 /// process dead whenever its dependency is, and gets the process killed for
 /// someone else's outage.
 pub fn router(state: ApiState) -> Router {
+  let shutdown = state.shutdown.clone();
+
   Router::new()
     .route("/health", get(routes::health::health))
     .route("/ready", get(routes::ready::ready))
     .route("/version", get(routes::version::version))
+    .layer(axum::middleware::from_fn_with_state(shutdown, shutdown::track_in_flight))
     .with_state(state)
 }
 
@@ -84,7 +96,10 @@ mod tests {
   // panicking on a call that must never happen.
   #![allow(clippy::expect_used, clippy::panic)]
 
-  use std::sync::Arc;
+  use std::sync::{
+    Arc,
+    atomic::{AtomicUsize, Ordering},
+  };
 
   use aircraft_app::ingestion::PersistenceError;
   use anyhow::{Context, Result};
@@ -129,12 +144,32 @@ mod tests {
   #[async_trait]
   impl ReadinessProbe for NeverConsulted {
     async fn check(&self) -> Result<(), PersistenceError> {
-      panic!("/health must answer without consulting the readiness probe");
+      panic!("the readiness probe must not be consulted here");
+    }
+  }
+
+  /// Reads the in-flight count from inside a running handler, which is the only
+  /// place the counter is ever non-zero.
+  struct RecordsInFlight {
+    shutdown: ShutdownState,
+    seen: Arc<AtomicUsize>,
+  }
+
+  #[async_trait]
+  impl ReadinessProbe for RecordsInFlight {
+    async fn check(&self) -> Result<(), PersistenceError> {
+      self.seen.store(self.shutdown.in_flight(), Ordering::Release);
+      Ok(())
     }
   }
 
   fn state(readiness: Arc<dyn ReadinessProbe>) -> ApiState {
-    ApiState { readiness, version: "9.9.9-test", build_commit: None }
+    ApiState {
+      readiness,
+      version: "9.9.9-test",
+      build_commit: None,
+      shutdown: ShutdownState::new(),
+    }
   }
 
   async fn body_of(response: axum::response::Response) -> Result<serde_json::Value> {
@@ -239,6 +274,56 @@ mod tests {
       body_of(response).await?,
       json!({ "version": "9.9.9-test", "build_commit": "2f9c1ab" })
     );
+    Ok(())
+  }
+
+  /// Acceptance criterion 1. `NeverConsulted` is the anti-vacuity guard: it
+  /// panics when called, so this passes only if the drain check short-circuits
+  /// *before* the probe rather than by some unrelated 503. The problem type is
+  /// asserted literally because reusing `database_unavailable` would tell an
+  /// operator a healthy database is down.
+  #[tokio::test]
+  async fn readiness_reports_shutting_down_once_draining_begins() -> Result<()> {
+    let state = state(Arc::new(NeverConsulted));
+    state.shutdown.begin_draining();
+
+    let response = router(state).oneshot(Request::get("/ready").body(Body::empty())?).await?;
+
+    assert_eq!(response.status(), StatusCode::SERVICE_UNAVAILABLE);
+    assert_eq!(
+      response.headers().get(header::CONTENT_TYPE).context("a problem needs a media type")?,
+      "application/problem+json"
+    );
+    assert_eq!(
+      body_of(response).await?,
+      json!({
+        "type": "/problems/shutting-down",
+        "title": "Service Unavailable",
+        "status": 503,
+        "detail": "The service is shutting down and is not accepting new work.",
+        "instance": "/ready"
+      })
+    );
+    Ok(())
+  }
+
+  /// The count the expiry warning reports. Both assertions are load-bearing:
+  /// the first fails if the layer never counts, and the second fails if the
+  /// decrement is dropped -- a counter that only rises would report every
+  /// request ever served as cancelled.
+  #[tokio::test]
+  async fn a_request_is_counted_while_its_handler_runs_and_not_after() -> Result<()> {
+    let shutdown = ShutdownState::new();
+    let seen = Arc::new(AtomicUsize::new(0));
+    let probe = RecordsInFlight { shutdown: shutdown.clone(), seen: Arc::clone(&seen) };
+    let mut state = state(Arc::new(probe));
+    state.shutdown = shutdown.clone();
+
+    let response = router(state).oneshot(Request::get("/ready").body(Body::empty())?).await?;
+
+    assert_eq!(response.status(), StatusCode::OK);
+    assert_eq!(seen.load(Ordering::Acquire), 1, "the handler was not counted while it ran");
+    assert_eq!(shutdown.in_flight(), 0, "the count was not released when the handler returned");
     Ok(())
   }
 

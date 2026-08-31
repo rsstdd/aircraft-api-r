@@ -154,15 +154,18 @@ name = "aircraft_server"
 version = "0.1.0"
 dependencies = [
  "aircraft_api",
+ "aircraft_app",
  "aircraft_config",
  "aircraft_db",
  "aircraft_observability",
  "aircraft_testsupport",
  "anyhow",
+ "async-trait",
  "axum",
  "secrecy",
  "tokio",
  "tracing",
+ "tracing-subscriber",
 ]
 
 [[package]]
