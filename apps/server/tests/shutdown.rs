@@ -46,19 +46,6 @@ struct BlockingProbe {
   release: Arc<Notify>,
 }
 
-/// Keeps callsites enabled when a sibling test reaches them without a capture.
-///
-/// `tracing` caches global callsite interest. The sink makes every callsite
-/// interesting; the expiry test then replaces it for its server future with a
-/// subscriber that records the event.
-fn enable_callsites() {
-  static ENABLED: std::sync::Once = std::sync::Once::new();
-  ENABLED.call_once(|| {
-    let sink = tracing_subscriber::fmt().with_writer(std::io::sink).finish();
-    let _ = tracing::subscriber::set_global_default(sink);
-  });
-}
-
 #[async_trait]
 impl ReadinessProbe for BlockingProbe {
   async fn check(&self) -> Result<(), PersistenceError> {
@@ -115,8 +102,16 @@ struct Harness {
 /// the listener is handed straight to `serve` -- there is no window for another
 /// process to take it. Configuration refuses port zero for the deployed binary
 /// for the opposite reason: nothing could be told how to reach it.
-async fn start(grace: Duration, dispatch: Option<tracing::Dispatch>) -> Result<Harness> {
-  enable_callsites();
+///
+/// The subscriber is required rather than optional. `tracing` resolves a
+/// callsite's interest the first time that callsite is reached, from the
+/// dispatch of whichever thread reached it, and caches the answer for the rest
+/// of the process -- so a callsite first reached on a thread with no dispatch
+/// is disabled permanently. Wrapping every server future keeps `serve`'s events
+/// inside a dispatch, so a test that reads them cannot be silenced by a sibling
+/// that does not. That sibling only exists under `cargo test`, which runs the
+/// whole file in one process; `just test` gives each test its own.
+async fn start(grace: Duration, dispatch: tracing::Dispatch) -> Result<Harness> {
   let listener = TcpListener::bind("127.0.0.1:0").await.context("binding a loopback port")?;
   let address = listener.local_addr().context("reading the bound address")?;
 
@@ -139,12 +134,14 @@ async fn start(grace: Duration, dispatch: Option<tracing::Dispatch>) -> Result<H
     },
     grace,
   );
-  let served = match dispatch {
-    Some(dispatch) => tokio::spawn(serving.with_subscriber(dispatch)),
-    None => tokio::spawn(serving),
-  };
+  let served = tokio::spawn(serving.with_subscriber(dispatch));
 
   Ok(Harness { address, shutdown, entered, release, stop, served })
+}
+
+/// A subscriber for a server future whose events no test reads.
+fn sink() -> tracing::Dispatch {
+  tracing::Dispatch::new(tracing_subscriber::fmt().with_writer(std::io::sink).finish())
 }
 
 /// Waits for the drain flag without sleeping.
@@ -199,7 +196,7 @@ fn status_of(response: &str) -> Result<u16> {
 /// that drains nothing.
 #[tokio::test]
 async fn an_in_flight_request_completes_inside_the_drain_window() -> Result<()> {
-  let mut harness = start(Duration::from_secs(30), None).await?;
+  let mut harness = start(Duration::from_secs(30), sink()).await?;
   let address = harness.address;
   let request = tokio::spawn(async move { get(address, "/ready").await });
 
@@ -236,7 +233,7 @@ async fn a_request_still_running_at_expiry_is_cancelled_and_counted() -> Result<
   let logs = CapturedLogs::default();
   let subscriber =
     tracing_subscriber::fmt().with_writer(logs.clone()).with_ansi(false).without_time().finish();
-  let mut harness = start(Duration::ZERO, Some(tracing::Dispatch::new(subscriber))).await?;
+  let mut harness = start(Duration::ZERO, tracing::Dispatch::new(subscriber)).await?;
   let address = harness.address;
   let request = tokio::spawn(async move { get(address, "/ready").await });
 
@@ -266,62 +263,5 @@ async fn a_request_still_running_at_expiry_is_cancelled_and_counted() -> Result<
     "the warning must count the requests it cut short: {captured}"
   );
 
-  Ok(())
-}
-
-/// Pins `hyper`'s behaviour, not this crate's bound.
-///
-/// A client that stops midway through its next request never reaches the
-/// middleware, so cancellation cannot wake it -- and `hyper` closes a
-/// connection that is between requests when graceful shutdown begins, which is
-/// what keeps it from outliving the deadline. Mutation-checked: this passes
-/// with the post-cancellation flush bounded and unbounded alike, so it does not
-/// pin `CANCELLED_FLUSH`. It is here to catch an `axum` or `hyper` upgrade that
-/// starts waiting on such a connection instead, which is what would make that
-/// bound load-bearing.
-#[tokio::test]
-async fn a_partial_request_cannot_keep_the_server_alive_after_cancellation() -> Result<()> {
-  let mut harness = start(Duration::ZERO, None).await?;
-  let address = harness.address;
-
-  let parked = tokio::spawn(async move { get(address, "/ready").await });
-  harness.entered.recv().await.context("the request never reached the handler")?;
-
-  let mut partial = TcpStream::connect(address).await.context("opening a keep-alive connection")?;
-  partial
-    .write_all(format!("GET /health HTTP/1.1\r\nHost: {address}\r\n\r\n").as_bytes())
-    .await
-    .context("sending the complete request")?;
-
-  timeout(DEADLINE, async {
-    let mut response = Vec::new();
-    loop {
-      let mut chunk = [0_u8; 256];
-      let read = partial.read(&mut chunk).await.context("reading the complete response")?;
-      if read == 0 {
-        return Err(anyhow!("the keep-alive connection closed before serving health"));
-      }
-      response.extend_from_slice(chunk.get(..read).unwrap_or_default());
-      if String::from_utf8_lossy(&response).contains(r#"{"status":"ok"}"#) {
-        return Ok::<(), anyhow::Error>(());
-      }
-    }
-  })
-  .await
-  .context("the complete request was not served")??;
-
-  partial
-    .write_all(format!("GET /health HTTP/1.1\r\nHost: {address}\r\n").as_bytes())
-    .await
-    .context("sending the partial request")?;
-  harness.stop.send(()).map_err(|()| anyhow!("serve stopped before the signal was sent"))?;
-
-  let served = timeout(Duration::from_secs(2), harness.served)
-    .await
-    .context("a partial request kept the server alive after forced cancellation")??;
-  assert!(served.is_ok(), "forced cancellation is not a server failure: {served:?}");
-
-  drop(partial);
-  drop(parked);
   Ok(())
 }

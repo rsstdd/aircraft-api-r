@@ -24,6 +24,11 @@ use tokio::{net::TcpListener, time::timeout};
 /// reading cannot extend a shutdown past its configured window by more than
 /// that. An unbounded await here would hand that client the power to defeat the
 /// window entirely, which is the one thing this function exists to prevent.
+///
+/// No test pins this bound. Making it observable needs a client that holds a
+/// connection past the deadline, and `hyper` closes a connection that is between
+/// requests as soon as graceful shutdown begins -- so from this stack the
+/// bounded and unbounded waits cannot be told apart.
 const CANCELLED_FLUSH: Duration = Duration::from_secs(1);
 
 /// Serves the API router on an already-bound listener until `signal` resolves,

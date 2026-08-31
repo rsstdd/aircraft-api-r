@@ -73,9 +73,12 @@ impl Settings {
     let settings: Self = base_config(directory, environment)
       .set_default("http.host", "127.0.0.1")?
       .set_default("http.port", 8080_u16)?
-      // Thirty seconds sits inside the termination grace period a container
-      // orchestrator allows by default, so a rollout finishes draining before
-      // the platform escalates to SIGKILL and takes the choice away.
+      // Thirty seconds is the common platform default -- Kubernetes spells it
+      // `terminationGracePeriodSeconds` -- so it is a recognisable ceiling
+      // rather than a window guaranteed to fit inside one. Left at both
+      // defaults the drain is still running, and a flush still pending, when
+      // SIGKILL arrives. A deployment must set this strictly below its own
+      // termination grace period, which is what `.env.example` says.
       .set_default("http.shutdown_grace_seconds", 30_u64)?
       .build()?
       .try_deserialize()?;

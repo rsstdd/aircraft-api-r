@@ -421,37 +421,47 @@ async fn an_unreachable_database_is_reported_before_the_port_is_taken() -> Resul
   Ok(())
 }
 
-/// The only gate that proves `main` asked for the signal at all. Every drain
+/// The only gate that proves `main` asked for either signal at all. Every drain
 /// test in `apps/server/tests/shutdown.rs` hands `serve` its own shutdown
 /// future, so all of them would still pass against a binary that installed no
 /// handler and died on the default disposition.
 ///
-/// The health check before the signal is load-bearing: without it, a zero exit
+/// Both signals are driven because `main` installs both and they are not one
+/// mechanism: dropping either arm of its `select!` leaves the other passing.
+/// One container serves both cases -- what has to be fresh per case is the
+/// process, not the database.
+///
+/// The health check before each signal is load-bearing: without it, a zero exit
 /// could be a process that had already finished starting and stopped on its
 /// own.
 #[tokio::test]
-async fn sigterm_shuts_the_binary_down_and_exits_zero() -> Result<()> {
+async fn each_shutdown_signal_stops_the_binary_and_exits_zero() -> Result<()> {
   let container = database().await?;
-  let (mut server, address) = start(&container.database_url).await?;
 
-  let (status, body) = get(address, "/health").await?;
-  assert_eq!(status, 200, "the server must be serving before it is signalled: {body}");
+  for signal in ["-TERM", "-INT"] {
+    let (mut server, address) = start(&container.database_url).await?;
 
-  let pid = server.id().ok_or_else(|| anyhow!("the running server reported no process id"))?;
-  // Discrete checked arguments, never a shell string: the only value here is a
-  // process id this test just read back from the child it spawned.
-  let signalled = Command::new("kill")
-    .arg("-TERM")
-    .arg(pid.to_string())
-    .status()
-    .await
-    .context("sending SIGTERM to aircraft-server")?;
-  assert!(signalled.success(), "kill -TERM did not succeed: {signalled:?}");
+    let (status, body) = get(address, "/health").await?;
+    assert_eq!(status, 200, "the server must be serving before {signal}: {body}");
 
-  let exit = timeout(STARTUP, server.wait())
-    .await
-    .context("aircraft-server did not exit after SIGTERM")?
-    .context("reaping aircraft-server")?;
-  assert!(exit.success(), "a graceful shutdown must exit zero: {exit:?}");
+    let pid = server.id().ok_or_else(|| anyhow!("the running server reported no process id"))?;
+    // Discrete checked arguments, never a shell string: the only values here
+    // are a literal from the table above and a process id this test just read
+    // back from the child it spawned.
+    let signalled = Command::new("kill")
+      .arg(signal)
+      .arg(pid.to_string())
+      .status()
+      .await
+      .with_context(|| format!("sending {signal} to aircraft-server"))?;
+    assert!(signalled.success(), "kill {signal} did not succeed: {signalled:?}");
+
+    let exit = timeout(STARTUP, server.wait())
+      .await
+      .with_context(|| format!("aircraft-server did not exit after {signal}"))?
+      .context("reaping aircraft-server")?;
+    assert!(exit.success(), "a graceful shutdown after {signal} must exit zero: {exit:?}");
+  }
+
   Ok(())
 }
