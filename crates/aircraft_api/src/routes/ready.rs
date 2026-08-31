@@ -23,13 +23,22 @@ pub struct ReadyResponse {
     (status = 200, description = "The database answered", body = ReadyResponse),
     (
       status = 503,
-      description = "The database could not be reached within the probe deadline",
+      description = "The service is draining, or the database could not be reached \
+                     within the probe deadline",
       body = ProblemDetails,
       content_type = "application/problem+json"
     )
   )
 )]
 pub async fn ready(State(state): State<ApiState>) -> Response {
+  // Checked before the probe, not after. A process that has begun draining is
+  // unready whatever the database says, and spending the probe deadline on a
+  // connection it is about to drop only delays the answer a load balancer is
+  // waiting for.
+  if state.shutdown.is_draining() {
+    return ProblemDetails::shutting_down().into_response();
+  }
+
   match state.readiness.check().await {
     Ok(()) => (Json(ReadyResponse { status: "ready" })).into_response(),
     Err(error) => {

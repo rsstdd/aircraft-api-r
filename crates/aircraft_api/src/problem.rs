@@ -49,6 +49,23 @@ impl ProblemDetails {
       instance: "/ready",
     }
   }
+
+  /// The process is draining and will not admit new work.
+  ///
+  /// Distinct from [`Self::database_unavailable`] on purpose: the two share a
+  /// status code and nothing else. An operator reading a 503 during a rollout
+  /// must be able to tell an orderly shutdown from a database outage without
+  /// correlating logs.
+  #[must_use]
+  pub const fn shutting_down() -> Self {
+    Self {
+      kind: "/problems/shutting-down",
+      title: "Service Unavailable",
+      status: 503,
+      detail: "The service is shutting down and is not accepting new work.",
+      instance: "/ready",
+    }
+  }
 }
 
 impl IntoResponse for ProblemDetails {

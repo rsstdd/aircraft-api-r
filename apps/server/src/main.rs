@@ -2,17 +2,20 @@
 //!
 //! Configuration, telemetry, persistence, and routing are each owned by their
 //! own crate, so this binary only resolves them in order and hands the bound
-//! socket to [`aircraft_server::serve`]. Graceful shutdown and perimeter limits
-//! are separate stories and are deliberately absent.
+//! socket to [`aircraft_server::serve`] together with the signal that ends it.
+//! Perimeter limits are a separate story and are deliberately absent.
 
-use std::sync::Arc;
+use std::{sync::Arc, time::Duration};
 
-use aircraft_api::ApiState;
+use aircraft_api::{ApiState, shutdown::ShutdownState};
 use aircraft_config::{DatabaseSettings, Settings};
 use aircraft_db::readiness::PoolReadiness;
 use anyhow::{Context, Result};
 use secrecy::ExposeSecret as _;
-use tokio::net::TcpListener;
+use tokio::{
+  net::TcpListener,
+  signal::unix::{SignalKind, signal},
+};
 
 #[tokio::main]
 async fn main() -> Result<()> {
@@ -51,6 +54,7 @@ async fn main() -> Result<()> {
     readiness: Arc::new(PoolReadiness::new(pool)),
     version: env!("CARGO_PKG_VERSION"),
     build_commit: option_env!("BUILD_COMMIT"),
+    shutdown: ShutdownState::new(),
   };
 
   let address = settings.bind_address();
@@ -63,5 +67,31 @@ async fn main() -> Result<()> {
   let bound = listener.local_addr().context("reading the bound address")?;
   tracing::info!(address = %bound, "aircraft-server listening");
 
-  aircraft_server::serve(listener, state).await
+  // Both handlers are installed before the first request can arrive, and not
+  // earlier: a signal during startup finds the default disposition, which ends
+  // a process that has nothing in flight to lose. Installing them sooner would
+  // instead queue the signal behind a slow pool connection and look like a
+  // server ignoring SIGTERM.
+  //
+  // SIGTERM is what an orchestrator sends; SIGINT is what a terminal sends.
+  // There is no `cfg(unix)` fallback because this binary is a Linux service,
+  // and a build that silently ignored SIGTERM would be worse than one that does
+  // not compile.
+  let mut terminate = signal(SignalKind::terminate()).context("installing the SIGTERM handler")?;
+  let mut interrupt = signal(SignalKind::interrupt()).context("installing the SIGINT handler")?;
+  let shutdown = async move {
+    let received = tokio::select! {
+      _ = terminate.recv() => "SIGTERM",
+      _ = interrupt.recv() => "SIGINT",
+    };
+    tracing::info!(signal = received, "shutdown requested");
+  };
+
+  aircraft_server::serve(
+    listener,
+    state,
+    shutdown,
+    Duration::from_secs(settings.http.shutdown_grace_seconds),
+  )
+  .await
 }

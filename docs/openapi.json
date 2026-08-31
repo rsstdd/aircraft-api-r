@@ -61,7 +61,7 @@
             }
           },
           "503": {
-            "description": "The database could not be reached within the probe deadline",
+            "description": "The service is draining, or the database could not be reached within the probe deadline",
             "content": {
               "application/problem+json": {
                 "schema": {
