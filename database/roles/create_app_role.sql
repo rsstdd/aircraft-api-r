@@ -91,12 +91,17 @@ SELECT coalesce(
         -- trusted extensions; CREATE on a schema allows new objects inside it;
         -- and an owner may alter or drop what it owns regardless of either.
         -- A pre-existing role holding any of those keeps them afterwards,
-        -- because app_grants.sql only adds CONNECT -- so the restricted
-        -- contract has to be checked as effective privilege, not as flags.
+        -- because app_grants.sql adds only CONNECT and takes nothing back from
+        -- the role itself -- so the restricted contract has to be checked as
+        -- effective privilege, not as flags.
         --
         -- System schemas are excluded deliberately: CREATE on a pg_temp schema
-        -- follows the database TEMP privilege, which is granted to PUBLIC, so
-        -- including them would reject every role.
+        -- follows the database TEMPORARY privilege, which PostgreSQL grants to
+        -- PUBLIC, so including them would reject every role. app_grants.sql
+        -- revokes that PUBLIC grant, and this guard still cannot test for it:
+        -- the guard runs first, so on a fresh database TEMPORARY is present
+        -- and the clause would reject every role on the first run and accept
+        -- the same role on the second.
         AND NOT has_database_privilege(pg_roles.oid, current_database(), 'CREATE')
         AND NOT EXISTS (
             SELECT 1

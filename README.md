@@ -318,6 +318,12 @@ with `just db-create-app-role` and `just db-grant-app-role`, which run
 pooled connection also runs with an empty `search_path`, so the server's SQL
 must be schema-qualified; an unqualified name does not resolve.
 
+`just db-grant-app-role` also revokes the database's default `TEMPORARY` grant
+from `PUBLIC`. PostgreSQL has no per-role deny, so this is the only way to stop
+the runtime role creating temporary tables -- and it therefore reaches every
+non-superuser on that database, the ingestion role included. Nothing in this
+repository creates a temporary table.
+
 Ingestion settings:
 
 | Variable | Purpose |

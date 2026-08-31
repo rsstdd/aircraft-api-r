@@ -169,13 +169,20 @@ const RUNTIME_ROLE_PASSWORD: &str = "gate-only-runtime-password";
 /// may do, so each case asserts `42501` exactly. `CREATE EXTENSION` reached
 /// `3F000` on the first run of this gate; the exact-code assertion is what
 /// caught it.
+///
+/// The temporary-table case is the one statement that needs no qualification: a
+/// temp table resolves into `pg_temp` without consulting `search_path`. It is
+/// here because the other four passed while the criterion did not hold --
+/// `PostgreSQL` grants TEMPORARY on a database to PUBLIC, so the restricted
+/// role created temporary tables until `app_grants.sql` revoked that grant.
 #[tokio::test]
 async fn the_runtime_role_cannot_create_schemas_extensions_tables_or_roles() -> TestResult {
-  const REFUSED: [&str; 4] = [
+  const REFUSED: [&str; 5] = [
     "CREATE SCHEMA escalation",
     "CREATE EXTENSION pgcrypto SCHEMA public",
     "CREATE TABLE public.escalation (id INT)",
     "CREATE ROLE escalation",
+    "CREATE TEMP TABLE escalation (id INT)",
   ];
   let (container, _ready) = start_postgres(MAX_CONNECTIONS, Duration::from_secs(2)).await?;
   run_psql(

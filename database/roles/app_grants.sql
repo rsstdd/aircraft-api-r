@@ -1,10 +1,11 @@
 -- Grants for the restricted server runtime role created by create_app_role.sql.
 --
--- CONNECT and nothing else, on purpose. `aircraft-server` builds a pool and
--- answers SELECT 1; it issues no application query yet, so it needs no schema
--- USAGE and no table SELECT. Read grants belong to the story that adds the
--- first route reading a table, where each one can be justified by a query that
--- exists. An unearned grant is harder to remove later than to add now.
+-- One CONNECT grant and one revoke, and nothing else. `aircraft-server` builds
+-- a pool and answers SELECT 1; it issues no application query yet, so it needs
+-- no schema USAGE and no table SELECT. Read grants belong to the story that
+-- adds the first route reading a table, where each one can be justified by a
+-- query that exists. An unearned grant is harder to remove later than to add
+-- now.
 --
 -- CONNECT is granted to PUBLIC by default, so this statement is close to a
 -- no-op on a fresh database. It is written out anyway: the grant surface of
@@ -29,3 +30,22 @@ END $missing_role$;
 \endif
 
 GRANT CONNECT ON DATABASE :"DBNAME" TO :"app_role";
+
+-- The only database-wide statement in this file, and the only way this can be
+-- written. PostgreSQL grants TEMPORARY on a database to PUBLIC and offers no
+-- per-role deny: REVOKE ... FROM :"app_role" cannot take back a privilege the
+-- role holds through PUBLIC. Without this, the restricted role creates
+-- temporary tables -- which is exactly what its contract says it cannot do.
+--
+-- The cost is that every other non-superuser loses TEMPORARY as well, the
+-- ingestion role included. Nothing in this repository creates a temporary
+-- table; ingestion stages into permanent tables under aircraft_ingest, and
+-- superusers bypass the check, so install.sql and the migrations are
+-- unaffected. Read this before aiming `just db-grant-app-role` at a database
+-- shared with anything outside this repository.
+--
+-- Revoking is convergent where granting is not, for the same reason
+-- ingest_grants.sql revokes sequence privileges rather than merely not granting
+-- them: a database provisioned before this line existed still carries the
+-- PUBLIC grant, and only a revoke takes it back.
+REVOKE TEMPORARY ON DATABASE :"DBNAME" FROM PUBLIC;
