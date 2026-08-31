@@ -286,7 +286,25 @@ result against committed golden snapshots in `database/snapshots/golden/`.
 
 ## Configuration
 
-Ingestion settings use the `APP` prefix and `__` for nesting:
+Settings use the `APP` prefix and `__` for nesting. Sources are read lowest
+precedence first: built-in defaults, then `config/defaults.json5`, then
+`config/config.json5`, then the environment. Neither override file is required,
+and neither is checked in.
+
+Server settings:
+
+| Variable | Purpose |
+|---|---|
+| `APP__HTTP__HOST` | Bind host; defaults to `127.0.0.1`, and must not be blank |
+| `APP__HTTP__PORT` | Bind port; defaults to `8080`, and must be 1-65535. Zero is rejected: it asks the OS for an arbitrary port, which no client could be told to reach |
+| `APP__DATABASE__URL` | PostgreSQL URL for the server's runtime role; required, and must parse as a URL with a `postgres://` or `postgresql://` scheme naming a host or a database |
+
+`APP__DATABASE__URL` is loaded and validated on demand by
+`DatabaseSettings::load()`, which parses the URL so a malformed one fails while
+configuration loads rather than at the first connection. No rejection quotes the
+value, because it carries a password. No pool is constructed with it yet.
+
+Ingestion settings:
 
 | Variable | Purpose |
 |---|---|
