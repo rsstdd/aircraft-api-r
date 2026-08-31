@@ -88,10 +88,12 @@ a test, helper, or dependency should exist at all.
 
 - **Deterministic setup.** No network, no ambient environment, nothing outside the assigned
   container or temporary directory. Inject time and randomness rather than reading a clock.
-- **No shared mutable state by default.** Tests run concurrently under nextest, so do not mutate a
-  global. The one sanctioned exception is `aircraft_config`'s environment-precedence tests, which
-  must mutate `APP__*` variables and therefore use `serial_test`. Reaching for `serial_test`
-  anywhere else is a design smell in the code under test.
+- **No shared mutable state, with no exception.** Tests run concurrently under nextest, so do not
+  mutate a global. The process environment is not an escape hatch: Rust 2024 makes
+  `std::env::set_var` `unsafe` and `Cargo.toml` sets `unsafe_code = "forbid"`, so an
+  environment-mutating test cannot compile here at all. Inject it instead — `aircraft_config`'s
+  precedence tests pass a map to `config::Environment::source`, which routes it through the same
+  prefix and separator handling as `env::vars_os`, so the shipped mapping is still what runs.
 - **`Result` return so setup propagates with `?`.** The workspace type is
   `aircraft_testsupport::TestResult` (`Result<T, Box<dyn Error + Send + Sync>>`). Reserve
   `expect` for the assertion itself with a message that names the invariant, and keep the
@@ -136,9 +138,10 @@ a test, helper, or dependency should exist at all.
 ## What is already available, and what is not
 
 In `[workspace.dependencies]` and in use: **`proptest`** (`aircraft_ingest` invariants),
-**`serial_test`** (`aircraft_config` env precedence), **`pretty_assertions`** (`aircraft_db`),
-**`tempfile`** (`xtask`), and `tokio` with `macros` for `#[tokio::test]`. Use them; they cost
-nothing new.
+**`pretty_assertions`** (`aircraft_db`), **`tempfile`** (`xtask`, `aircraft_config`), and `tokio`
+with `macros` for `#[tokio::test]`. Use them; they cost nothing new. `serial_test` is deliberately
+**not** here: it was declared for the environment-mutating tests the rule above rules out, was
+never used, and was removed.
 
 Declared but unused: **`insta`**. Snapshot regression in this repo currently runs through
 `cargo xtask snapshots`, which imports a fixture into a disposable database and diffs normalized
