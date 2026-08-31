@@ -179,7 +179,16 @@ pub async fn start_postgres(
   let database_url = format!("postgres://postgres:postgres@127.0.0.1:{port}/postgres");
   let container = DockerPostgres { container_id, database_url: database_url.clone() };
 
-  let pool = tokio::time::timeout(Duration::from_secs(30), async {
+  // The budget covers container start plus initdb, not the image pull, which
+  // `docker run` has already blocked on. A ready container needs a second or
+  // two; the cost that matters is contention, because the suite runs one
+  // container per test and nextest fans out across every core. Thirty seconds
+  // was reached twice on a cold eight-core run, so the ceiling sat inside the
+  // range of ordinary load rather than above it. Two minutes stays a bound --
+  // nothing else ends the loop below, and nextest is configured with no
+  // terminate-after, so an unbounded wait would hang the run rather than fail
+  // it -- while leaving room for a machine under real load.
+  let pool = tokio::time::timeout(Duration::from_secs(120), async {
     loop {
       match PgPoolOptions::new()
         .max_connections(max_connections)
