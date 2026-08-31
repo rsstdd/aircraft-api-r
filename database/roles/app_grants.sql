@@ -15,9 +15,16 @@
 -- `the_runtime_role_cannot_create_schemas_extensions_tables_or_roles` in
 -- crates/aircraft_db/tests/pool.rs, which runs this file verbatim.
 
+-- The guard raises rather than only printing. A bare \quit ends psql with exit
+-- status 0, which every caller -- the justfile recipe, and `run_psql` in the
+-- gate -- reads as success, so a misconfigured invocation would report a grant
+-- it never applied.
 \if :{?app_role}
 \else
-\echo 'app_role is required, for example: -v app_role=aircraft_api_app'
+DO $missing_role$ BEGIN
+    RAISE EXCEPTION
+        'app_role is required, for example: -v app_role=aircraft_api_app';
+END $missing_role$;
 \quit
 \endif
 

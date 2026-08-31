@@ -207,3 +207,67 @@ async fn the_runtime_role_cannot_create_schemas_extensions_tables_or_roles() -> 
   }
   Ok(())
 }
+
+/// The provisioning scripts must fail loudly rather than exit zero having done
+/// nothing.
+///
+/// Both refusals used to end in a bare `\quit`, which psql reports as exit
+/// status 0 -- so [`run_psql`] returned `Ok`, the justfile recipe returned
+/// success, and an operator was told a role was provisioned that either does not
+/// exist or cannot authenticate. The absence assertion is the half that proves
+/// the refusal happened before `CREATE ROLE`, not after it.
+#[tokio::test]
+async fn provisioning_refuses_a_missing_role_name_or_an_empty_password() -> TestResult {
+  let (container, ready) = start_postgres(MAX_CONNECTIONS, Duration::from_secs(2)).await?;
+
+  run_psql(&container, CREATE_APP_ROLE_SQL, &[], &[("API_ROLE_PASSWORD", RUNTIME_ROLE_PASSWORD)])
+    .expect_err("creating a role without a name must fail");
+  run_psql(
+    &container,
+    CREATE_APP_ROLE_SQL,
+    &[("app_role", RUNTIME_ROLE)],
+    &[("API_ROLE_PASSWORD", "")],
+  )
+  .expect_err("an empty password must be refused rather than stored as a null password");
+  run_psql(&container, APP_GRANTS_SQL, &[], &[])
+    .expect_err("granting without a role name must fail");
+
+  let created: bool = query_scalar("SELECT EXISTS (SELECT 1 FROM pg_roles WHERE rolname = $1)")
+    .bind(RUNTIME_ROLE)
+    .fetch_one(&ready)
+    .await?;
+  assert!(!created, "a refused provisioning run must not leave a role behind");
+  Ok(())
+}
+
+/// The conformance guard decides whether `app_grants.sql` may run against an
+/// account that already exists, so it has to reject one that can already create
+/// database objects.
+///
+/// Role attributes do not carry that: this role is `NOSUPERUSER NOCREATEDB
+/// NOCREATEROLE NOREPLICATION NOBYPASSRLS` and holds no memberships, so the
+/// attribute-only check that shipped first accepted it -- while `CREATE` on the
+/// database still let it add schemas and trusted extensions after the grant.
+#[tokio::test]
+async fn provisioning_refuses_an_existing_role_that_already_holds_create_rights() -> TestResult {
+  let (container, ready) = start_postgres(MAX_CONNECTIONS, Duration::from_secs(2)).await?;
+
+  // The role name is a constant in this file, not runtime data; an identifier
+  // cannot be a bind parameter in DDL.
+  query(&format!(
+    "CREATE ROLE {RUNTIME_ROLE} LOGIN PASSWORD '{RUNTIME_ROLE_PASSWORD}'
+     NOSUPERUSER NOCREATEDB NOCREATEROLE NOREPLICATION NOBYPASSRLS"
+  ))
+  .execute(&ready)
+  .await?;
+  query(&format!("GRANT CREATE ON DATABASE postgres TO {RUNTIME_ROLE}")).execute(&ready).await?;
+
+  run_psql(
+    &container,
+    CREATE_APP_ROLE_SQL,
+    &[("app_role", RUNTIME_ROLE)],
+    &[("API_ROLE_PASSWORD", RUNTIME_ROLE_PASSWORD)],
+  )
+  .expect_err("a role that can already create schemas must not be accepted as restricted");
+  Ok(())
+}

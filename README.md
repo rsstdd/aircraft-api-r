@@ -47,7 +47,7 @@ simply because they were parsed successfully.
 | Persistence | SQLx ingestion repository implemented; the broader repository surface remains incomplete |
 | Domain and application | Ingestion rules and orchestration are implemented; most general aircraft, mission, search, and comparison behavior remains scaffolded |
 | HTTP API | Axum health route and generated OpenAPI contract only; no product routes, readiness route, or perimeter limits |
-| Server | Runnable Axum server in the workspace; it serves health but has no database pool or graceful shutdown |
+| Server | Runnable Axum server in the workspace; it serves health and builds a verified, bounded database pool, but has no graceful shutdown and no route reads from the pool |
 | Repository automation | Boundaries, migration policy, OpenAPI compatibility, dependency review, supply-chain policy, workflow linting, secret scanning, CodeQL, and ingestion golden snapshots are enforced locally or in CI |
 | Tests | Meaningful unit, application, property, repository, and disposable-PostgreSQL ingestion tests. The three placeholder files under `tests/` were deleted; that directory now holds only fixtures |
 | Production readiness | Not ready; target-environment gates remain, and the authenticated HTTP product is incomplete |

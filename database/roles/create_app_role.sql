@@ -40,6 +40,19 @@ END $missing_password$;
 \quit
 \endif
 
+-- A variable that is defined but empty passes the presence check above, and
+-- PASSWORD '' is not an empty password: PostgreSQL 10 and later store it as a
+-- null password, which makes password authentication always fail. Without this,
+-- an empty API_ROLE_PASSWORD creates a role nothing can log in as, while the
+-- script still exits reporting success.
+SELECT length(:'app_password') = 0 AS app_password_empty \gset
+\if :app_password_empty
+DO $empty_password$ BEGIN
+    RAISE EXCEPTION 'API_ROLE_PASSWORD must not be empty';
+END $empty_password$;
+\quit
+\endif
+
 -- \gexec runs the generated statement only when the role is absent, so
 -- re-running this file leaves an existing role and its password untouched.
 SELECT format(
@@ -72,6 +85,32 @@ SELECT coalesce(
             FROM pg_catalog.pg_auth_members
             WHERE member = pg_roles.oid
         )
+        -- Role attributes alone do not bound what a role may do, and this file
+        -- is the gate that decides whether app_grants.sql may run against an
+        -- existing account. CREATE on the database allows new schemas and
+        -- trusted extensions; CREATE on a schema allows new objects inside it;
+        -- and an owner may alter or drop what it owns regardless of either.
+        -- A pre-existing role holding any of those keeps them afterwards,
+        -- because app_grants.sql only adds CONNECT -- so the restricted
+        -- contract has to be checked as effective privilege, not as flags.
+        --
+        -- System schemas are excluded deliberately: CREATE on a pg_temp schema
+        -- follows the database TEMP privilege, which is granted to PUBLIC, so
+        -- including them would reject every role.
+        AND NOT has_database_privilege(pg_roles.oid, current_database(), 'CREATE')
+        AND NOT EXISTS (
+            SELECT 1
+            FROM pg_catalog.pg_namespace
+            WHERE nspname NOT LIKE 'pg\_%'
+              AND nspname <> 'information_schema'
+              AND has_schema_privilege(pg_roles.oid, pg_namespace.oid, 'CREATE')
+        )
+        AND NOT EXISTS (
+            SELECT 1 FROM pg_catalog.pg_class WHERE relowner = pg_roles.oid
+        )
+        AND NOT EXISTS (
+            SELECT 1 FROM pg_catalog.pg_namespace WHERE nspowner = pg_roles.oid
+        )
     ),
     false
 )::TEXT AS app_role_conforms
@@ -85,8 +124,10 @@ WHERE rolname = :'app_role'
 DO $nonconforming_role$ BEGIN
     RAISE EXCEPTION
         'existing app role must be a LOGIN role that is NOSUPERUSER, '
-        'NOCREATEDB, NOCREATEROLE, NOREPLICATION, NOBYPASSRLS and holds no '
-        'role memberships; do not run app_grants.sql against it';
+        'NOCREATEDB, NOCREATEROLE, NOREPLICATION, NOBYPASSRLS, holds no '
+        'role memberships, has no CREATE privilege on the database or any '
+        'schema, and owns no schema or table; do not run app_grants.sql '
+        'against it';
 END $nonconforming_role$;
 \quit
 \endif
