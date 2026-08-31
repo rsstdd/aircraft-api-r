@@ -18,12 +18,13 @@
 
 use std::{net::SocketAddr, process::Stdio, time::Duration};
 
+use aircraft_testsupport::{DockerPostgres, start_postgres};
 use anyhow::{Context, Result, anyhow};
 use tokio::{
   io::{AsyncBufReadExt, AsyncReadExt, AsyncWriteExt, BufReader},
   net::{TcpListener, TcpStream},
   process::{Child, Command},
-  time::timeout,
+  time::{Instant, timeout, timeout_at},
 };
 
 /// How long the binary gets to report its bound address, or to exit.
@@ -37,10 +38,18 @@ const NETWORK_IO_TIMEOUT: Duration = Duration::from_secs(20);
 /// times running is a machine problem worth reporting rather than absorbing.
 const BIND_ATTEMPTS: usize = 8;
 
+/// A password distinctive enough that a substring search cannot match it by
+/// accident, and that must never reach the binary's diagnostics.
+const PASSWORD: &str = "n0t-in-any-diagnostic";
+
 /// Builds a command for the shipped binary with a clean configuration
 /// environment, so an `APP__` variable in the developer's shell cannot decide
-/// what the test binds.
-fn server_command(port: &str) -> Command {
+/// what the test binds or connects to.
+///
+/// `database_url` is `None` only for the gate that asserts what happens when the
+/// setting is absent; every other case must supply one, because the binary now
+/// builds a pool before it binds.
+fn server_command(port: &str, database_url: Option<&str>) -> Command {
   let mut command = Command::new(env!("CARGO_BIN_EXE_aircraft-server"));
   for (key, _) in std::env::vars() {
     if key.starts_with("APP__") {
@@ -54,7 +63,31 @@ fn server_command(port: &str) -> Command {
     .stdout(Stdio::piped())
     .stderr(Stdio::piped())
     .kill_on_drop(true);
+  if let Some(url) = database_url {
+    command.env("APP__DATABASE__URL", url);
+  }
   command
+}
+
+/// Starts a disposable `PostgreSQL` for a gate that needs the binary to get past
+/// pool construction.
+///
+/// The schema is deliberately not installed. The server answers `SELECT 1` and
+/// issues no application query, so the migrations would only cost time.
+async fn database() -> Result<DockerPostgres> {
+  let (container, _ready) = start_postgres(2, Duration::from_secs(2))
+    .await
+    .map_err(|error| anyhow!("starting a disposable PostgreSQL: {error}"))?;
+  Ok(container)
+}
+
+/// A URL that parses and names a host, pointing at a port nothing listens on.
+///
+/// Used by the gates that must reach a *connection* failure rather than a
+/// configuration one, and carrying [`PASSWORD`] so the diagnostic can be checked
+/// for it.
+fn unreachable_database_url() -> String {
+  format!("postgres://aircraft_api_app:{PASSWORD}@127.0.0.1:1/aircraft")
 }
 
 /// Removes ANSI escape sequences from a log line.
@@ -94,36 +127,48 @@ async fn probe_port() -> Result<u16> {
 /// reported listening on.
 ///
 /// A port lost between the probe and the spawn shows up as the binary exiting
-/// with its own bind diagnostic on the first stderr line, and only that is
-/// retried. Any other first line is a real startup failure and is returned
-/// immediately, so a broken binary fails once instead of once per attempt.
-async fn start() -> Result<(Child, SocketAddr)> {
+/// with its own bind diagnostic, and only that is retried. A reported failure is
+/// returned immediately, so a broken binary fails once instead of once per
+/// attempt.
+///
+/// Startup logs more than one line -- the pool reports itself ready before the
+/// listener reports its address -- so lines are read until one of the three
+/// outcomes appears rather than matching on the first. Unrecognized lines are
+/// skipped, which is safe because a real failure always prints `Error:` and a
+/// silent exit ends the stream.
+async fn start(database_url: &str) -> Result<(Child, SocketAddr)> {
   let mut lost = Vec::new();
 
   for _ in 0..BIND_ATTEMPTS {
     let port = probe_port().await?;
-    let mut child =
-      server_command(&port.to_string()).spawn().context("spawning aircraft-server")?;
+    let mut child = server_command(&port.to_string(), Some(database_url))
+      .spawn()
+      .context("spawning aircraft-server")?;
     let stderr = child.stderr.take().ok_or_else(|| anyhow!("no stderr pipe"))?;
     let mut lines = BufReader::new(stderr).lines();
+    let deadline = Instant::now() + STARTUP;
 
-    let line = timeout(STARTUP, lines.next_line())
-      .await
-      .context("aircraft-server did not log a listening address in time")?
-      .context("reading aircraft-server stderr")?
-      .ok_or_else(|| anyhow!("aircraft-server exited before logging an address"))?;
+    loop {
+      let line = timeout_at(deadline, lines.next_line())
+        .await
+        .context("aircraft-server did not log a listening address in time")?
+        .context("reading aircraft-server stderr")?
+        .ok_or_else(|| anyhow!("aircraft-server exited before logging an address"))?;
 
-    let plain = strip_ansi(&line);
-    if let Some((_, reported)) = plain.rsplit_once("address=") {
-      let address = reported.trim().parse().context("parsing the logged address")?;
-      return Ok((child, address));
+      let plain = strip_ansi(&line);
+      if let Some((_, reported)) = plain.rsplit_once("address=") {
+        let address = reported.trim().parse().context("parsing the logged address")?;
+        return Ok((child, address));
+      }
+      if plain.contains(&format!("binding 127.0.0.1:{port}")) {
+        child.wait().await.context("reaping a server that lost its port")?;
+        lost.push(port);
+        break;
+      }
+      if plain.contains("Error:") {
+        return Err(anyhow!("aircraft-server failed to start: {plain}"));
+      }
     }
-
-    if !plain.contains(&format!("binding 127.0.0.1:{port}")) {
-      return Err(anyhow!("aircraft-server failed to start: {plain}"));
-    }
-    child.wait().await.context("reaping a server that lost its port")?;
-    lost.push(port);
   }
 
   Err(anyhow!("every probed port was taken before aircraft-server could bind it: {lost:?}"))
@@ -171,7 +216,8 @@ async fn get(address: SocketAddr, path: &str) -> Result<(u16, String)> {
 
 #[tokio::test]
 async fn the_running_binary_serves_health_over_a_real_socket() -> Result<()> {
-  let (mut server, address) = start().await?;
+  let container = database().await?;
+  let (mut server, address) = start(&container.database_url).await?;
 
   let (status, body) = get(address, "/health").await?;
   assert_eq!(status, 200, "health must be served: {body}");
@@ -187,7 +233,8 @@ async fn the_running_binary_serves_health_over_a_real_socket() -> Result<()> {
 /// catch-all.
 #[tokio::test]
 async fn an_undeclared_route_is_not_served() -> Result<()> {
-  let (mut server, address) = start().await?;
+  let container = database().await?;
+  let (mut server, address) = start(&container.database_url).await?;
 
   let (status, _) = get(address, "/not-a-route").await?;
   assert_eq!(status, 404);
@@ -202,10 +249,13 @@ async fn an_undeclared_route_is_not_served() -> Result<()> {
 /// reports a routine misconfiguration as a crash.
 #[tokio::test]
 async fn a_port_already_in_use_exits_non_zero_with_a_safe_diagnostic() -> Result<()> {
+  let container = database().await?;
   let occupied = TcpListener::bind("127.0.0.1:0").await.context("occupying a port")?;
   let port = occupied.local_addr().context("reading the occupied port")?.port();
 
-  let child = server_command(&port.to_string()).spawn().context("spawning aircraft-server")?;
+  let child = server_command(&port.to_string(), Some(&container.database_url))
+    .spawn()
+    .context("spawning aircraft-server")?;
   let output = timeout(STARTUP, child.wait_with_output())
     .await
     .context("aircraft-server did not exit after failing to bind")?
@@ -225,9 +275,15 @@ async fn a_port_already_in_use_exits_non_zero_with_a_safe_diagnostic() -> Result
 /// Criterion 3 at the deployment boundary. The unit test in `aircraft_config`
 /// proves the rejection; this proves nothing downstream re-accepts it, and that
 /// the binary treats it as ordinary misconfiguration rather than a crash.
+///
+/// The database URL points nowhere reachable on purpose. Reaching the port
+/// diagnostic anyway is what shows configuration is validated before anything is
+/// connected: were the order reversed, this would fail on the pool instead.
 #[tokio::test]
 async fn an_os_assigned_port_request_is_refused_before_binding() -> Result<()> {
-  let child = server_command("0").spawn().context("spawning aircraft-server")?;
+  let child = server_command("0", Some(&unreachable_database_url()))
+    .spawn()
+    .context("spawning aircraft-server")?;
   let output = timeout(STARTUP, child.wait_with_output())
     .await
     .context("aircraft-server did not exit after rejecting port zero")?
@@ -238,5 +294,88 @@ async fn an_os_assigned_port_request_is_refused_before_binding() -> Result<()> {
   let stderr = String::from_utf8(output.stderr).context("aircraft-server stderr is not UTF-8")?;
   assert!(stderr.contains("http.port"), "the diagnostic must name the setting path: {stderr}");
   assert!(!stderr.contains("panicked"), "a rejected setting must not panic: {stderr}");
+  Ok(())
+}
+
+/// The boundary gate for the setting itself, mirroring the port-zero gate above.
+/// `aircraft_config` proves the rejection; this proves the binary surfaces it as
+/// a startup failure naming the setting, rather than starting without a pool.
+#[tokio::test]
+async fn a_missing_database_url_exits_non_zero_naming_its_setting() -> Result<()> {
+  let child = server_command("8080", None).spawn().context("spawning aircraft-server")?;
+  let output = timeout(STARTUP, child.wait_with_output())
+    .await
+    .context("aircraft-server did not exit without a database URL")?
+    .context("collecting aircraft-server output")?;
+
+  assert!(!output.status.success(), "a missing URL must not start a server: {:?}", output.status);
+
+  let stderr = String::from_utf8(output.stderr).context("aircraft-server stderr is not UTF-8")?;
+  assert!(stderr.contains("database.url"), "the diagnostic must name the setting path: {stderr}");
+  assert!(!stderr.contains("panicked"), "a missing setting must not panic: {stderr}");
+  Ok(())
+}
+
+/// Acceptance criterion 4. A database the server cannot reach must end the
+/// process, and the diagnostic an operator pastes into a ticket must be safe to
+/// paste.
+///
+/// All four assertions are load-bearing. The absence of the password would hold
+/// for a binary that printed nothing at all, so the gate also requires the exit
+/// to be non-zero, the failure to name the database, and the process not to have
+/// panicked its way there.
+#[tokio::test]
+async fn an_unreachable_database_exits_non_zero_without_echoing_the_credential() -> Result<()> {
+  let child = server_command("8080", Some(&unreachable_database_url()))
+    .spawn()
+    .context("spawning aircraft-server")?;
+  let output = timeout(STARTUP, child.wait_with_output())
+    .await
+    .context("aircraft-server did not exit after failing to reach the database")?
+    .context("collecting aircraft-server output")?;
+
+  assert!(
+    !output.status.success(),
+    "an unreachable database must not start a server: {:?}",
+    output.status
+  );
+
+  let stderr = String::from_utf8(output.stderr).context("aircraft-server stderr is not UTF-8")?;
+  assert!(
+    stderr.contains("database"),
+    "the diagnostic must name what could not be reached: {stderr}"
+  );
+  assert!(!stderr.contains("panicked"), "an unreachable database must not panic: {stderr}");
+  // Deliberately does not render stderr: printing it on failure would put the
+  // credential in the very output this gate exists to keep clean.
+  assert!(!stderr.contains(PASSWORD), "the startup diagnostic echoed the credential");
+  Ok(())
+}
+
+/// The pool is built before the listener, so a server that cannot reach its
+/// database never takes the port. Without this, that ordering would be a comment
+/// in `main` that nothing checks: reversing it leaves every other gate green,
+/// because both failures still exit non-zero.
+#[tokio::test]
+async fn an_unreachable_database_is_reported_before_the_port_is_taken() -> Result<()> {
+  let occupied = TcpListener::bind("127.0.0.1:0").await.context("occupying a port")?;
+  let port = occupied.local_addr().context("reading the occupied port")?.port();
+
+  let child = server_command(&port.to_string(), Some(&unreachable_database_url()))
+    .spawn()
+    .context("spawning aircraft-server")?;
+  let output = timeout(STARTUP, child.wait_with_output())
+    .await
+    .context("aircraft-server did not exit with both the port and the database unusable")?
+    .context("collecting aircraft-server output")?;
+
+  assert!(!output.status.success(), "neither failure may exit zero: {:?}", output.status);
+
+  let stderr = String::from_utf8(output.stderr).context("aircraft-server stderr is not UTF-8")?;
+  assert!(
+    !stderr.contains(&format!("binding 127.0.0.1:{port}")),
+    "the bind must not be attempted before the pool: {stderr}"
+  );
+  assert!(stderr.contains("database"), "the database failure must be the one reported: {stderr}");
   Ok(())
 }

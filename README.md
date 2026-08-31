@@ -15,8 +15,8 @@ simply because they were parsed successfully.
 > server. The PlanePHD ingestion vertical slice, the ordered database schema,
 > and several repository automation commands are implemented. The Axum API
 > currently contains only a health contract. `apps/server` boots and serves that
-> contract over HTTP, but has no database pool, readiness route, graceful
-> shutdown, or perimeter limits. Search, comparison, and authentication are not
+> contract over HTTP and builds a verified database pool, but has no readiness
+> route, graceful shutdown, or perimeter limits. Search, comparison, and authentication are not
 > implemented end to end. The Rust ingestion path
 > passed all six deployment gates, including the SQL-versus-Rust parity run that
 > justified retiring the legacy loader; that gate is now a golden-snapshot
@@ -115,7 +115,9 @@ The layer responsibilities are:
   URLs.
 - `aircraft_observability`: structured tracing initialization.
 - `apps/server`: the runtime composition root. Loads settings, initializes
-  tracing, binds a listener, and serves `aircraft_api::router()`.
+  tracing, builds the database pool, binds a listener, and serves
+  `aircraft_api::router()`. The pool is held for the lifetime of the process;
+  no route reads from it yet.
 
 HTTP DTOs, application inputs, domain values, and database rows are separate
 representations. Boundary conversions should remain explicit as the system is
@@ -298,11 +300,20 @@ Server settings:
 | `APP__HTTP__HOST` | Bind host; defaults to `127.0.0.1`, and must not be blank |
 | `APP__HTTP__PORT` | Bind port; defaults to `8080`, and must be 1-65535. Zero is rejected: it asks the OS for an arbitrary port, which no client could be told to reach |
 | `APP__DATABASE__URL` | PostgreSQL URL for the server's runtime role; required, and must parse as a URL with a `postgres://` or `postgresql://` scheme naming a host or a database |
+| `APP__DATABASE__MAX_CONNECTIONS` | Pool size; defaults to `10`, and must be greater than zero |
+| `APP__DATABASE__ACQUIRE_TIMEOUT_SECONDS` | How long a caller waits for a pooled connection; defaults to `5`, and must be greater than zero |
+| `APP__DATABASE__STATEMENT_TIMEOUT_SECONDS` | Per-statement ceiling applied to every pooled session; defaults to `30`, and must be greater than zero |
 
 `APP__DATABASE__URL` is loaded and validated on demand by
 `DatabaseSettings::load()`, which parses the URL so a malformed one fails while
 configuration loads rather than at the first connection. No rejection quotes the
-value, because it carries a password. No pool is constructed with it yet.
+value, because it carries a password.
+
+The URL must name the restricted runtime role, not the schema owner. Create it
+with `just db-create-app-role` and `just db-grant-app-role`, which run
+`database/roles/create_app_role.sql` and `database/roles/app_grants.sql`. Every
+pooled connection also runs with an empty `search_path`, so the server's SQL
+must be schema-qualified; an unqualified name does not resolve.
 
 Ingestion settings:
 
@@ -335,7 +346,8 @@ just static
 ```
 
 The full Rust suite starts disposable `postgres:16-alpine` containers for the
-ingestion and repository integration tests, so Docker must be running:
+ingestion, repository, and server-composition integration tests, so Docker must
+be running:
 
 ```bash
 just test

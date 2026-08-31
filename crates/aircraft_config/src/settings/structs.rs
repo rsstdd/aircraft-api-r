@@ -16,15 +16,23 @@ pub struct HttpSettings {
   pub port: u16,
 }
 
-/// The `PostgreSQL` connection the server's runtime role uses.
+/// The `PostgreSQL` connection and pool bounds the server's runtime role uses.
 ///
-/// Loaded on demand rather than as a field of [`Settings`] so that starting the
-/// server needs no database configuration until a story opens a pool. The URL
-/// carries a password, so it is a [`SecretString`] and must never reach a log,
-/// a `Debug` rendering, or a diagnostic.
+/// Loaded on demand rather than as a field of [`Settings`] so a component that
+/// needs no database is not made to configure one. The URL carries a password,
+/// so it is a [`SecretString`] and must never reach a log, a `Debug` rendering,
+/// or a diagnostic.
+///
+/// There is deliberately no lock timeout here. The ingestion pool sets one
+/// because it takes advisory locks and writes; the server does neither, and a
+/// bound with no contended lock to bound is a setting nobody can tune against
+/// an observed failure.
 #[derive(Clone, Debug, Deserialize)]
 pub struct DatabaseSettings {
   pub url: SecretString,
+  pub max_connections: u32,
+  pub acquire_timeout_seconds: u64,
+  pub statement_timeout_seconds: u64,
 }
 
 #[derive(Clone, Debug, Deserialize)]
@@ -103,6 +111,18 @@ impl DatabaseSettings {
       // blank one fail through the same message naming the full setting path,
       // instead of surfacing serde's "missing field `database`".
       .set_default("database.url", "")?
+      // Ten connections is the pool the server can hold without crowding the
+      // ingestion role on a shared local PostgreSQL, whose default
+      // `max_connections` is 100 and which already grants five to ingestion.
+      .set_default("database.max_connections", 10_u32)?
+      // Five seconds is longer than a healthy acquire and shorter than an
+      // HTTP client's patience, so exhaustion surfaces as a fast failure
+      // rather than a request queue growing behind a saturated pool.
+      .set_default("database.acquire_timeout_seconds", 5_u64)?
+      // Thirty seconds bounds a single statement well above any read this
+      // service is designed to serve, so it ends a runaway query without
+      // cancelling work that was merely slow.
+      .set_default("database.statement_timeout_seconds", 30_u64)?
       .build()?
       .try_deserialize()?;
     validate_database_settings(&settings.database)?;
@@ -222,6 +242,26 @@ fn validate_database_settings(settings: &DatabaseSettings) -> Result<(), ConfigE
   // socket connection `SQLx` supports.
   if url.host_str().is_none_or(str::is_empty) && url.path().trim_matches('/').is_empty() {
     return Err(ConfigError::Message("database.url must name a host or a database".to_owned()));
+  }
+
+  // Each bound is rejected at zero under its own setting path. A pool of zero
+  // admits nothing, an acquire timeout of zero gives up before waiting, and
+  // `PostgreSQL` reads a statement timeout of zero as no timeout at all -- the
+  // opposite of the ceiling the setting exists to impose.
+  if settings.max_connections == 0 {
+    return Err(ConfigError::Message(
+      "database.max_connections must be greater than zero".to_owned(),
+    ));
+  }
+  if settings.acquire_timeout_seconds == 0 {
+    return Err(ConfigError::Message(
+      "database.acquire_timeout_seconds must be greater than zero".to_owned(),
+    ));
+  }
+  if settings.statement_timeout_seconds == 0 {
+    return Err(ConfigError::Message(
+      "database.statement_timeout_seconds must be greater than zero".to_owned(),
+    ));
   }
 
   Ok(())
@@ -478,5 +518,90 @@ mod tests {
         "Debug output revealed the {scheme} credential"
       );
     }
+  }
+
+  /// A URL every pool-bound test can reuse, valid enough to reach the bound
+  /// checks that follow it.
+  fn database_url() -> String {
+    format!("postgres://aircraft_api_app:{PASSWORD}@localhost:5432/aircraft")
+  }
+
+  /// The bounds carry defaults so a fresh clone starts the server with the URL
+  /// as its only required database setting, matching how the ingestion settings
+  /// default everything except their URL.
+  #[test]
+  fn database_pool_bounds_load_with_built_in_defaults() {
+    let url = database_url();
+
+    let settings = load_database(&[("APP__DATABASE__URL", url.as_str())])
+      .expect("the pool bounds must load with no configuration");
+
+    assert_eq!(settings.max_connections, 10);
+    assert_eq!(settings.acquire_timeout_seconds, 5);
+    assert_eq!(settings.statement_timeout_seconds, 30);
+  }
+
+  #[test]
+  fn an_app_environment_value_overrides_each_pool_bound() {
+    let url = database_url();
+
+    let settings = load_database(&[
+      ("APP__DATABASE__URL", url.as_str()),
+      ("APP__DATABASE__MAX_CONNECTIONS", "24"),
+      ("APP__DATABASE__ACQUIRE_TIMEOUT_SECONDS", "9"),
+      ("APP__DATABASE__STATEMENT_TIMEOUT_SECONDS", "45"),
+    ])
+    .expect("APP__ pool bounds must load");
+
+    assert_eq!(settings.max_connections, 24);
+    assert_eq!(settings.acquire_timeout_seconds, 9);
+    assert_eq!(settings.statement_timeout_seconds, 45);
+  }
+
+  /// Each bound is asserted through its own setting path rather than a shared
+  /// `is_err`, which would still pass with two of the three checks deleted.
+  ///
+  /// Zero means something different and useless for each: a pool admitting no
+  /// connection, an acquire that gives up before waiting, and a statement
+  /// timeout that `PostgreSQL` reads as no timeout at all -- the opposite of the
+  /// bound being asked for.
+  #[test]
+  fn a_zero_pool_bound_is_rejected_with_its_setting_path() {
+    const CASES: [(&str, &str); 3] = [
+      ("APP__DATABASE__MAX_CONNECTIONS", "database.max_connections"),
+      ("APP__DATABASE__ACQUIRE_TIMEOUT_SECONDS", "database.acquire_timeout_seconds"),
+      ("APP__DATABASE__STATEMENT_TIMEOUT_SECONDS", "database.statement_timeout_seconds"),
+    ];
+    let url = database_url();
+
+    for (key, path) in CASES {
+      let error = load_database(&[("APP__DATABASE__URL", url.as_str()), (key, "0")])
+        .expect_err("a zero bound must not reach pool construction");
+
+      assert!(
+        error.to_string().contains(path),
+        "the failure must name its setting path for {key}: {error}"
+      );
+    }
+  }
+
+  /// The accepted side of the boundary above. Paired with it, this fixes each
+  /// rejection at zero rather than somewhere below the default: a check that
+  /// demanded two or more would fail here.
+  #[test]
+  fn the_smallest_usable_pool_bounds_load() {
+    let url = database_url();
+
+    let settings = load_database(&[
+      ("APP__DATABASE__URL", url.as_str()),
+      ("APP__DATABASE__MAX_CONNECTIONS", "1"),
+      ("APP__DATABASE__ACQUIRE_TIMEOUT_SECONDS", "1"),
+      ("APP__DATABASE__STATEMENT_TIMEOUT_SECONDS", "1"),
+    ])
+    .expect("the smallest usable bounds must load");
+
+    assert_eq!(settings.max_connections, 1);
+    assert_eq!(settings.acquire_timeout_seconds, 1);
+    assert_eq!(settings.statement_timeout_seconds, 1);
   }
 }
