@@ -169,13 +169,20 @@ const RUNTIME_ROLE_PASSWORD: &str = "gate-only-runtime-password";
 /// may do, so each case asserts `42501` exactly. `CREATE EXTENSION` reached
 /// `3F000` on the first run of this gate; the exact-code assertion is what
 /// caught it.
+///
+/// The temporary-table case is the one statement that needs no qualification: a
+/// temp table resolves into `pg_temp` without consulting `search_path`. It is
+/// here because the other four passed while the criterion did not hold --
+/// `PostgreSQL` grants TEMPORARY on a database to PUBLIC, so the restricted
+/// role created temporary tables until `app_grants.sql` revoked that grant.
 #[tokio::test]
 async fn the_runtime_role_cannot_create_schemas_extensions_tables_or_roles() -> TestResult {
-  const REFUSED: [&str; 4] = [
+  const REFUSED: [&str; 5] = [
     "CREATE SCHEMA escalation",
     "CREATE EXTENSION pgcrypto SCHEMA public",
     "CREATE TABLE public.escalation (id INT)",
     "CREATE ROLE escalation",
+    "CREATE TEMP TABLE escalation (id INT)",
   ];
   let (container, _ready) = start_postgres(MAX_CONNECTIONS, Duration::from_secs(2)).await?;
   run_psql(
@@ -205,6 +212,64 @@ async fn the_runtime_role_cannot_create_schemas_extensions_tables_or_roles() -> 
       "{statement} must be refused for insufficient privilege, not merely fail: {error}"
     );
   }
+  Ok(())
+}
+
+/// A direct grant is the vector that neither the conformance guard nor the
+/// `PUBLIC` revoke reaches on its own.
+///
+/// `create_app_role.sql` bounds an existing role by effective CREATE privilege
+/// and never inspects TEMPORARY, and `PostgreSQL` sums a role's own grants with
+/// those it holds through `PUBLIC` -- so a role that arrives already holding
+/// `GRANT TEMPORARY` passes the guard and outlives the `PUBLIC` revoke. That is
+/// precisely the case the guard exists for: a role this repository did not
+/// create.
+///
+/// The grant lands between the two provisioning steps because that is the order
+/// an operator reaches it in, and the second `create_app_role.sql` run is the
+/// half that proves the guard *accepts* such a role rather than rejecting it --
+/// without it, this would still pass if the guard simply refused to proceed.
+#[tokio::test]
+async fn a_directly_granted_temporary_privilege_does_not_survive_provisioning() -> TestResult {
+  let (container, _ready) = start_postgres(MAX_CONNECTIONS, Duration::from_secs(2)).await?;
+  run_psql(
+    &container,
+    CREATE_APP_ROLE_SQL,
+    &[("app_role", RUNTIME_ROLE)],
+    &[("API_ROLE_PASSWORD", RUNTIME_ROLE_PASSWORD)],
+  )?;
+  run_psql(
+    &container,
+    r#"GRANT TEMPORARY ON DATABASE :"DBNAME" TO :"app_role";"#,
+    &[("app_role", RUNTIME_ROLE)],
+    &[],
+  )?;
+  run_psql(
+    &container,
+    CREATE_APP_ROLE_SQL,
+    &[("app_role", RUNTIME_ROLE)],
+    &[("API_ROLE_PASSWORD", RUNTIME_ROLE_PASSWORD)],
+  )
+  .expect("the guard must accept a role whose only extra privilege is TEMPORARY");
+  run_psql(&container, APP_GRANTS_SQL, &[("app_role", RUNTIME_ROLE)], &[])?;
+
+  let url = container
+    .database_url
+    .replace("postgres:postgres@", &format!("{RUNTIME_ROLE}:{RUNTIME_ROLE_PASSWORD}@"));
+  let pool = connect(&url, MAX_CONNECTIONS, ACQUIRE_TIMEOUT_SECONDS, STATEMENT_TIMEOUT_SECONDS)
+    .await
+    .expect("the restricted role must still be able to connect");
+
+  let error = query("CREATE TEMP TABLE escalation (id INT)")
+    .execute(&pool)
+    .await
+    .expect_err("a directly granted TEMPORARY must not survive provisioning");
+
+  assert_eq!(
+    error.as_database_error().and_then(DatabaseError::code).as_deref(),
+    Some("42501"),
+    "the direct grant must be revoked, not merely shadowed by the PUBLIC revoke: {error}"
+  );
   Ok(())
 }
 
