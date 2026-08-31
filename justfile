@@ -88,6 +88,10 @@ lint:
 deny:
     cargo run --locked --package xtask -- deny
 
+# Reconcile the deny.toml build-script allowlist with the lockfile.
+deny-pins *ARGS:
+    cargo run --locked --package xtask -- deny-pins {{ARGS}}
+
 # NOTE: this is currently equivalent to `just check`. The workspace depends on
 # sqlx-core/sqlx-postgres directly, without the `sqlx` facade or its `macros`
 # feature, and uses only runtime-checked query/query_scalar/raw_sql. SQLX_OFFLINE
