@@ -41,5 +41,8 @@ uuid.workspace = true
 [dev-dependencies]
 # The readiness port is implemented by fakes in the router tests.
 async-trait.workspace = true
+# `tests/request_tracing.rs` reads the per-request event back through a JSON
+# subscriber it installs on its own futures; nothing here installs one globally.
+tracing-subscriber.workspace = true
 tokio = { workspace = true, features = ["macros", "rt"] }
 tower = { workspace = true, features = ["util"] }

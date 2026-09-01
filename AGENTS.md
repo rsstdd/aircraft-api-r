@@ -23,7 +23,10 @@ end-to-end socket tests. `/ready` reads from the pool through an application
 port under a fixed 250 ms deadline, and reports failure as an RFC 9457 problem
 document that carries no diagnostic. `SIGINT` and `SIGTERM` stop acceptance,
 fail readiness, and drain in-flight requests for a configured window before
-cancelling them. There is no request tracing or perimeter limits. General
+cancelling them. Every response carries an `X-Request-Id`, adopted from the
+caller when it is usable and generated otherwise, and every request leaves one
+structured event recording its method, matched route, status, latency, and that
+identifier. There are no perimeter limits. General
 aircraft CRUD, search, comparison, mission scoring, authentication, and SQLx
 offline metadata are not implemented end to end.
 Canonical-value curation is implemented (`aircraft-ingest curate`), and the
@@ -236,7 +239,7 @@ server -> composes adapters and runtime infrastructure
 |---|---|---|
 | `Cargo.toml` | Workspace membership, shared dependencies, lints, profiles | Cargo resolves eleven packages |
 | `apps/ingest/` | Ingestion CLI composition root | Working deployment candidate with Docker-backed gates |
-| `apps/server/` | HTTP runtime composition | Boots, builds a verified database pool, serves health, readiness, and version, and drains on signal; no perimeter limits |
+| `apps/server/` | HTTP runtime composition | Boots, builds a verified database pool, serves health, readiness, and version, correlates and traces every request, and drains on signal; no perimeter limits |
 | `crates/aircraft_domain/` | Pure entities, values, units, invariants | Ingestion invariants implemented; broader domain mostly scaffolded |
 | `crates/aircraft_app/` | Use cases and ports | Ingestion orchestration implemented; broader application incomplete |
 | `crates/aircraft_api/` | Axum DTOs, routes, middleware, OpenAPI | Health, readiness, and version routes, RFC 9457 problem documents, and the OpenAPI contract |

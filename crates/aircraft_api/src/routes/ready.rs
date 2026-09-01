@@ -19,14 +19,31 @@ pub struct ReadyResponse {
   tag = "health",
   summary = "Check readiness to serve database-backed traffic",
   description = "Report whether the database is reachable and answering statements.",
+  params(
+    ("X-Request-Id" = Option<String>, Header, description = "Correlation identifier. \
+     Adopted when it is 1-128 visible ASCII characters sent exactly once; otherwise \
+     the service generates one.", nullable = false)
+  ),
   responses(
-    (status = 200, description = "The database answered", body = ReadyResponse),
+    (
+      status = 200,
+      description = "The database answered",
+      body = ReadyResponse,
+      headers(
+        ("X-Request-Id" = String, description = "The correlation identifier for this \
+         request, echoed from the client or generated here.")
+      )
+    ),
     (
       status = 503,
       description = "The service is draining, or the database could not be reached \
                      within the probe deadline",
       body = ProblemDetails,
-      content_type = "application/problem+json"
+      content_type = "application/problem+json",
+      headers(
+        ("X-Request-Id" = String, description = "The correlation identifier for this \
+         request, echoed from the client or generated here.")
+      )
     )
   )
 )]

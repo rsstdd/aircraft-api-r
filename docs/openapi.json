@@ -27,9 +27,28 @@
         "summary": "Check service health",
         "description": "Report whether the process can serve HTTP requests.",
         "operationId": "health",
+        "parameters": [
+          {
+            "name": "X-Request-Id",
+            "in": "header",
+            "description": "Correlation identifier. Adopted when it is 1-128 visible ASCII characters sent exactly once; otherwise the service generates one.",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
         "responses": {
           "200": {
             "description": "Service is running",
+            "headers": {
+              "X-Request-Id": {
+                "schema": {
+                  "type": "string"
+                },
+                "description": "The correlation identifier for this request, echoed from the client or generated here."
+              }
+            },
             "content": {
               "application/json": {
                 "schema": {
@@ -49,9 +68,28 @@
         "summary": "Check readiness to serve database-backed traffic",
         "description": "Report whether the database is reachable and answering statements.",
         "operationId": "ready",
+        "parameters": [
+          {
+            "name": "X-Request-Id",
+            "in": "header",
+            "description": "Correlation identifier. Adopted when it is 1-128 visible ASCII characters sent exactly once; otherwise the service generates one.",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
         "responses": {
           "200": {
             "description": "The database answered",
+            "headers": {
+              "X-Request-Id": {
+                "schema": {
+                  "type": "string"
+                },
+                "description": "The correlation identifier for this request, echoed from the client or generated here."
+              }
+            },
             "content": {
               "application/json": {
                 "schema": {
@@ -62,6 +100,14 @@
           },
           "503": {
             "description": "The service is draining, or the database could not be reached within the probe deadline",
+            "headers": {
+              "X-Request-Id": {
+                "schema": {
+                  "type": "string"
+                },
+                "description": "The correlation identifier for this request, echoed from the client or generated here."
+              }
+            },
             "content": {
               "application/problem+json": {
                 "schema": {
@@ -81,9 +127,28 @@
         "summary": "Report the running build",
         "description": "Report the package version and, when it was stamped in at build time, the commit.",
         "operationId": "version",
+        "parameters": [
+          {
+            "name": "X-Request-Id",
+            "in": "header",
+            "description": "Correlation identifier. Adopted when it is 1-128 visible ASCII characters sent exactly once; otherwise the service generates one.",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
         "responses": {
           "200": {
             "description": "The running build",
+            "headers": {
+              "X-Request-Id": {
+                "schema": {
+                  "type": "string"
+                },
+                "description": "The correlation identifier for this request, echoed from the client or generated here."
+              }
+            },
             "content": {
               "application/json": {
                 "schema": {
