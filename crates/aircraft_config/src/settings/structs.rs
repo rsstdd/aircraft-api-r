@@ -21,6 +21,20 @@ pub struct HttpSettings {
   /// accepts a zero [`std::time::Duration`] would put two different contracts
   /// on one value.
   pub shutdown_grace_seconds: u64,
+  /// The largest request body the perimeter accepts, in bytes.
+  pub max_request_body_bytes: usize,
+  /// How long a handler may run before the perimeter answers `504`.
+  pub request_timeout_seconds: u64,
+  /// How many requests may be in flight before the perimeter sheds with `503`.
+  pub max_concurrent_requests: usize,
+  /// Origins allowed to read a cross-origin response, as a comma-separated list.
+  ///
+  /// Empty is default-deny: no cross-origin request is allowed until an origin
+  /// is named. Entries are validated while settings load and
+  /// consumed by `aircraft_api::PerimeterLimits::new`, which turns each into a
+  /// header value.
+  #[serde(deserialize_with = "comma_separated")]
+  pub cors_allowed_origins: Vec<String>,
 }
 
 /// The `PostgreSQL` connection and pool bounds the server's runtime role uses.
@@ -80,6 +94,22 @@ impl Settings {
       // SIGKILL arrives. A deployment must set this strictly below its own
       // termination grace period, which is what `.env.example` says.
       .set_default("http.shutdown_grace_seconds", 30_u64)?
+      // One mebibyte is far above any request these routes accept -- every one
+      // of them is a bodyless GET -- and far below what a body would have to be
+      // to cost real memory. It is the ceiling `.env.example` already named.
+      .set_default("http.max_request_body_bytes", 1_048_576_u64)?
+      // Thirty seconds clears the 250 ms readiness deadline in
+      // `aircraft_db::readiness` by two orders of magnitude, so the timeout ends
+      // a genuinely stuck handler rather than a merely slow dependency.
+      .set_default("http.request_timeout_seconds", 30_u64)?
+      // Well above the database pool's default of ten, so the pool stays the
+      // first constraint under normal load and this bound only engages when
+      // something is wrong. Shedding below the pool size would refuse work the
+      // service could have served.
+      .set_default("http.max_concurrent_requests", 256_u64)?
+      // Empty is default-deny. It is also why the wildcard rejection below can
+      // only ever fire on a value somebody set deliberately.
+      .set_default("http.cors_allowed_origins", "")?
       .build()?
       .try_deserialize()?;
 
@@ -104,6 +134,8 @@ impl Settings {
           .to_owned(),
       ));
     }
+
+    validate_perimeter_limits(&settings.http)?;
 
     Ok(settings)
   }
@@ -219,6 +251,145 @@ fn base_config(
     .add_source(File::with_name(&format!("{directory}/defaults")).required(false))
     .add_source(File::with_name(&format!("{directory}/config")).required(false))
     .add_source(environment)
+}
+
+/// Reads a comma-separated list from one scalar setting.
+///
+/// The list arrives as a scalar rather than as a sequence because `config`'s
+/// environment source only yields a `Vec` under `try_parsing`, which re-types
+/// *every* variable on that source through bool, then integer, then float
+/// before any list handling reaches it. `app_environment` is shared by all
+/// four loaders in this module, so enabling it to read one field would change
+/// how `database.url`, `http.port`, and the ingest bounds are typed. Splitting
+/// one string keeps the blast radius to this field.
+///
+/// A wholly blank value is an empty list, which is how an unset setting spells
+/// itself. Interior blanks are *kept* rather than filtered, so
+/// `"https://a,,https://b"` is rejected by the perimeter validator instead
+/// of quietly losing an entry the operator meant to write.
+///
+/// An override file supplies the same scalar string. A JSON5 array is
+/// deliberately not accepted; one spelling per setting is easier to document
+/// than two.
+fn comma_separated<'de, D>(deserializer: D) -> Result<Vec<String>, D::Error>
+where
+  D: serde::Deserializer<'de>,
+{
+  let raw = String::deserialize(deserializer)?;
+  if raw.trim().is_empty() {
+    return Ok(Vec::new());
+  }
+
+  Ok(raw.split(',').map(str::trim).map(str::to_owned).collect())
+}
+
+/// The origin spelling that `tower_http::cors::AllowOrigin::list` panics on.
+const WILDCARD_ORIGIN: &str = "*";
+
+/// Rejects a perimeter bound the server could not enforce.
+///
+/// Every branch names its full setting path, the way the host, port, and pool
+/// bounds already do, so a misconfigured deployment fails naming the value that
+/// is wrong.
+fn validate_perimeter_limits(settings: &HttpSettings) -> Result<(), ConfigError> {
+  // Each zero is rejected under its own path. A body limit of zero refuses
+  // every request, a deadline of zero times out every handler before it runs,
+  // and a concurrency limit of zero sheds everything -- three different ways to
+  // configure a server that serves nothing.
+  if settings.max_request_body_bytes == 0 {
+    return Err(ConfigError::Message(
+      "http.max_request_body_bytes must be greater than zero".to_owned(),
+    ));
+  }
+  if settings.request_timeout_seconds == 0 {
+    return Err(ConfigError::Message(
+      "http.request_timeout_seconds must be greater than zero".to_owned(),
+    ));
+  }
+  if settings.max_concurrent_requests == 0 {
+    return Err(ConfigError::Message(
+      "http.max_concurrent_requests must be greater than zero".to_owned(),
+    ));
+  }
+
+  settings.cors_allowed_origins.iter().try_for_each(|origin| validate_cors_origin(origin))
+}
+
+/// Rejects anything that is not exactly what a browser puts in `Origin`.
+///
+/// The wildcard rejection is the load-bearing one.
+/// `aircraft_api::PerimeterLimits::cors_layer` hands these to
+/// `tower_http::cors::AllowOrigin::list`, which **panics** on a wildcard, so
+/// this check is what makes that panic unreachable. The two sides name each
+/// other deliberately: deleting this one moves a configuration mistake into a
+/// startup crash.
+///
+/// The rest exist because an allowed origin is matched by byte equality against
+/// the request's `Origin` header. Anything that is not already in the spelling a
+/// browser sends -- a trailing slash, an uppercase host, an explicit default
+/// port, a Unicode host that should be punycode -- would be accepted here,
+/// stored, and then silently match nothing, leaving an operator with CORS that
+/// looks configured and denies every request with no diagnostic anywhere.
+///
+/// No rejection renders `origin`. A malformed origin may contain userinfo,
+/// query credentials, or a fragment token, and startup diagnostics are not a
+/// safe place to publish any of them. The canonical spelling is rendered only
+/// after those components have been rejected.
+fn validate_cors_origin(origin: &str) -> Result<(), ConfigError> {
+  // Checked before parsing so the diagnostic names the wildcard rather than
+  // reporting `*` as a malformed URL. That message is the operator-facing half
+  // of "production configuration rejects wildcard CORS origins".
+  if origin == WILDCARD_ORIGIN {
+    return Err(ConfigError::Message(
+      "http.cors_allowed_origins must not contain the wildcard `*`; name each allowed origin"
+        .to_owned(),
+    ));
+  }
+  if origin.is_empty() {
+    return Err(ConfigError::Message(
+      "http.cors_allowed_origins must not contain a blank entry".to_owned(),
+    ));
+  }
+
+  let Ok(url) = Url::parse(origin) else {
+    return Err(ConfigError::Message(
+      "http.cors_allowed_origins contains an entry that is not a valid absolute URL".to_owned(),
+    ));
+  };
+  if url.host_str().is_none_or(str::is_empty) {
+    return Err(ConfigError::Message(
+      "http.cors_allowed_origins contains an entry that names no host".to_owned(),
+    ));
+  }
+  // An `Origin` header carries a scheme, a host, and an optional port, and
+  // nothing else. This runs before the spelling check below so that check can
+  // rely on the path being exactly one slash.
+  if url.path() != "/"
+    || url.query().is_some()
+    || url.fragment().is_some()
+    || !url.username().is_empty()
+    || url.password().is_some()
+  {
+    return Err(ConfigError::Message(
+      "http.cors_allowed_origins entries must contain only a scheme, host, and optional port"
+        .to_owned(),
+    ));
+  }
+
+  // `Url` normalises case, default ports, and Unicode hosts, so parsing and
+  // re-rendering yields the spelling a browser would send. The path is `/` by
+  // the check above, so stripping that one slash is exact. Comparing the two is
+  // what turns four separate silent-mismatch bugs into one message that names
+  // the spelling to use.
+  let canonical = url.as_str().strip_suffix('/').unwrap_or_else(|| url.as_str());
+  if canonical != origin {
+    return Err(ConfigError::Message(format!(
+      "http.cors_allowed_origins contains an entry that is not the spelling a browser sends; \
+       write {canonical:?}"
+    )));
+  }
+
+  Ok(())
 }
 
 /// The URL schemes `SQLx` accepts for `PostgreSQL`.
@@ -431,6 +602,192 @@ mod tests {
       assert_eq!(
         settings.http.shutdown_grace_seconds, expected,
         "the configured window {configured} did not reach the settings"
+      );
+    }
+  }
+
+  /// The four perimeter defaults, so a fresh clone starts the server bounded
+  /// without configuring anything.
+  ///
+  /// The origin list is asserted empty rather than merely present: an empty
+  /// allow-list is default-deny, and a loader that defaulted it to `["*"]` --
+  /// the shape most CORS examples show -- would satisfy every other assertion
+  /// in this file while opening the service to every origin on the web.
+  #[test]
+  fn the_perimeter_bounds_load_with_built_in_defaults() {
+    let settings = load_http(&[]).expect("the perimeter bounds must load with no configuration");
+
+    assert_eq!(settings.http.max_request_body_bytes, 1_048_576);
+    assert_eq!(settings.http.request_timeout_seconds, 30);
+    assert_eq!(settings.http.max_concurrent_requests, 256);
+    assert!(
+      settings.http.cors_allowed_origins.is_empty(),
+      "an unset origin list must deny every origin, not allow every origin: {:?}",
+      settings.http.cors_allowed_origins
+    );
+  }
+
+  #[test]
+  fn an_app_environment_value_overrides_each_perimeter_bound() {
+    let settings = load_http(&[
+      ("APP__HTTP__MAX_REQUEST_BODY_BYTES", "2048"),
+      ("APP__HTTP__REQUEST_TIMEOUT_SECONDS", "7"),
+      ("APP__HTTP__MAX_CONCURRENT_REQUESTS", "9"),
+    ])
+    .expect("APP__ perimeter bounds must load");
+
+    assert_eq!(settings.http.max_request_body_bytes, 2048);
+    assert_eq!(settings.http.request_timeout_seconds, 7);
+    assert_eq!(settings.http.max_concurrent_requests, 9);
+  }
+
+  /// Each bound is asserted through its own setting path rather than a shared
+  /// `is_err`, which would still pass with two of the three checks deleted.
+  #[test]
+  fn each_perimeter_bound_rejects_zero_naming_its_setting() {
+    const CASES: [(&str, &str); 3] = [
+      ("APP__HTTP__MAX_REQUEST_BODY_BYTES", "http.max_request_body_bytes"),
+      ("APP__HTTP__REQUEST_TIMEOUT_SECONDS", "http.request_timeout_seconds"),
+      ("APP__HTTP__MAX_CONCURRENT_REQUESTS", "http.max_concurrent_requests"),
+    ];
+
+    for (key, path) in CASES {
+      let error =
+        load_http(&[(key, "0")]).expect_err("a zero perimeter bound must not reach the router");
+
+      assert!(
+        error.to_string().contains(path),
+        "the failure must name its setting path for {key}: {error}"
+      );
+    }
+  }
+
+  /// Acceptance criterion 4.
+  ///
+  /// The wildcard is refused wherever it appears in the list, not merely when
+  /// it is the only entry: `AllowOrigin::list` panics on a `*` anywhere among
+  /// its origins, so a check that only inspected the first would turn this
+  /// configuration mistake into a startup crash.
+  #[test]
+  fn a_wildcard_cors_origin_is_rejected_with_its_setting_path() {
+    for configured in ["*", "https://app.example.com,*", "*,https://app.example.com"] {
+      let error = load_http(&[("APP__HTTP__CORS_ALLOWED_ORIGINS", configured)])
+        .expect_err("a wildcard origin must not reach the CORS layer");
+      let message = error.to_string();
+
+      assert!(
+        message.contains("http.cors_allowed_origins"),
+        "the failure must name its setting path for {configured:?}: {message}"
+      );
+      assert!(
+        message.contains("wildcard"),
+        "the failure must name the wildcard rule rather than fall through to the generic \
+         parse error, which quotes the value and would satisfy a laxer assertion, for \
+         {configured:?}: {message}"
+      );
+    }
+  }
+
+  /// The accepted side, and the rule that keeps an accepted origin usable.
+  ///
+  /// The round trip is the load-bearing assertion. `Url::parse` is what
+  /// validates these, and `Url::parse("https://app.example.com").to_string()`
+  /// yields a trailing slash -- an origin no browser ever sends. A validator
+  /// that stored what it parsed instead of what it was given would satisfy
+  /// every other assertion here and allowlist two origins that match nothing.
+  #[test]
+  fn an_origin_survives_configuration_without_gaining_a_trailing_slash() {
+    let settings = load_http(&[(
+      "APP__HTTP__CORS_ALLOWED_ORIGINS",
+      "https://app.example.com, http://localhost:5173",
+    )])
+    .expect("explicit origins must load");
+
+    assert_eq!(
+      settings.http.cors_allowed_origins,
+      vec!["https://app.example.com".to_owned(), "http://localhost:5173".to_owned()],
+      "each entry must be trimmed and stored exactly as written"
+    );
+  }
+
+  /// Everything that is not an origin, including the two shapes that parse as
+  /// URLs perfectly well and would then match nothing at runtime.
+  #[test]
+  fn a_value_that_is_not_an_origin_is_rejected_with_its_setting_path() {
+    const CASES: [&str; 6] = [
+      "https://app.example.com,,http://localhost:5173",
+      "app.example.com",
+      "https://",
+      "https://app.example.com/callback",
+      "https://app.example.com?tenant=1",
+      "https://curator:hunter2@app.example.com",
+    ];
+
+    for configured in CASES {
+      let error = load_http(&[("APP__HTTP__CORS_ALLOWED_ORIGINS", configured)])
+        .expect_err("only a bare origin may be allowlisted");
+
+      assert!(
+        error.to_string().contains("http.cors_allowed_origins"),
+        "the failure must name its setting path for {configured:?}: {error}"
+      );
+    }
+  }
+
+  #[test]
+  fn rejected_cors_origins_do_not_reach_diagnostics() {
+    let cases = [
+      format!("https://curator:{PASSWORD}@app.example.com"),
+      format!("https://app.example.com?token={PASSWORD}"),
+      format!("https://app.example.com#{PASSWORD}"),
+    ];
+
+    for configured in cases {
+      let error = load_http(&[("APP__HTTP__CORS_ALLOWED_ORIGINS", configured.as_str())])
+        .expect_err("an origin carrying a secret must be rejected");
+      let message = error.to_string();
+
+      assert!(
+        message.contains("http.cors_allowed_origins"),
+        "the failure must identify the rejected setting"
+      );
+      assert!(!message.contains(&configured), "the failure must not echo the rejected origin");
+      assert!(!message.contains(PASSWORD), "the failure must not disclose embedded credentials");
+    }
+  }
+
+  /// An allowed origin is matched against the request's `Origin` header by byte
+  /// equality, so a value that is merely *equivalent* to what a browser sends
+  /// is not good enough -- it would be accepted, stored, and then match
+  /// nothing, leaving CORS that looks configured and denies everything with no
+  /// diagnostic anywhere.
+  ///
+  /// Every case here parses as a perfectly good URL naming the right host, and
+  /// every one of them was accepted before this rule existed. The expected
+  /// spelling is asserted rather than merely the rejection, because the whole
+  /// point is to hand the operator the string to paste.
+  #[test]
+  fn an_origin_that_is_not_the_spelling_a_browser_sends_is_rejected_with_the_one_to_use() {
+    const CASES: [(&str, &str); 5] = [
+      ("https://app.example.com/", "https://app.example.com"),
+      ("HTTPS://App.Example.COM", "https://app.example.com"),
+      ("https://app.example.com:443", "https://app.example.com"),
+      ("http://localhost:80", "http://localhost"),
+      ("https://caf\u{e9}.example.com", "https://xn--caf-dma.example.com"),
+    ];
+
+    for (configured, expected) in CASES {
+      let error = load_http(&[("APP__HTTP__CORS_ALLOWED_ORIGINS", configured)])
+        .expect_err("an origin no browser would send must not be allowlisted");
+      let message = error.to_string();
+
+      assert!(
+        message.contains("http.cors_allowed_origins"),
+        "the failure must name its setting path for {configured:?}: {message}"
+      );
+      assert!(
+        message.contains(expected),
+        "the failure must name the spelling to use ({expected}) for {configured:?}: {message}"
       );
     }
   }
