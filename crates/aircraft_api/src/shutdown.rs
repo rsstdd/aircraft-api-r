@@ -113,20 +113,14 @@ impl Drop for InFlightGuard {
 /// Counts a request for as long as the perimeter is carrying it and abandons it
 /// if the drain window expires first.
 ///
-/// The scope is body reception *and* handler execution, because this layer sits
-/// outside both `enforce_deadline` and `refuse_oversized_body`. A request that
-/// is still uploading is already counted, so a drain waits for a slow upload the
-/// same way it waits for a slow handler.
+/// The scope is body reception *and* handler execution, since this sits outside
+/// both `enforce_deadline` and `refuse_oversized_body`: a drain waits for a slow
+/// upload the same way it waits for a slow handler. The guard releases when the
+/// handler answers, not when the body reaches the client -- the two coincide
+/// while every route answers in memory.
 ///
-/// The guard is released when the handler returns its response, not when the
-/// body finishes reaching the client. Every route here answers with a complete
-/// in-memory body, so the two coincide; a streaming route would need the guard
-/// carried into the body.
-///
-/// Forced cancellation answers with [`ProblemDetails::shutdown_cancelled`]
-/// rather than `/ready`'s document. The two share a problem type because they
-/// are the same failure class; they differ in `detail`, and each names the
-/// request it actually answered.
+/// Cancellation answers with [`ProblemDetails::shutdown_cancelled`], which
+/// shares `/ready`'s shutdown type but not its `detail`.
 pub async fn track_in_flight(
   State(shutdown): State<ShutdownState>,
   request: Request,

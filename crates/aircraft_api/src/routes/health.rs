@@ -2,7 +2,7 @@ use axum::Json;
 use serde::Serialize;
 use utoipa::ToSchema;
 
-use crate::problem::ProblemDetails;
+use crate::problem::PerimeterResponses;
 
 #[derive(Debug, Serialize, ToSchema)]
 pub struct HealthResponse {
@@ -30,46 +30,7 @@ pub struct HealthResponse {
          request, echoed from the client or generated here.")
       )
     ),
-    (
-      status = 400,
-      description = "The request body could not be read",
-      body = ProblemDetails,
-      content_type = "application/problem+json",
-      headers(
-        ("X-Request-Id" = String, description = "The correlation identifier for this \
-         request, echoed from the client or generated here.")
-      )
-    ),
-    (
-      status = 413,
-      description = "The request body is larger than the perimeter accepts",
-      body = ProblemDetails,
-      content_type = "application/problem+json",
-      headers(
-        ("X-Request-Id" = String, description = "The correlation identifier for this \
-         request, echoed from the client or generated here.")
-      )
-    ),
-    (
-      status = 503,
-      description = "The service is at capacity, or is shutting down",
-      body = ProblemDetails,
-      content_type = "application/problem+json",
-      headers(
-        ("X-Request-Id" = String, description = "The correlation identifier for this \
-         request, echoed from the client or generated here.")
-      )
-    ),
-    (
-      status = 504,
-      description = "The handler did not answer within the perimeter deadline",
-      body = ProblemDetails,
-      content_type = "application/problem+json",
-      headers(
-        ("X-Request-Id" = String, description = "The correlation identifier for this \
-         request, echoed from the client or generated here.")
-      )
-    )
+    PerimeterResponses,
   )
 )]
 #[allow(clippy::unused_async)] // Axum handlers must return a future even when no work is awaited.

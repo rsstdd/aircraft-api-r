@@ -7,7 +7,7 @@
 //! a connection string, but it does see `PersistenceError`, whose message
 //! carries whatever `SQLx` reported.
 
-use std::borrow::Cow;
+use std::{borrow::Cow, collections::BTreeMap};
 
 use axum::{
   Json,
@@ -15,7 +15,13 @@ use axum::{
   response::{IntoResponse, Response},
 };
 use serde::Serialize;
-use utoipa::ToSchema;
+use utoipa::{
+  IntoResponses, ToSchema,
+  openapi::{
+    HeaderBuilder, Ref, RefOr, ResponseBuilder, ResponsesBuilder, content::ContentBuilder,
+    schema::ObjectBuilder,
+  },
+};
 
 /// The media type RFC 9457 assigns to these documents. A client that
 /// distinguishes problems from ordinary payloads keys on this, not on the
@@ -34,19 +40,10 @@ pub struct ProblemDetails {
   pub detail: &'static str,
   /// The specific occurrence this problem describes.
   ///
-  /// Always present. A route-owned problem names its route as a borrowed
-  /// constant; a perimeter problem names the path of the request it refused,
-  /// which it owns. `Cow` is what lets one required field be both.
-  ///
-  /// This field was briefly optional, so that a perimeter refusal -- which can
-  /// answer any request -- would not have to name a route it could not know.
-  /// That was a mistake: `/ready` has answered `503` with an `instance` since
-  /// the readiness route shipped, and a shed or drain-cancelled `503` on that
-  /// same route dropped it. `oasdiff` classifies that as
-  /// `response-property-became-optional`, an error under the `fail-on: WARN`
-  /// gate in `.github/workflows/ci.yml`, and it is a real break for any client
-  /// that reads the field. Naming the actual request path answers the original
-  /// objection honestly: it is the occurrence, not a guess at a route.
+  /// Required, because `/ready` has published one since it shipped and
+  /// `oasdiff` fails the build on `response-property-became-optional`. A route
+  /// names itself with a borrowed constant, a perimeter refusal owns the path
+  /// it refused, and `Cow` is what lets one required field be both.
   #[schema(value_type = String)]
   pub instance: Cow<'static, str>,
 }
@@ -99,11 +96,9 @@ impl ProblemDetails {
 
   /// The drain window expired while this request was still in flight.
   ///
-  /// The same problem *type* as [`Self::shutting_down`], because it is the same
-  /// failure class -- the service is shutting down -- and
-  /// `docs/architecture/http_v1_decisions.md` gives each class one stable type.
-  /// The `detail` is what distinguishes being refused at the door from being
-  /// cut off partway through; both name the request they answered.
+  /// Shares [`Self::shutting_down`]'s type because it is the same failure class,
+  /// which `docs/architecture/http_v1_decisions.md` gives one stable type. Only
+  /// `detail` separates being refused at the door from being cut off partway.
   #[must_use]
   pub fn shutdown_cancelled(instance: &str) -> Self {
     Self {
@@ -117,16 +112,11 @@ impl ProblemDetails {
 
   /// The request body is larger than the perimeter accepts.
   ///
-  /// One of the three perimeter problems below. All three name the path of the
-  /// request they refused rather than a route, because the boundary answers
-  /// before routing is meaningful and has no matched route to cite. The
-  /// correlation identifier in `X-Request-Id` is what ties one of these to a
-  /// specific request, and it is present because `correlation::correlate`
-  /// wraps the whole perimeter.
+  /// The perimeter answers before routing, so this and the two below name the
+  /// refused path rather than a matched route.
   ///
-  /// The detail names no limit. Publishing the exact ceiling tells a caller
-  /// probing for one precisely how much to send, and an operator who needs the
-  /// number has it in configuration.
+  /// The detail names no limit: publishing the ceiling tells a caller probing
+  /// for it exactly how much to send, and an operator has it in configuration.
   #[must_use]
   pub fn payload_too_large(instance: &str) -> Self {
     Self {
@@ -174,11 +164,9 @@ impl ProblemDetails {
 
   /// The refused request's path, bounded before it is reflected back.
   ///
-  /// The path is caller-controlled. `serde_json` escapes it on the way out, so
-  /// this is not an injection guard; it is the size and control-character bound
-  /// `AGENTS.md` requires of anything untrusted that reaches a response, and it
-  /// uses the same 255-character ceiling `aircraft_ingest::sanitize_locator`
-  /// applies to the other untrusted string this workspace echoes back.
+  /// The path is caller-controlled and `serde_json` escapes it, so this is a
+  /// size and control-character bound rather than an injection guard -- the
+  /// same 255-character ceiling `aircraft_ingest::sanitize_locator` uses.
   fn bounded_instance(path: &str) -> Cow<'static, str> {
     const MAX_INSTANCE_CHARS: usize = 255;
 
@@ -195,5 +183,158 @@ impl IntoResponse for ProblemDetails {
     // field rather than alongside it is what keeps them from drifting apart.
     let status = StatusCode::from_u16(self.status).unwrap_or(StatusCode::INTERNAL_SERVER_ERROR);
     (status, [(header::CONTENT_TYPE, PROBLEM_MEDIA_TYPE)], Json(self)).into_response()
+  }
+}
+
+/// The refusals the perimeter can answer *any* route with.
+///
+/// Declared once and referenced from every `#[utoipa::path]` rather than
+/// repeated per route: these four statuses come from middleware that wraps the
+/// whole router, so a route-by-route copy would let one route's contract drift
+/// from what the perimeter actually does.
+pub(crate) struct PerimeterResponses;
+
+impl IntoResponses for PerimeterResponses {
+  fn responses() -> BTreeMap<String, RefOr<utoipa::openapi::Response>> {
+    /// Kept in step with the constructors above; each entry is one of them.
+    const REFUSALS: [(&str, &str); 4] = [
+      ("400", "The request body could not be read"),
+      ("413", "The request body is larger than the perimeter accepts"),
+      ("503", "The service is at capacity, or is shutting down"),
+      ("504", "The handler did not answer within the perimeter deadline"),
+    ];
+
+    REFUSALS
+      .into_iter()
+      .fold(ResponsesBuilder::new(), |responses, (status, description)| {
+        responses.response(
+          status,
+          ResponseBuilder::new()
+            .description(description)
+            .content(
+              PROBLEM_MEDIA_TYPE,
+              ContentBuilder::new().schema(Some(Ref::from_schema_name("ProblemDetails"))).build(),
+            )
+            .header(
+              // The canonical spelling, matching what every route's 200 response
+              // already publishes. `HeaderName` would lowercase it and make one
+              // document disagree with itself.
+              "X-Request-Id",
+              HeaderBuilder::new()
+                .schema(ObjectBuilder::new().schema_type(utoipa::openapi::schema::Type::String))
+                .description(Some(REQUEST_ID_DESCRIPTION))
+                .build(),
+            ),
+        )
+      })
+      .build()
+      .into()
+  }
+}
+
+/// The one description every correlated response gives for `X-Request-Id`.
+const REQUEST_ID_DESCRIPTION: &str =
+  "The correlation identifier for this request, echoed from the client or generated here.";
+
+#[cfg(test)]
+mod tests {
+  // A failing assertion is the point of a test.
+  #![allow(clippy::expect_used)]
+
+  use serde_json::json;
+
+  use super::ProblemDetails;
+
+  /// The published wire form of every problem this service can emit.
+  ///
+  /// One table so the contract is read in one place rather than reassembled
+  /// from the behavioural tests, which assert only the status, type, and
+  /// instance that tell one refusal from another. The expected values are
+  /// literals a reviewer checks against
+  /// `docs/architecture/http_v1_decisions.md`, not values re-derived from the
+  /// constructors -- a copy of the code under test would pass for any contract,
+  /// including a wrong one.
+  ///
+  /// The `instance` a perimeter problem carries is supplied by its caller, so
+  /// `"/refused"` here stands for whatever path was refused.
+  #[test]
+  fn each_problem_serializes_to_its_published_document() {
+    let cases = [
+      (
+        ProblemDetails::malformed_input("/refused"),
+        json!({
+          "type": "/problems/malformed-input",
+          "title": "Bad Request",
+          "status": 400,
+          "detail": "The request body could not be read.",
+          "instance": "/refused",
+        }),
+      ),
+      (
+        ProblemDetails::payload_too_large("/refused"),
+        json!({
+          "type": "/problems/payload-too-large",
+          "title": "Payload Too Large",
+          "status": 413,
+          "detail": "The request body is larger than this service accepts.",
+          "instance": "/refused",
+        }),
+      ),
+      (
+        ProblemDetails::overloaded("/refused"),
+        json!({
+          "type": "/problems/overloaded",
+          "title": "Service Unavailable",
+          "status": 503,
+          "detail": "The service is at capacity and refused this request rather than queueing it.",
+          "instance": "/refused",
+        }),
+      ),
+      (
+        ProblemDetails::deadline_exceeded("/refused"),
+        json!({
+          "type": "/problems/deadline-exceeded",
+          "title": "Gateway Timeout",
+          "status": 504,
+          "detail": "The service did not produce a response within its deadline.",
+          "instance": "/refused",
+        }),
+      ),
+      (
+        ProblemDetails::shutdown_cancelled("/refused"),
+        json!({
+          "type": "/problems/shutting-down",
+          "title": "Service Unavailable",
+          "status": 503,
+          "detail": "The service stopped waiting for this request so it could shut down.",
+          "instance": "/refused",
+        }),
+      ),
+      (
+        ProblemDetails::database_unavailable(),
+        json!({
+          "type": "/problems/database-unavailable",
+          "title": "Service Unavailable",
+          "status": 503,
+          "detail": "The service cannot reach its database.",
+          "instance": "/ready",
+        }),
+      ),
+      (
+        ProblemDetails::shutting_down(),
+        json!({
+          "type": "/problems/shutting-down",
+          "title": "Service Unavailable",
+          "status": 503,
+          "detail": "The service is shutting down and is not accepting new work.",
+          "instance": "/ready",
+        }),
+      ),
+    ];
+
+    for (problem, expected) in cases {
+      let serialized = serde_json::to_value(&problem).expect("a problem document must serialize");
+      assert_eq!(serialized, expected, "the published document changed");
+    }
   }
 }

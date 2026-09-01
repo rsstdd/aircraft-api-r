@@ -387,7 +387,7 @@
           },
           "instance": {
             "type": "string",
-            "description": "The specific occurrence this problem describes.\n\nAlways present. A route-owned problem names its route as a borrowed\nconstant; a perimeter problem names the path of the request it refused,\nwhich it owns. `Cow` is what lets one required field be both.\n\nThis field was briefly optional, so that a perimeter refusal -- which can\nanswer any request -- would not have to name a route it could not know.\nThat was a mistake: `/ready` has answered `503` with an `instance` since\nthe readiness route shipped, and a shed or drain-cancelled `503` on that\nsame route dropped it. `oasdiff` classifies that as\n`response-property-became-optional`, an error under the `fail-on: WARN`\ngate in `.github/workflows/ci.yml`, and it is a real break for any client\nthat reads the field. Naming the actual request path answers the original\nobjection honestly: it is the occurrence, not a guess at a route."
+            "description": "The specific occurrence this problem describes.\n\nRequired, because `/ready` has published one since it shipped and\n`oasdiff` fails the build on `response-property-became-optional`. A route\nnames itself with a borrowed constant, a perimeter refusal owns the path\nit refused, and `Cow` is what lets one required field be both."
           },
           "status": {
             "type": "integer",

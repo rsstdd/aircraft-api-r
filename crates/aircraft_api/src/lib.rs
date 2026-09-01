@@ -97,22 +97,15 @@ struct ApiDoc;
 /// refuse_oversized_body       innermost, reads at most the configured body limit
 /// ```
 ///
-/// Correlation is outermost so the `503` a shutdown cancellation produces is
-/// stamped and recorded like any other response, and so is the fallback `404`,
-/// which no route ever sees. The perimeter's own `413`, `504`, and `503`
-/// are correlated for the same reason.
-///
-/// CORS remains above the semaphore because preflight is a header-only answer,
-/// and below the body limit only for `OPTIONS`: `CorsLayer` answers a preflight
-/// without calling the inner stack, so a preflight declaring an oversized body
-/// would otherwise be answered `200`. Every other method is refused inside
-/// `CorsLayer` instead, which is what puts `Access-Control-Allow-Origin` on the
-/// `413` so a cross-origin caller can read the problem document.
-///
-/// The semaphore wraps body buffering so the configured concurrency limit also
-/// bounds aggregate request memory. The timeout wraps both body reception and
-/// handler execution, so a slow chunked upload cannot occupy a permit or an
-/// in-flight slot indefinitely.
+/// Three orderings carry weight. Correlation is outermost, so every response --
+/// the fallback `404` and each perimeter refusal included -- is stamped and
+/// traced. CORS sits above the semaphore because a preflight is a header-only
+/// answer, but below the body limit for `OPTIONS` alone: it answers a preflight
+/// without calling inward, so an oversized one would otherwise get `200`, while
+/// every other method is refused *inside* it and so keeps the
+/// `Access-Control-Allow-Origin` that makes the `413` readable. The semaphore
+/// wraps body buffering so concurrency also bounds aggregate memory, and the
+/// timeout wraps reception and execution so a slow upload cannot hold either.
 pub fn router(state: ApiState) -> Router {
   let shutdown = state.shutdown.clone();
   let limits = state.limits.clone();
@@ -248,23 +241,49 @@ mod tests {
   /// perimeter off would let a layer-ordering mistake pass every other test in
   /// this file. The numbers are not a claim about `aircraft_config`'s defaults,
   /// which are pinned by their own test over there.
-  fn permissive_limits() -> PerimeterLimits {
-    PerimeterLimits::new(1_048_576, Duration::from_secs(30), 256, &[])
-      .expect("an empty origin list cannot fail")
+  /// The perimeter a test starts from; override only the bound it exercises.
+  ///
+  /// Collapses the four-line `state_with_limits(.., limits_with(..))` pair the
+  /// perimeter tests used to repeat, so each test shows the one value it is
+  /// about rather than three defaults it is not.
+  struct Perimeter {
+    body_bytes: usize,
+    timeout: Duration,
+    max_concurrent: usize,
+    origins: Vec<String>,
+  }
+
+  impl Default for Perimeter {
+    fn default() -> Self {
+      Self {
+        body_bytes: 1_048_576,
+        timeout: Duration::from_secs(30),
+        max_concurrent: 256,
+        origins: Vec::new(),
+      }
+    }
+  }
+
+  impl Perimeter {
+    fn state(self, readiness: Arc<dyn ReadinessProbe>) -> ApiState {
+      ApiState {
+        readiness,
+        version: "9.9.9-test",
+        build_commit: None,
+        shutdown: ShutdownState::new(),
+        limits: PerimeterLimits::new(
+          self.body_bytes,
+          self.timeout,
+          self.max_concurrent,
+          &self.origins,
+        )
+        .expect("the test perimeter must be usable"),
+      }
+    }
   }
 
   fn state(readiness: Arc<dyn ReadinessProbe>) -> ApiState {
-    state_with_limits(readiness, permissive_limits())
-  }
-
-  fn state_with_limits(readiness: Arc<dyn ReadinessProbe>, limits: PerimeterLimits) -> ApiState {
-    ApiState {
-      readiness,
-      version: "9.9.9-test",
-      build_commit: None,
-      shutdown: ShutdownState::new(),
-      limits,
-    }
+    Perimeter::default().state(readiness)
   }
 
   async fn body_of(response: axum::response::Response) -> Result<serde_json::Value> {
@@ -272,27 +291,34 @@ mod tests {
     Ok(serde_json::from_slice(&bytes)?)
   }
 
-  /// Asserts a response is exactly the expected RFC 9457 document.
+  /// Asserts a refusal by the parts that tell one refusal from another.
   ///
-  /// `docs/architecture/http_v1_decisions.md` requires every API-originated
-  /// `4xx` and `5xx` to be `application/problem+json`, so the media type is
-  /// asserted as well as the body -- a document served as `application/json` is
-  /// not the contract, and a client keys on the media type rather than the
-  /// status.
-  ///
-  /// `instance` is asserted *absent* rather than null. A perimeter rejection can
-  /// answer for any route and names none, and `expected` deliberately omits the
-  /// key so a constructor that started emitting one would fail here.
-  async fn assert_problem(
+  /// The full wire form of every problem -- title and detail included -- is
+  /// pinned once by `each_problem_serializes_to_its_published_document`, so a
+  /// behavioural test only has to show that the *right* refusal answered: the
+  /// status, the stable type, and the request it named. The media type is
+  /// asserted here too, because `docs/architecture/http_v1_decisions.md`
+  /// requires it and a client keys on it rather than on the status.
+  async fn assert_refusal(
     response: axum::response::Response,
-    expected: serde_json::Value,
+    status: u16,
+    kind: &str,
+    instance: &str,
   ) -> Result<()> {
+    assert_eq!(response.status().as_u16(), status);
     assert_eq!(
       response.headers().get(header::CONTENT_TYPE).context("a problem needs a media type")?,
       "application/problem+json",
       "RFC 9457 problem documents are not application/json"
     );
-    assert_eq!(body_of(response).await?, expected);
+
+    let document = body_of(response).await?;
+    assert_eq!(document.pointer("/type"), Some(&json!(kind)), "wrong problem type: {document}");
+    assert_eq!(
+      document.pointer("/instance"),
+      Some(&json!(instance)),
+      "a refusal must name the request it answered: {document}"
+    );
     Ok(())
   }
 
@@ -598,30 +624,11 @@ mod tests {
       correlation::RequestId::accepted(&returned).is_some(),
       "a cancelled request must still be correlated: {returned:?}"
     );
-    assert_problem(
-      response,
-      json!({
-        "type": "/problems/shutting-down",
-        "title": "Service Unavailable",
-        "status": 503,
-        "detail": "The service stopped waiting for this request so it could shut down.",
-        "instance": "/ready"
-      }),
-    )
-    .await
+    assert_refusal(response, 503, "/problems/shutting-down", "/ready").await
   }
 
   /// A perimeter that differs from [`permissive_limits`] in exactly one bound,
   /// so each test below names the bound it is about and inherits the rest.
-  fn limits_with(
-    body_bytes: usize,
-    timeout: Duration,
-    max_concurrent: usize,
-    origins: &[String],
-  ) -> PerimeterLimits {
-    PerimeterLimits::new(body_bytes, timeout, max_concurrent, origins)
-      .expect("the test origins must be usable header values")
-  }
 
   #[test]
   fn a_wildcard_origin_is_rejected_before_cors_layer_construction() {
@@ -649,10 +656,8 @@ mod tests {
   async fn an_oversized_body_is_refused_before_a_handler_runs() -> Result<()> {
     const LIMIT: usize = 1024;
 
-    let state = state_with_limits(
-      Arc::new(NeverConsulted),
-      limits_with(LIMIT, Duration::from_secs(30), 256, &[]),
-    );
+    let state =
+      Perimeter { body_bytes: LIMIT, ..Perimeter::default() }.state(Arc::new(NeverConsulted));
 
     let response = router(state)
       .oneshot(
@@ -662,18 +667,7 @@ mod tests {
       )
       .await?;
 
-    assert_eq!(response.status(), StatusCode::PAYLOAD_TOO_LARGE);
-    assert_problem(
-      response,
-      json!({
-        "type": "/problems/payload-too-large",
-        "title": "Payload Too Large",
-        "status": 413,
-        "detail": "The request body is larger than this service accepts.",
-        "instance": "/ready"
-      }),
-    )
-    .await
+    assert_refusal(response, 413, "/problems/payload-too-large", "/ready").await
   }
 
   /// The undeclared half of the body limit. A streamed body has no upper size
@@ -695,24 +689,11 @@ mod tests {
       "the request must not declare its length"
     );
 
-    let state = state_with_limits(
-      Arc::new(NeverConsulted),
-      limits_with(LIMIT, Duration::from_secs(30), 256, &[]),
-    );
+    let state =
+      Perimeter { body_bytes: LIMIT, ..Perimeter::default() }.state(Arc::new(NeverConsulted));
     let response = router(state).oneshot(request).await?;
 
-    assert_eq!(response.status(), StatusCode::PAYLOAD_TOO_LARGE);
-    assert_problem(
-      response,
-      json!({
-        "type": "/problems/payload-too-large",
-        "title": "Payload Too Large",
-        "status": 413,
-        "detail": "The request body is larger than this service accepts.",
-        "instance": "/ready"
-      }),
-    )
-    .await
+    assert_refusal(response, 413, "/problems/payload-too-large", "/ready").await
   }
 
   /// The accepted side of the unknown-length boundary. Without it, a layer
@@ -728,10 +709,8 @@ mod tests {
     ]));
     assert!(body.size_hint().upper().is_none(), "the test body must have unknown length");
 
-    let state = state_with_limits(
-      Arc::new(AlwaysReady),
-      limits_with(LIMIT, Duration::from_secs(30), 256, &[]),
-    );
+    let state =
+      Perimeter { body_bytes: LIMIT, ..Perimeter::default() }.state(Arc::new(AlwaysReady));
     let response = router(state).oneshot(Request::get("/ready").body(body)?).await?;
 
     assert_eq!(response.status(), StatusCode::OK);
@@ -745,24 +724,11 @@ mod tests {
     let body = Body::from_stream(futures::stream::once(async {
       Err::<Vec<u8>, _>(std::io::Error::other("fixture body failure"))
     }));
-    let state = state_with_limits(
-      Arc::new(NeverConsulted),
-      limits_with(1024, Duration::from_secs(30), 256, &[]),
-    );
+    let state =
+      Perimeter { body_bytes: 1024, ..Perimeter::default() }.state(Arc::new(NeverConsulted));
     let response = router(state).oneshot(Request::get("/ready").body(body)?).await?;
 
-    assert_eq!(response.status(), StatusCode::BAD_REQUEST);
-    assert_problem(
-      response,
-      json!({
-        "type": "/problems/malformed-input",
-        "title": "Bad Request",
-        "status": 400,
-        "detail": "The request body could not be read.",
-        "instance": "/ready"
-      }),
-    )
-    .await
+    assert_refusal(response, 400, "/problems/malformed-input", "/ready").await
   }
 
   /// The declared-length fast path, as distinct from the streaming bound.
@@ -784,10 +750,8 @@ mod tests {
         panic!("the body must not be read once content-length already exceeds the limit")
       }));
 
-    let state = state_with_limits(
-      Arc::new(NeverConsulted),
-      limits_with(LIMIT, Duration::from_secs(30), 256, &[]),
-    );
+    let state =
+      Perimeter { body_bytes: LIMIT, ..Perimeter::default() }.state(Arc::new(NeverConsulted));
 
     let response = router(state)
       .oneshot(Request::get("/ready").header(header::CONTENT_LENGTH, LIMIT + 1).body(body)?)
@@ -804,10 +768,8 @@ mod tests {
   async fn a_request_within_the_body_limit_still_succeeds() -> Result<()> {
     const LIMIT: usize = 1024;
 
-    let state = state_with_limits(
-      Arc::new(AlwaysReady),
-      limits_with(LIMIT, Duration::from_secs(30), 256, &[]),
-    );
+    let state =
+      Perimeter { body_bytes: LIMIT, ..Perimeter::default() }.state(Arc::new(AlwaysReady));
 
     let response = router(state)
       .oneshot(
@@ -837,22 +799,11 @@ mod tests {
     let (entered, _) = mpsc::channel(1);
     let probe = ParksUntilCancelled { entered, release: Arc::new(Notify::new()) };
     let state =
-      state_with_limits(Arc::new(probe), limits_with(1_048_576, Duration::ZERO, 256, &[]));
+      Perimeter { timeout: Duration::ZERO, ..Perimeter::default() }.state(Arc::new(probe));
 
     let response = router(state).oneshot(Request::get("/ready").body(Body::empty())?).await?;
 
-    assert_eq!(response.status(), StatusCode::GATEWAY_TIMEOUT);
-    assert_problem(
-      response,
-      json!({
-        "type": "/problems/deadline-exceeded",
-        "title": "Gateway Timeout",
-        "status": 504,
-        "detail": "The service did not produce a response within its deadline.",
-        "instance": "/ready"
-      }),
-    )
-    .await
+    assert_refusal(response, 504, "/problems/deadline-exceeded", "/ready").await
   }
 
   /// The anti-vacuity half: a layer that timed out unconditionally, or a
@@ -860,10 +811,7 @@ mod tests {
   /// passing the test above.
   #[tokio::test]
   async fn a_fast_handler_is_unaffected_by_the_deadline() -> Result<()> {
-    let state = state_with_limits(
-      Arc::new(AlwaysReady),
-      limits_with(1_048_576, Duration::from_secs(30), 256, &[]),
-    );
+    let state = Perimeter::default().state(Arc::new(AlwaysReady));
 
     let response = router(state).oneshot(Request::get("/ready").body(Body::empty())?).await?;
 
@@ -883,8 +831,7 @@ mod tests {
     let (entered_tx, mut entered) = mpsc::channel(1);
     let release = Arc::new(Notify::new());
     let probe = ParksUntilCancelled { entered: entered_tx, release: Arc::clone(&release) };
-    let state =
-      state_with_limits(Arc::new(probe), limits_with(1_048_576, Duration::from_secs(30), 1, &[]));
+    let state = Perimeter { max_concurrent: 1, ..Perimeter::default() }.state(Arc::new(probe));
 
     let app = router(state);
     let parked = tokio::spawn(app.clone().oneshot(Request::get("/ready").body(Body::empty())?));
@@ -912,18 +859,7 @@ mod tests {
   async fn excess_concurrency_is_shed_rather_than_queued() -> Result<()> {
     let response = shed_response().await?;
 
-    assert_eq!(response.status(), StatusCode::SERVICE_UNAVAILABLE);
-    assert_problem(
-      response,
-      json!({
-        "type": "/problems/overloaded",
-        "title": "Service Unavailable",
-        "status": 503,
-        "detail": "The service is at capacity and refused this request rather than queueing it.",
-        "instance": "/ready"
-      }),
-    )
-    .await
+    assert_refusal(response, 503, "/problems/overloaded", "/ready").await
   }
 
   /// The shed layer sits inside correlation, so a refused request is still
@@ -954,10 +890,8 @@ mod tests {
     const UNLISTED: &str = "https://not.example.com";
 
     let origins = [ALLOWED.to_owned()];
-    let state = state_with_limits(
-      Arc::new(AlwaysReady),
-      limits_with(1_048_576, Duration::from_secs(30), 256, &origins),
-    );
+    let state =
+      Perimeter { origins: origins.to_vec(), ..Perimeter::default() }.state(Arc::new(AlwaysReady));
     let app = router(state);
 
     let allowed = app
@@ -995,10 +929,8 @@ mod tests {
     const ALLOWED: &str = "https://app.example.com";
 
     let origins = [ALLOWED.to_owned()];
-    let state = state_with_limits(
-      Arc::new(NeverConsulted),
-      limits_with(1_048_576, Duration::from_secs(30), 256, &origins),
-    );
+    let state = Perimeter { origins: origins.to_vec(), ..Perimeter::default() }
+      .state(Arc::new(NeverConsulted));
 
     let response = router(state)
       .oneshot(
@@ -1051,10 +983,8 @@ mod tests {
     const LIMIT: usize = 1024;
 
     let origins = [ALLOWED.to_owned()];
-    let state = state_with_limits(
-      Arc::new(NeverConsulted),
-      limits_with(LIMIT, Duration::from_secs(30), 256, &origins),
-    );
+    let state = Perimeter { body_bytes: LIMIT, origins: origins.to_vec(), ..Perimeter::default() }
+      .state(Arc::new(NeverConsulted));
 
     let response = router(state)
       .oneshot(
@@ -1096,10 +1026,8 @@ mod tests {
       }));
 
     let origins = [ALLOWED.to_owned()];
-    let state = state_with_limits(
-      Arc::new(NeverConsulted),
-      limits_with(LIMIT, Duration::from_secs(30), 256, &origins),
-    );
+    let state = Perimeter { body_bytes: LIMIT, origins: origins.to_vec(), ..Perimeter::default() }
+      .state(Arc::new(NeverConsulted));
 
     let response = router(state)
       .oneshot(
@@ -1111,18 +1039,7 @@ mod tests {
       )
       .await?;
 
-    assert_eq!(response.status(), StatusCode::PAYLOAD_TOO_LARGE);
-    assert_problem(
-      response,
-      json!({
-        "type": "/problems/payload-too-large",
-        "title": "Payload Too Large",
-        "status": 413,
-        "detail": "The request body is larger than this service accepts.",
-        "instance": "/ready"
-      }),
-    )
-    .await
+    assert_refusal(response, 413, "/problems/payload-too-large", "/ready").await
   }
 
   #[test]
@@ -1184,10 +1101,8 @@ mod tests {
     const LIMIT: usize = 1024;
     const UNROUTED: &str = "/not-a-route";
 
-    let state = state_with_limits(
-      Arc::new(NeverConsulted),
-      limits_with(LIMIT, Duration::from_secs(30), 256, &[]),
-    );
+    let state =
+      Perimeter { body_bytes: LIMIT, ..Perimeter::default() }.state(Arc::new(NeverConsulted));
 
     let response = router(state)
       .oneshot(
@@ -1217,10 +1132,8 @@ mod tests {
     const MAX_INSTANCE_CHARS: usize = 255;
 
     let long_path = format!("/{}", "a".repeat(4096));
-    let state = state_with_limits(
-      Arc::new(NeverConsulted),
-      limits_with(LIMIT, Duration::from_secs(30), 256, &[]),
-    );
+    let state =
+      Perimeter { body_bytes: LIMIT, ..Perimeter::default() }.state(Arc::new(NeverConsulted));
 
     let response = router(state)
       .oneshot(

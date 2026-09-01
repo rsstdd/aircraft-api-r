@@ -255,22 +255,14 @@ fn base_config(
 
 /// Reads a comma-separated list from one scalar setting.
 ///
-/// The list arrives as a scalar rather than as a sequence because `config`'s
-/// environment source only yields a `Vec` under `try_parsing`, which re-types
-/// *every* variable on that source through bool, then integer, then float
-/// before any list handling reaches it. `app_environment` is shared by all
-/// four loaders in this module, so enabling it to read one field would change
-/// how `database.url`, `http.port`, and the ingest bounds are typed. Splitting
-/// one string keeps the blast radius to this field.
+/// A scalar rather than a sequence because `config`'s environment source only
+/// yields a `Vec` under `try_parsing`, which would re-type *every* variable on
+/// the source shared by all four loaders here. Splitting one string keeps the
+/// blast radius to this field.
 ///
-/// A wholly blank value is an empty list, which is how an unset setting spells
-/// itself. Interior blanks are *kept* rather than filtered, so
-/// `"https://a,,https://b"` is rejected by the perimeter validator instead
-/// of quietly losing an entry the operator meant to write.
-///
-/// An override file supplies the same scalar string. A JSON5 array is
-/// deliberately not accepted; one spelling per setting is easier to document
-/// than two.
+/// A blank value is an empty list. Interior blanks are kept rather than
+/// filtered, so `"https://a,,https://b"` is rejected by the perimeter validator
+/// instead of quietly losing an entry the operator meant to write.
 fn comma_separated<'de, D>(deserializer: D) -> Result<Vec<String>, D::Error>
 where
   D: serde::Deserializer<'de>,
@@ -340,17 +332,13 @@ fn validate_perimeter_limits(settings: &HttpSettings) -> Result<(), ConfigError>
 /// other deliberately: deleting this one moves a configuration mistake into a
 /// startup crash.
 ///
-/// The rest exist because an allowed origin is matched by byte equality against
-/// the request's `Origin` header. Anything that is not already in the spelling a
-/// browser sends -- a trailing slash, an uppercase host, an explicit default
-/// port, a Unicode host that should be punycode -- would be accepted here,
-/// stored, and then silently match nothing, leaving an operator with CORS that
-/// looks configured and denies every request with no diagnostic anywhere.
+/// The rest exist because origins are matched by byte equality against the
+/// `Origin` header: a trailing slash, uppercase host, explicit default port, or
+/// Unicode host would be stored and then silently match nothing, leaving CORS
+/// that looks configured and denies everything with no diagnostic.
 ///
-/// No rejection renders `origin`. A malformed origin may contain userinfo,
-/// query credentials, or a fragment token, and startup diagnostics are not a
-/// safe place to publish any of them. The canonical spelling is rendered only
-/// after those components have been rejected.
+/// No rejection renders `origin`, which may carry userinfo or a fragment token;
+/// the canonical spelling is shown only once those are ruled out.
 fn validate_cors_origin(origin: &str) -> Result<(), ConfigError> {
   // Checked before parsing so the diagnostic names the wildcard rather than
   // reporting `*` as a malformed URL. That message is the operator-facing half

@@ -119,16 +119,12 @@ impl PerimeterLimits {
 
   /// Refuses a preflight that declares a body larger than the perimeter accepts.
   ///
-  /// `CorsLayer` answers every `OPTIONS` on the method alone and discards the
-  /// body unread (`tower-http-0.7.0/src/cors/mod.rs:700,715`), so
-  /// [`Self::refuse_oversized_body`] never sees a preflight at all. This layer
-  /// sits outside CORS to close that gap.
-  ///
-  /// It deliberately refuses nothing else. Every other method keeps its refusal
-  /// inside `CorsLayer`, which is what puts `Access-Control-Allow-Origin` on the
-  /// `413` and lets a cross-origin caller read the problem document rather than
-  /// see an opaque network error. A real preflight carries no body, so no
-  /// browser reaches this refusal.
+  /// `CorsLayer` answers every `OPTIONS` on the method alone and drops the body
+  /// unread (`tower-http-0.7.0/src/cors/mod.rs:700,715`), so
+  /// [`Self::refuse_oversized_body`] never sees a preflight. This closes that
+  /// gap and deliberately refuses nothing else: every other method is refused
+  /// *inside* `CorsLayer`, which is what puts `Access-Control-Allow-Origin` on
+  /// the `413` so a cross-origin caller can read it.
   pub(crate) async fn refuse_oversized_preflight(
     State(max_bytes): State<usize>,
     request: Request,
@@ -200,15 +196,11 @@ impl PerimeterLimits {
   /// permit frees, which is queueing under another name; taking the permit or
   /// refusing immediately is what "shed rather than queue" means.
   ///
-  /// The permit is bound to a named local so it lives until this function
-  /// returns. Binding it to a bare `_` would drop it at once and turn the bound
-  /// into a no-op that every test asserting a successful response still passes.
-  ///
-  /// It is released when the response is *ready*, not when its body has finished
-  /// reaching the socket. Every route here answers with a complete in-memory
-  /// body, so the two coincide today; this is the same caveat
-  /// [`crate::correlation::correlate`] records for its latency measurement, and
-  /// a streaming route would have to carry the permit into the body.
+  /// The permit is bound to a named local so it lives until this returns; a bare
+  /// `_` would drop it immediately and turn the bound into a no-op that every
+  /// success-asserting test still passes. It releases when the response is
+  /// *ready*, not when its body reaches the socket -- the same caveat
+  /// [`crate::correlation::correlate`] records for its latency measurement.
   pub(crate) async fn shed_when_saturated(
     State(permits): State<Arc<Semaphore>>,
     request: Request,
