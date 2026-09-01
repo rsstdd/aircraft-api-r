@@ -23,7 +23,7 @@ use anyhow::{Context, Result, anyhow};
 use tokio::{
   io::{AsyncBufReadExt, AsyncReadExt, AsyncWriteExt, BufReader},
   net::{TcpListener, TcpStream},
-  process::{Child, Command},
+  process::{Child, ChildStderr, Command},
   time::{Instant, timeout, timeout_at},
 };
 
@@ -49,7 +49,7 @@ const PASSWORD: &str = "n0t-in-any-diagnostic";
 /// `database_url` is `None` only for the gate that asserts what happens when the
 /// setting is absent; every other case must supply one, because the binary now
 /// builds a pool before it binds.
-fn server_command(port: &str, database_url: Option<&str>) -> Command {
+fn server_command(port: &str, database_url: Option<&str>, log_filter: Option<&str>) -> Command {
   let mut command = Command::new(env!("CARGO_BIN_EXE_aircraft-server"));
   for (key, _) in std::env::vars() {
     if key.starts_with("APP__") {
@@ -59,12 +59,21 @@ fn server_command(port: &str, database_url: Option<&str>) -> Command {
   command
     .env("APP__HTTP__HOST", "127.0.0.1")
     .env("APP__HTTP__PORT", port)
-    .env("RUST_LOG", "info")
+    // Removed by default rather than set. The gates below recover the bound
+    // port from an `INFO` line on stderr, so they pass only while that is the
+    // level the binary defaults to -- which makes them the proof for
+    // `aircraft_observability::logging::init`. Removing it also keeps the run
+    // hermetic: a developer with `RUST_LOG=error` exported would otherwise
+    // change what these tests observe.
+    .env_remove("RUST_LOG")
     .stdout(Stdio::piped())
     .stderr(Stdio::piped())
     .kill_on_drop(true);
   if let Some(url) = database_url {
     command.env("APP__DATABASE__URL", url);
+  }
+  if let Some(filter) = log_filter {
+    command.env("RUST_LOG", filter);
   }
   command
 }
@@ -137,11 +146,31 @@ async fn probe_port() -> Result<u16> {
 /// skipped, which is safe because a real failure always prints `Error:` and a
 /// silent exit ends the stream.
 async fn start(database_url: &str) -> Result<(Child, SocketAddr)> {
+  let (child, address, mut lines) = start_capturing(database_url, None).await?;
+
+  // The reader is kept alive and drained for the rest of the child's life.
+  // Dropping it here would close the read end of the pipe, and a server that
+  // logs anything afterwards -- everything a shutdown emits -- would be writing
+  // to a broken pipe.
+  tokio::spawn(async move { while let Ok(Some(_)) = lines.next_line().await {} });
+  Ok((child, address))
+}
+
+/// Starts the binary and hands back the stderr reader still open.
+///
+/// [`start`] discards every line after the address, which is all its callers
+/// need. A gate that has to read a later event -- one emitted while serving,
+/// rather than while starting -- needs the reader itself, so the startup loop
+/// lives here and `start` is a wrapper that throws the rest away.
+async fn start_capturing(
+  database_url: &str,
+  log_filter: Option<&str>,
+) -> Result<(Child, SocketAddr, tokio::io::Lines<BufReader<ChildStderr>>)> {
   let mut lost = Vec::new();
 
   for _ in 0..BIND_ATTEMPTS {
     let port = probe_port().await?;
-    let mut child = server_command(&port.to_string(), Some(database_url))
+    let mut child = server_command(&port.to_string(), Some(database_url), log_filter)
       .spawn()
       .context("spawning aircraft-server")?;
     let stderr = child.stderr.take().ok_or_else(|| anyhow!("no stderr pipe"))?;
@@ -158,12 +187,7 @@ async fn start(database_url: &str) -> Result<(Child, SocketAddr)> {
       let plain = strip_ansi(&line);
       if let Some((_, reported)) = plain.rsplit_once("address=") {
         let address = reported.trim().parse().context("parsing the logged address")?;
-        // The reader is kept alive and drained for the rest of the child's
-        // life. Dropping it here would close the read end of the pipe, and a
-        // server that logs anything afterwards -- everything a shutdown emits
-        // -- would be writing to a broken pipe.
-        tokio::spawn(async move { while let Ok(Some(_)) = lines.next_line().await {} });
-        return Ok((child, address));
+        return Ok((child, address, lines));
       }
       if plain.contains(&format!("binding 127.0.0.1:{port}")) {
         child.wait().await.context("reaping a server that lost its port")?;
@@ -217,6 +241,57 @@ async fn get(address: SocketAddr, path: &str) -> Result<(u16, String)> {
     .to_owned();
 
   Ok((status, body))
+}
+
+/// The `RUST_LOG` value `.env.example` documents, read out of that file.
+///
+/// Read rather than restated so the two cannot drift: editing that line is what
+/// fails the gate below. `justfile:4` sets `dotenv-load`, so this really is the
+/// filter a developer following the checked-in example ends up running under.
+fn documented_log_filter() -> Result<&'static str> {
+  const ENV_EXAMPLE: &str = include_str!("../../../.env.example");
+
+  ENV_EXAMPLE
+    .lines()
+    .find_map(|line| line.trim().strip_prefix("RUST_LOG="))
+    .context("`.env.example` documents no RUST_LOG value")
+}
+
+/// The documented configuration must not silence the thing it documents.
+///
+/// `EnvFilter` applies its built-in default only when no directive parses at
+/// all, and a target matching none of the parsed directives is disabled rather
+/// than demoted. A `RUST_LOG` of per-target entries alone therefore drops every
+/// `aircraft_api` event while looking entirely reasonable, which is what
+/// `.env.example` shipped until this gate existed.
+///
+/// The request before the read is load-bearing: without it there would be no
+/// per-request event to wait for, and the loop would time out whatever the
+/// filter said.
+#[tokio::test]
+async fn the_documented_log_filter_still_admits_request_tracing() -> Result<()> {
+  let container = database().await?;
+  let (mut server, address, mut lines) =
+    start_capturing(&container.database_url, Some(documented_log_filter()?)).await?;
+
+  let (status, body) = get(address, "/health").await?;
+  assert_eq!(status, 200, "the server must serve before its trace is read: {body}");
+
+  let deadline = Instant::now() + STARTUP;
+  loop {
+    let line = timeout_at(deadline, lines.next_line())
+      .await
+      .context("the documented RUST_LOG admitted no request trace")?
+      .context("reading aircraft-server stderr")?
+      .ok_or_else(|| anyhow!("aircraft-server exited before tracing the request"))?;
+
+    if strip_ansi(&line).contains("request completed") {
+      break;
+    }
+  }
+
+  server.kill().await?;
+  Ok(())
 }
 
 #[tokio::test]
@@ -294,7 +369,7 @@ async fn a_port_already_in_use_exits_non_zero_with_a_safe_diagnostic() -> Result
   let occupied = TcpListener::bind("127.0.0.1:0").await.context("occupying a port")?;
   let port = occupied.local_addr().context("reading the occupied port")?.port();
 
-  let child = server_command(&port.to_string(), Some(&container.database_url))
+  let child = server_command(&port.to_string(), Some(&container.database_url), None)
     .spawn()
     .context("spawning aircraft-server")?;
   let output = timeout(STARTUP, child.wait_with_output())
@@ -322,7 +397,7 @@ async fn a_port_already_in_use_exits_non_zero_with_a_safe_diagnostic() -> Result
 /// connected: were the order reversed, this would fail on the pool instead.
 #[tokio::test]
 async fn an_os_assigned_port_request_is_refused_before_binding() -> Result<()> {
-  let child = server_command("0", Some(&unreachable_database_url()))
+  let child = server_command("0", Some(&unreachable_database_url()), None)
     .spawn()
     .context("spawning aircraft-server")?;
   let output = timeout(STARTUP, child.wait_with_output())
@@ -343,7 +418,7 @@ async fn an_os_assigned_port_request_is_refused_before_binding() -> Result<()> {
 /// a startup failure naming the setting, rather than starting without a pool.
 #[tokio::test]
 async fn a_missing_database_url_exits_non_zero_naming_its_setting() -> Result<()> {
-  let child = server_command("8080", None).spawn().context("spawning aircraft-server")?;
+  let child = server_command("8080", None, None).spawn().context("spawning aircraft-server")?;
   let output = timeout(STARTUP, child.wait_with_output())
     .await
     .context("aircraft-server did not exit without a database URL")?
@@ -367,7 +442,7 @@ async fn a_missing_database_url_exits_non_zero_naming_its_setting() -> Result<()
 /// panicked its way there.
 #[tokio::test]
 async fn an_unreachable_database_exits_non_zero_without_echoing_the_credential() -> Result<()> {
-  let child = server_command("8080", Some(&unreachable_database_url()))
+  let child = server_command("8080", Some(&unreachable_database_url()), None)
     .spawn()
     .context("spawning aircraft-server")?;
   let output = timeout(STARTUP, child.wait_with_output())
@@ -402,7 +477,7 @@ async fn an_unreachable_database_is_reported_before_the_port_is_taken() -> Resul
   let occupied = TcpListener::bind("127.0.0.1:0").await.context("occupying a port")?;
   let port = occupied.local_addr().context("reading the occupied port")?.port();
 
-  let child = server_command(&port.to_string(), Some(&unreachable_database_url()))
+  let child = server_command(&port.to_string(), Some(&unreachable_database_url()), None)
     .spawn()
     .context("spawning aircraft-server")?;
   let output = timeout(STARTUP, child.wait_with_output())
