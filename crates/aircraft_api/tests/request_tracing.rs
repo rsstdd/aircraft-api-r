@@ -16,9 +16,12 @@
 //! `apps/server/tests/shutdown.rs` documents the same hazard and solves it the
 //! other way, by handing every server future an explicit dispatch.
 
-use std::sync::{Arc, Mutex};
+use std::{
+  sync::{Arc, Mutex},
+  time::Duration,
+};
 
-use aircraft_api::{ApiState, shutdown::ShutdownState};
+use aircraft_api::{ApiState, PerimeterLimits, shutdown::ShutdownState};
 use aircraft_app::{ingestion::PersistenceError, readiness::ReadinessProbe};
 use anyhow::{Context, Result};
 use async_trait::async_trait;
@@ -146,7 +149,14 @@ async fn trace(state: ApiState, request: Request<Body>) -> Result<Traced> {
 }
 
 fn state(readiness: Arc<dyn ReadinessProbe>) -> ApiState {
-  ApiState { readiness, version: "9.9.9-test", build_commit: None, shutdown: ShutdownState::new() }
+  ApiState {
+    readiness,
+    version: "9.9.9-test",
+    build_commit: None,
+    shutdown: ShutdownState::new(),
+    limits: PerimeterLimits::new(1_048_576, Duration::from_secs(30), 256, &[])
+      .expect("an empty origin list cannot fail"),
+  }
 }
 
 /// Asserts every field the completion event promises, for one request.

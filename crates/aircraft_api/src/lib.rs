@@ -1,6 +1,7 @@
 #![deny(clippy::as_conversions, clippy::indexing_slicing)]
 
 mod correlation;
+mod limits;
 pub mod problem;
 pub mod routes;
 pub mod shutdown;
@@ -11,6 +12,7 @@ use aircraft_app::readiness::ReadinessProbe;
 use axum::{Router, routing::get};
 use utoipa::OpenApi;
 
+pub use crate::limits::{InvalidOrigin, PerimeterLimits};
 use crate::shutdown::ShutdownState;
 
 /// What the router needs from its composition root.
@@ -23,12 +25,17 @@ use crate::shutdown::ShutdownState;
 /// The shutdown state is shared with the composition root rather than owned
 /// here: the router reads it to refuse new work, and `aircraft_server::serve`
 /// writes it when a signal arrives.
+///
+/// The perimeter limits arrive the same way and for the same reason as the
+/// readiness port: they are `aircraft_config`'s values, and this crate may not
+/// depend on that crate.
 #[derive(Clone)]
 pub struct ApiState {
   pub readiness: Arc<dyn ReadinessProbe>,
   pub version: &'static str,
   pub build_commit: Option<&'static str>,
   pub shutdown: ShutdownState,
+  pub limits: PerimeterLimits,
 }
 
 /// Written by hand because a trait object cannot derive it, and requiring
@@ -41,6 +48,7 @@ impl std::fmt::Debug for ApiState {
       .field("version", &self.version)
       .field("build_commit", &self.build_commit)
       .field("draining", &self.shutdown.is_draining())
+      .field("limits", &self.limits)
       .finish_non_exhaustive()
   }
 }
@@ -76,18 +84,50 @@ struct ApiDoc;
 /// process dead whenever its dependency is, and gets the process killed for
 /// someone else's outage.
 ///
-/// Layer order is load-bearing. The last layer applied is the outermost, so
-/// correlation wraps the in-flight tracker: the bare `503` a shutdown
-/// cancellation produces is stamped and recorded like any other response, and
-/// so is the fallback `404`, which no route ever sees.
+/// Layer order is load-bearing. The last layer applied is the outermost, so the
+/// stack below reads innermost first and runs outermost first:
+///
+/// ```text
+/// correlate              stamps and traces every response, refusals included
+/// CorsLayer              a preflight is answered before a permit is taken
+/// shed_when_saturated    bounds concurrent handlers and body buffers
+/// track_in_flight        makes body reads and handlers cancellable on shutdown
+/// enforce_deadline       bounds body reception and handler execution together
+/// refuse_oversized_body  innermost, reads at most the configured body limit
+/// ```
+///
+/// Correlation is outermost so the `503` a shutdown cancellation produces is
+/// stamped and recorded like any other response, and so is the fallback `404`,
+/// which no route ever sees. The perimeter's own `413`, `504`, and `503`
+/// are correlated for the same reason.
+///
+/// CORS remains above the semaphore because preflight is a header-only answer.
+/// The semaphore wraps body buffering so the configured concurrency limit also
+/// bounds aggregate request memory. The timeout wraps both body reception and
+/// handler execution, so a slow chunked upload cannot occupy a permit or an
+/// in-flight slot indefinitely.
 pub fn router(state: ApiState) -> Router {
   let shutdown = state.shutdown.clone();
+  let limits = state.limits.clone();
 
   Router::new()
     .route("/health", get(routes::health::health))
     .route("/ready", get(routes::ready::ready))
     .route("/version", get(routes::version::version))
+    .layer(axum::middleware::from_fn_with_state(
+      limits.body_bytes(),
+      PerimeterLimits::refuse_oversized_body,
+    ))
+    .layer(axum::middleware::from_fn_with_state(
+      limits.timeout(),
+      PerimeterLimits::enforce_deadline,
+    ))
     .layer(axum::middleware::from_fn_with_state(shutdown, shutdown::track_in_flight))
+    .layer(axum::middleware::from_fn_with_state(
+      limits.permits(),
+      PerimeterLimits::shed_when_saturated,
+    ))
+    .layer(limits.cors_layer())
     .layer(axum::middleware::from_fn(correlation::correlate))
     .with_state(state)
 }
@@ -103,16 +143,20 @@ mod tests {
   // panicking on a call that must never happen.
   #![allow(clippy::expect_used, clippy::panic)]
 
-  use std::sync::{
-    Arc,
-    atomic::{AtomicUsize, Ordering},
+  use std::{
+    convert::Infallible,
+    sync::{
+      Arc,
+      atomic::{AtomicUsize, Ordering},
+    },
+    time::Duration,
   };
 
   use aircraft_app::ingestion::PersistenceError;
   use anyhow::{Context, Result};
   use async_trait::async_trait;
   use axum::{
-    body::{Body, to_bytes},
+    body::{Body, HttpBody as _, to_bytes},
     http::{HeaderValue, Request, StatusCode, header},
   };
   use serde_json::json;
@@ -187,18 +231,58 @@ mod tests {
     }
   }
 
+  /// A perimeter wide enough that no test trips a bound it was not written for.
+  ///
+  /// Deliberately generous rather than disabled: a helper that turned the
+  /// perimeter off would let a layer-ordering mistake pass every other test in
+  /// this file. The numbers are not a claim about `aircraft_config`'s defaults,
+  /// which are pinned by their own test over there.
+  fn permissive_limits() -> PerimeterLimits {
+    PerimeterLimits::new(1_048_576, Duration::from_secs(30), 256, &[])
+      .expect("an empty origin list cannot fail")
+  }
+
   fn state(readiness: Arc<dyn ReadinessProbe>) -> ApiState {
+    state_with_limits(readiness, permissive_limits())
+  }
+
+  fn state_with_limits(readiness: Arc<dyn ReadinessProbe>, limits: PerimeterLimits) -> ApiState {
     ApiState {
       readiness,
       version: "9.9.9-test",
       build_commit: None,
       shutdown: ShutdownState::new(),
+      limits,
     }
   }
 
   async fn body_of(response: axum::response::Response) -> Result<serde_json::Value> {
     let bytes = to_bytes(response.into_body(), 4096).await?;
     Ok(serde_json::from_slice(&bytes)?)
+  }
+
+  /// Asserts a response is exactly the expected RFC 9457 document.
+  ///
+  /// `docs/architecture/http_v1_decisions.md` requires every API-originated
+  /// `4xx` and `5xx` to be `application/problem+json`, so the media type is
+  /// asserted as well as the body -- a document served as `application/json` is
+  /// not the contract, and a client keys on the media type rather than the
+  /// status.
+  ///
+  /// `instance` is asserted *absent* rather than null. A perimeter rejection can
+  /// answer for any route and names none, and `expected` deliberately omits the
+  /// key so a constructor that started emitting one would fail here.
+  async fn assert_problem(
+    response: axum::response::Response,
+    expected: serde_json::Value,
+  ) -> Result<()> {
+    assert_eq!(
+      response.headers().get(header::CONTENT_TYPE).context("a problem needs a media type")?,
+      "application/problem+json",
+      "RFC 9457 problem documents are not application/json"
+    );
+    assert_eq!(body_of(response).await?, expected);
+    Ok(())
   }
 
   fn request_id_of(response: &axum::response::Response) -> Result<HeaderValue> {
@@ -478,9 +562,9 @@ mod tests {
   /// response loses its identifier while every other test still passes.
   ///
   /// Parking the handler is what makes the timing deterministic rather than a
-  /// race between a fast route and the cancellation. The empty body is the
-  /// second half: it distinguishes this `503` from `/ready`'s problem document,
-  /// so the test cannot pass on the wrong `503`.
+  /// race between a fast route and the cancellation. The document is the second
+  /// half: it shares a problem type with `/ready`'s shutdown response but names
+  /// no `instance`, so the test cannot pass on the wrong `503`.
   #[tokio::test]
   async fn a_cancelled_request_still_carries_a_request_id() -> Result<()> {
     let shutdown = ShutdownState::new();
@@ -503,9 +587,433 @@ mod tests {
       correlation::RequestId::accepted(&returned).is_some(),
       "a cancelled request must still be correlated: {returned:?}"
     );
+    assert_problem(
+      response,
+      json!({
+        "type": "/problems/shutting-down",
+        "title": "Service Unavailable",
+        "status": 503,
+        "detail": "The service stopped waiting for this request so it could shut down."
+      }),
+    )
+    .await
+  }
+
+  /// A perimeter that differs from [`permissive_limits`] in exactly one bound,
+  /// so each test below names the bound it is about and inherits the rest.
+  fn limits_with(
+    body_bytes: usize,
+    timeout: Duration,
+    max_concurrent: usize,
+    origins: &[String],
+  ) -> PerimeterLimits {
+    PerimeterLimits::new(body_bytes, timeout, max_concurrent, origins)
+      .expect("the test origins must be usable header values")
+  }
+
+  #[test]
+  fn a_wildcard_origin_is_rejected_before_cors_layer_construction() {
+    let origins = ["*".to_owned()];
+
+    let error = PerimeterLimits::new(1_048_576, Duration::from_secs(30), 256, &origins)
+      .expect_err("a wildcard must not reach AllowOrigin::list");
+
+    assert_eq!(
+      error.to_string(),
+      "the configured CORS origin \"*\" is not usable in an explicit allow-list"
+    );
+  }
+
+  /// Acceptance criterion 1.
+  ///
+  /// The route is `/ready` rather than `/health` because `/ready` is the one
+  /// that consults the probe, so `NeverConsulted` is a real anti-vacuity guard
+  /// here: if the limit did not fire, the handler would run and panic.
+  ///
+  /// `content-length` is set explicitly, and that is the point rather than test
+  /// convenience: this pins the fast path that refuses a declared overflow
+  /// before reading the body. The streamed case below pins the other path.
+  #[tokio::test]
+  async fn an_oversized_body_is_refused_before_a_handler_runs() -> Result<()> {
+    const LIMIT: usize = 1024;
+
+    let state = state_with_limits(
+      Arc::new(NeverConsulted),
+      limits_with(LIMIT, Duration::from_secs(30), 256, &[]),
+    );
+
+    let response = router(state)
+      .oneshot(
+        Request::get("/ready")
+          .header(header::CONTENT_LENGTH, LIMIT + 1)
+          .body(Body::from(vec![b'a'; LIMIT + 1]))?,
+      )
+      .await?;
+
+    assert_eq!(response.status(), StatusCode::PAYLOAD_TOO_LARGE);
+    assert_problem(
+      response,
+      json!({
+        "type": "/problems/payload-too-large",
+        "title": "Payload Too Large",
+        "status": 413,
+        "detail": "The request body is larger than this service accepts."
+      }),
+    )
+    .await
+  }
+
+  /// The undeclared half of the body limit. A streamed body has no upper size
+  /// hint and the request carries no `Content-Length`, matching chunked HTTP
+  /// framing rather than merely deleting the header from an in-memory body.
+  #[tokio::test]
+  async fn an_unknown_length_oversized_body_is_refused_before_a_handler_runs() -> Result<()> {
+    const LIMIT: usize = 1024;
+
+    let body = Body::from_stream(futures::stream::iter([
+      Ok::<_, Infallible>(vec![b'a'; LIMIT]),
+      Ok(vec![b'a']),
+    ]));
+    assert!(body.size_hint().upper().is_none(), "the test body must have unknown length");
+
+    let request = Request::get("/ready").body(body)?;
     assert!(
-      to_bytes(response.into_body(), 4096).await?.is_empty(),
-      "forced cancellation must answer with a bodyless 503"
+      request.headers().get(header::CONTENT_LENGTH).is_none(),
+      "the request must not declare its length"
+    );
+
+    let state = state_with_limits(
+      Arc::new(NeverConsulted),
+      limits_with(LIMIT, Duration::from_secs(30), 256, &[]),
+    );
+    let response = router(state).oneshot(request).await?;
+
+    assert_eq!(response.status(), StatusCode::PAYLOAD_TOO_LARGE);
+    assert_problem(
+      response,
+      json!({
+        "type": "/problems/payload-too-large",
+        "title": "Payload Too Large",
+        "status": 413,
+        "detail": "The request body is larger than this service accepts."
+      }),
+    )
+    .await
+  }
+
+  /// The accepted side of the unknown-length boundary. Without it, a layer
+  /// that rejected every chunked body without reading it would satisfy the
+  /// overflow test above.
+  #[tokio::test]
+  async fn an_unknown_length_body_within_the_limit_reaches_the_handler() -> Result<()> {
+    const LIMIT: usize = 1024;
+
+    let body = Body::from_stream(futures::stream::iter([
+      Ok::<_, Infallible>(vec![b'a'; LIMIT / 2]),
+      Ok(vec![b'a'; LIMIT / 2]),
+    ]));
+    assert!(body.size_hint().upper().is_none(), "the test body must have unknown length");
+
+    let state = state_with_limits(
+      Arc::new(AlwaysReady),
+      limits_with(LIMIT, Duration::from_secs(30), 256, &[]),
+    );
+    let response = router(state).oneshot(Request::get("/ready").body(body)?).await?;
+
+    assert_eq!(response.status(), StatusCode::OK);
+    Ok(())
+  }
+
+  /// A transport failure is malformed input, not evidence that the configured
+  /// size ceiling was crossed. Its diagnostic stays server-owned and static.
+  #[tokio::test]
+  async fn an_unreadable_body_is_answered_as_malformed_input() -> Result<()> {
+    let body = Body::from_stream(futures::stream::once(async {
+      Err::<Vec<u8>, _>(std::io::Error::other("fixture body failure"))
+    }));
+    let state = state_with_limits(
+      Arc::new(NeverConsulted),
+      limits_with(1024, Duration::from_secs(30), 256, &[]),
+    );
+    let response = router(state).oneshot(Request::get("/ready").body(body)?).await?;
+
+    assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+    assert_problem(
+      response,
+      json!({
+        "type": "/problems/malformed-input",
+        "title": "Bad Request",
+        "status": 400,
+        "detail": "The request body could not be read."
+      }),
+    )
+    .await
+  }
+
+  /// The declared-length fast path, as distinct from the streaming bound.
+  ///
+  /// Both refusals answer `413`, so the two tests around this one cannot tell
+  /// them apart: delete the `content-length` comparison and the streaming bound
+  /// still rejects an oversized body -- after buffering it. Acceptance criterion
+  /// 1 says *before* full buffering, and this is the only test that pins the
+  /// difference.
+  ///
+  /// The body panics if it is ever polled, so a single read of it fails the
+  /// test rather than merely making it slower.
+  #[tokio::test]
+  async fn a_declared_oversized_body_is_refused_without_reading_it() -> Result<()> {
+    const LIMIT: usize = 1024;
+
+    let body =
+      Body::from_stream(futures::stream::repeat_with(|| -> Result<Vec<u8>, Infallible> {
+        panic!("the body must not be read once content-length already exceeds the limit")
+      }));
+
+    let state = state_with_limits(
+      Arc::new(NeverConsulted),
+      limits_with(LIMIT, Duration::from_secs(30), 256, &[]),
+    );
+
+    let response = router(state)
+      .oneshot(Request::get("/ready").header(header::CONTENT_LENGTH, LIMIT + 1).body(body)?)
+      .await?;
+
+    assert_eq!(response.status(), StatusCode::PAYLOAD_TOO_LARGE);
+    Ok(())
+  }
+
+  /// The accepted side of the boundary above. Paired with it, this fixes the
+  /// limit at the configured length rather than somewhere below it: a layer
+  /// installed with the wrong bound fails here instead of passing both.
+  #[tokio::test]
+  async fn a_request_within_the_body_limit_still_succeeds() -> Result<()> {
+    const LIMIT: usize = 1024;
+
+    let state = state_with_limits(
+      Arc::new(AlwaysReady),
+      limits_with(LIMIT, Duration::from_secs(30), 256, &[]),
+    );
+
+    let response = router(state)
+      .oneshot(
+        Request::get("/ready")
+          .header(header::CONTENT_LENGTH, LIMIT)
+          .body(Body::from(vec![b'a'; LIMIT]))?,
+      )
+      .await?;
+
+    assert_eq!(response.status(), StatusCode::OK);
+    Ok(())
+  }
+
+  /// Acceptance criterion 2.
+  ///
+  /// `Duration::ZERO` against a parked handler rather than a short deadline
+  /// against a fast one: the outcome is decided by the layer rather than by a
+  /// race, and the suite gains no sleep. Axum pins its own timeout behaviour
+  /// the same way.
+  ///
+  /// The status is asserted as `504` specifically. `TimeoutLayer::new` answers
+  /// `408`, which says the *client* was too slow to send its request -- a claim
+  /// about the wrong party -- so a refactor back to the deprecated constructor
+  /// has to fail here.
+  #[tokio::test]
+  async fn a_handler_past_the_deadline_is_answered_with_gateway_timeout() -> Result<()> {
+    let (entered, _) = mpsc::channel(1);
+    let probe = ParksUntilCancelled { entered, release: Arc::new(Notify::new()) };
+    let state =
+      state_with_limits(Arc::new(probe), limits_with(1_048_576, Duration::ZERO, 256, &[]));
+
+    let response = router(state).oneshot(Request::get("/ready").body(Body::empty())?).await?;
+
+    assert_eq!(response.status(), StatusCode::GATEWAY_TIMEOUT);
+    assert_problem(
+      response,
+      json!({
+        "type": "/problems/deadline-exceeded",
+        "title": "Gateway Timeout",
+        "status": 504,
+        "detail": "The service did not produce a response within its deadline."
+      }),
+    )
+    .await
+  }
+
+  /// The anti-vacuity half: a layer that timed out unconditionally, or a
+  /// deadline accidentally wired to zero for every request, fails here while
+  /// passing the test above.
+  #[tokio::test]
+  async fn a_fast_handler_is_unaffected_by_the_deadline() -> Result<()> {
+    let state = state_with_limits(
+      Arc::new(AlwaysReady),
+      limits_with(1_048_576, Duration::from_secs(30), 256, &[]),
+    );
+
+    let response = router(state).oneshot(Request::get("/ready").body(Body::empty())?).await?;
+
+    assert_eq!(response.status(), StatusCode::OK);
+    Ok(())
+  }
+
+  /// Drives one router to saturation and returns what the next request gets.
+  ///
+  /// Shared by the two tests below rather than written twice: the parking setup
+  /// is the expensive half, and a second hand-maintained copy is exactly the
+  /// drift that stops one of them catching a regression.
+  ///
+  /// The second request is raced against a deadline so that "queued" fails as a
+  /// diagnosable assertion rather than as a hung test binary.
+  async fn shed_response() -> Result<axum::response::Response> {
+    let (entered_tx, mut entered) = mpsc::channel(1);
+    let release = Arc::new(Notify::new());
+    let probe = ParksUntilCancelled { entered: entered_tx, release: Arc::clone(&release) };
+    let state =
+      state_with_limits(Arc::new(probe), limits_with(1_048_576, Duration::from_secs(30), 1, &[]));
+
+    let app = router(state);
+    let parked = tokio::spawn(app.clone().oneshot(Request::get("/ready").body(Body::empty())?));
+    entered.recv().await.context("the first request never reached the handler")?;
+
+    let response = tokio::time::timeout(
+      Duration::from_secs(5),
+      app.oneshot(Request::get("/ready").body(Body::empty())?),
+    )
+    .await
+    .context("the second request queued behind the parked handler instead of being shed")??;
+
+    release.notify_one();
+    let _ = parked.await;
+    Ok(response)
+  }
+
+  /// Acceptance criterion 3.
+  ///
+  /// The empty body is the second half of the assertion: it distinguishes this
+  /// `503` from `/ready`'s problem document, so the test cannot pass on the
+  /// wrong `503`. The probe succeeds throughout, so a readiness failure is not
+  /// an available explanation either.
+  #[tokio::test]
+  async fn excess_concurrency_is_shed_rather_than_queued() -> Result<()> {
+    let response = shed_response().await?;
+
+    assert_eq!(response.status(), StatusCode::SERVICE_UNAVAILABLE);
+    assert_problem(
+      response,
+      json!({
+        "type": "/problems/overloaded",
+        "title": "Service Unavailable",
+        "status": 503,
+        "detail": "The service is at capacity and refused this request rather than queueing it."
+      }),
+    )
+    .await
+  }
+
+  /// The shed layer sits inside correlation, so a refused request is still
+  /// traceable. Move `correlate` inside it and this fails while every other
+  /// perimeter test passes.
+  #[tokio::test]
+  async fn a_shed_request_still_carries_a_request_id() -> Result<()> {
+    let response = shed_response().await?;
+
+    let returned = request_id_of(&response)?;
+    assert!(
+      correlation::RequestId::accepted(&returned).is_some(),
+      "a shed request must still be correlated: {returned:?}"
+    );
+    Ok(())
+  }
+
+  /// Both halves of the allow-list in one behaviour.
+  ///
+  /// A denied origin is not a status code: `CorsLayer` answers normally and
+  /// simply omits `Access-Control-Allow-Origin`, leaving the browser to refuse
+  /// the read. Asserting the header's absence is therefore the only way to
+  /// observe a denial, and asserting the `200` alongside it stops a future
+  /// `403` from being mistaken for correct behaviour.
+  #[tokio::test]
+  async fn an_allowed_origin_is_echoed_and_an_unlisted_one_is_not() -> Result<()> {
+    const ALLOWED: &str = "https://app.example.com";
+    const UNLISTED: &str = "https://not.example.com";
+
+    let origins = [ALLOWED.to_owned()];
+    let state = state_with_limits(
+      Arc::new(AlwaysReady),
+      limits_with(1_048_576, Duration::from_secs(30), 256, &origins),
+    );
+    let app = router(state);
+
+    let allowed = app
+      .clone()
+      .oneshot(Request::get("/ready").header(header::ORIGIN, ALLOWED).body(Body::empty())?)
+      .await?;
+    assert_eq!(allowed.status(), StatusCode::OK);
+    assert_eq!(
+      allowed
+        .headers()
+        .get(header::ACCESS_CONTROL_ALLOW_ORIGIN)
+        .context("a listed origin must be echoed")?,
+      ALLOWED
+    );
+
+    let unlisted = app
+      .oneshot(Request::get("/ready").header(header::ORIGIN, UNLISTED).body(Body::empty())?)
+      .await?;
+    assert_eq!(unlisted.status(), StatusCode::OK, "a denial is a missing header, not a status");
+    assert!(
+      unlisted.headers().get(header::ACCESS_CONTROL_ALLOW_ORIGIN).is_none(),
+      "an unlisted origin must not be echoed: {:?}",
+      unlisted.headers()
+    );
+    Ok(())
+  }
+
+  /// The preflight short-circuit.
+  ///
+  /// `NeverConsulted` proves no handler ran, and the response headers pin the
+  /// method and request-header policy rather than merely proving some CORS layer
+  /// answered.
+  #[tokio::test]
+  async fn a_preflight_request_is_answered_without_reaching_a_handler() -> Result<()> {
+    const ALLOWED: &str = "https://app.example.com";
+
+    let origins = [ALLOWED.to_owned()];
+    let state = state_with_limits(
+      Arc::new(NeverConsulted),
+      limits_with(1_048_576, Duration::from_secs(30), 256, &origins),
+    );
+
+    let response = router(state)
+      .oneshot(
+        Request::options("/ready")
+          .header(header::ORIGIN, ALLOWED)
+          .header(header::ACCESS_CONTROL_REQUEST_METHOD, "GET")
+          .header(header::ACCESS_CONTROL_REQUEST_HEADERS, correlation::REQUEST_ID.as_str())
+          .body(Body::empty())?,
+      )
+      .await?;
+
+    assert_eq!(response.status(), StatusCode::OK);
+    assert_eq!(
+      response
+        .headers()
+        .get(header::ACCESS_CONTROL_ALLOW_ORIGIN)
+        .context("a preflight must name the allowed origin")?,
+      ALLOWED
+    );
+    assert_eq!(
+      response
+        .headers()
+        .get(header::ACCESS_CONTROL_ALLOW_METHODS)
+        .context("a preflight must name the allowed methods")?,
+      "GET,HEAD"
+    );
+    assert_eq!(
+      response
+        .headers()
+        .get(header::ACCESS_CONTROL_ALLOW_HEADERS)
+        .context("a preflight must allow the requested correlation header")?,
+      "content-type,x-request-id"
     );
     Ok(())
   }
@@ -539,20 +1047,111 @@ mod tests {
     Ok(())
   }
 
-  /// The 503 is part of the published contract, and its media type is the part
-  /// a generated client gets wrong if the annotation drifts back to
-  /// `application/json`.
+  /// Perimeter middleware can answer before every handler, so every operation
+  /// must publish every perimeter failure a generated client can receive.
   #[test]
-  fn openapi_publishes_the_readiness_problem_document() -> Result<()> {
+  fn openapi_publishes_every_perimeter_response_for_every_route() -> Result<()> {
+    const PATHS: [&str; 3] = ["~1health", "~1ready", "~1version"];
+    const STATUSES: [&str; 4] = ["400", "413", "503", "504"];
+
     let document = serde_json::to_value(openapi())?;
 
-    assert!(
-      document
-        .pointer("/paths/~1ready/get/responses/503/content/application~1problem+json")
-        .is_some(),
-      "the 503 must be published as a problem document: {document}"
+    for path in PATHS {
+      for status in STATUSES {
+        let pointer = format!("/paths/{path}/get/responses/{status}");
+        assert!(document.pointer(&pointer).is_some(), "missing {pointer}: {document}");
+      }
+    }
+    Ok(())
+  }
+
+  /// The published shape of `instance` must be the shape the server emits.
+  ///
+  /// Serde omits the field when it is absent, so the server never sends
+  /// `null`. `Option` alone would have utoipa publish `["string", "null"]`,
+  /// which tells a generated client to model a value that cannot occur and
+  /// contradicts the field's own documentation.
+  ///
+  /// Both halves are load-bearing: the first fails if the field becomes
+  /// nullable again, the second if it becomes required -- and a required
+  /// `instance` would be a contract every perimeter problem violates.
+  #[test]
+  fn the_optional_problem_instance_is_published_as_absent_rather_than_null() -> Result<()> {
+    let document = serde_json::to_value(openapi())?;
+    let schema = document
+      .pointer("/components/schemas/ProblemDetails")
+      .context("ProblemDetails is not published")?;
+
+    assert_eq!(
+      schema.pointer("/properties/instance/type"),
+      Some(&json!("string")),
+      "instance must not be published as nullable: {schema}"
     );
-    assert!(document.pointer("/paths/~1version/get").is_some(), "/version must be published");
+
+    let required = schema
+      .pointer("/required")
+      .and_then(serde_json::Value::as_array)
+      .context("ProblemDetails publishes no required list")?;
+    assert!(
+      !required.contains(&json!("instance")),
+      "instance must stay optional; every perimeter problem omits it: {required:?}"
+    );
+    Ok(())
+  }
+
+  /// The whole of the accepted problem-response rule, read off the generated
+  /// document rather than a hand-kept list.
+  ///
+  /// `docs/architecture/http_v1_decisions.md` requires every API-originated
+  /// `4xx` or `5xx` to use `application/problem+json` and to carry a request ID.
+  /// Iterating the document is what makes this hold for routes that do not exist
+  /// yet: a new operation, or a new failure status on an existing one, is
+  /// checked the moment it is published rather than when somebody remembers to
+  /// extend a list.
+  ///
+  /// The count is the anti-vacuity guard. Every assertion below lives inside
+  /// three nested loops, so a document that published no failure response at all
+  /// -- or a pointer typo that matched nothing -- would pass every one of them
+  /// by never running.
+  #[test]
+  fn every_published_failure_is_a_problem_document_carrying_a_request_id() -> Result<()> {
+    let document = serde_json::to_value(openapi())?;
+    let paths =
+      document.pointer("/paths").and_then(serde_json::Value::as_object).context("no paths")?;
+    let mut checked = 0_usize;
+
+    for (path, item) in paths {
+      let operations = item.as_object().with_context(|| format!("{path} is not an object"))?;
+      for (method, operation) in operations {
+        let responses = operation
+          .pointer("/responses")
+          .and_then(serde_json::Value::as_object)
+          .with_context(|| format!("{method} {path} publishes no responses"))?;
+
+        for (status, response) in responses {
+          if !status.starts_with('4') && !status.starts_with('5') {
+            continue;
+          }
+          let where_ = format!("{method} {path} -> {status}");
+
+          assert!(
+            response.pointer("/content/application~1problem+json").is_some(),
+            "{where_} is not published as a problem document: {response}"
+          );
+          assert!(
+            response.pointer("/content/application~1json").is_none(),
+            "{where_} also publishes application/json, which is not the problem contract"
+          );
+          assert!(
+            response.pointer("/headers/X-Request-Id").is_some(),
+            "{where_} publishes no correlation identifier: {response}"
+          );
+          checked += 1;
+        }
+      }
+    }
+
+    assert!(checked >= 9, "only {checked} failure responses were examined; the loops are vacuous");
     Ok(())
   }
 

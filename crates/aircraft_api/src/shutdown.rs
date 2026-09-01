@@ -12,11 +12,12 @@ use std::sync::{
 
 use axum::{
   extract::{Request, State},
-  http::StatusCode,
   middleware::Next,
   response::{IntoResponse as _, Response},
 };
 use tokio::sync::watch;
+
+use crate::problem::ProblemDetails;
 
 #[derive(Clone, Copy, Debug, Default, Eq, Ord, PartialEq, PartialOrd)]
 enum Phase {
@@ -112,9 +113,10 @@ impl Drop for InFlightGuard {
 /// in-memory body, so the two coincide; a streaming route would need the guard
 /// carried into the body.
 ///
-/// Forced cancellation returns only a status. The structured shutdown problem
-/// belongs to `/ready`; reusing it here would falsely name `/ready` as the
-/// instance of a cancelled request to any other route.
+/// Forced cancellation answers with [`ProblemDetails::shutdown_cancelled`]
+/// rather than `/ready`'s document. The two share a problem type because they
+/// are the same failure class, but only the route-owned one names an instance:
+/// this layer answers for whichever route was in flight and cannot name it.
 pub async fn track_in_flight(
   State(shutdown): State<ShutdownState>,
   request: Request,
@@ -124,7 +126,7 @@ pub async fn track_in_flight(
 
   tokio::select! {
     response = next.run(request) => response,
-    () = shutdown.cancelled() => StatusCode::SERVICE_UNAVAILABLE.into_response(),
+    () = shutdown.cancelled() => ProblemDetails::shutdown_cancelled().into_response(),
   }
 }
 

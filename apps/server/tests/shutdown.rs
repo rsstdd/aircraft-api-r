@@ -18,7 +18,7 @@ use std::{
   time::Duration,
 };
 
-use aircraft_api::{ApiState, shutdown::ShutdownState};
+use aircraft_api::{ApiState, PerimeterLimits, shutdown::ShutdownState};
 use aircraft_app::{ingestion::PersistenceError, readiness::ReadinessProbe};
 use anyhow::{Context, Result, anyhow};
 use async_trait::async_trait;
@@ -123,6 +123,8 @@ async fn start(grace: Duration, dispatch: tracing::Dispatch) -> Result<Harness> 
     version: "9.9.9-test",
     build_commit: None,
     shutdown: shutdown.clone(),
+    limits: PerimeterLimits::new(1_048_576, Duration::from_secs(30), 256, &[])
+      .expect("an empty origin list cannot fail"),
   };
 
   let (stop, stop_rx) = oneshot::channel::<()>();
@@ -226,8 +228,12 @@ async fn an_in_flight_request_completes_inside_the_drain_window() -> Result<()> 
 /// operator needs to know a rollout dropped work.
 ///
 /// The handler is never released, so the 503 can only come from the
-/// cancellation path. The empty body distinguishes this cross-cutting response
-/// from `/ready`'s structured shutdown problem.
+/// cancellation path. The body is asserted through the real socket rather than
+/// in-process because `docs/architecture/http_v1_decisions.md` requires every
+/// API-originated `5xx` to be an RFC 9457 document, and a router test cannot
+/// show that the document survives HTTP framing. The absent `instance` is what
+/// distinguishes this cross-cutting response from `/ready`'s own shutdown
+/// problem, which names its route.
 #[tokio::test]
 async fn a_request_still_running_at_expiry_is_cancelled_and_counted() -> Result<()> {
   let logs = CapturedLogs::default();
@@ -250,8 +256,20 @@ async fn a_request_still_running_at_expiry_is_cancelled_and_counted() -> Result<
 
   let response = timeout(DEADLINE, request).await.context("the request never completed")???;
   assert_eq!(status_of(&response)?, 503, "a cancelled request must not report success");
-  let (_, body) = response.split_once("\r\n\r\n").context("the response had no header boundary")?;
-  assert!(body.is_empty(), "forced cancellation must return a bodyless 503: {response:?}");
+  let (headers, body) =
+    response.split_once("\r\n\r\n").context("the response had no header boundary")?;
+  assert!(
+    headers.to_ascii_lowercase().contains("content-type: application/problem+json"),
+    "a cancelled request must be answered as a problem document: {response:?}"
+  );
+  assert!(
+    body.contains(r#""type":"/problems/shutting-down""#),
+    "the document must name the shutdown problem type: {response:?}"
+  );
+  assert!(
+    !body.contains(r#""instance""#),
+    "a cancellation answers for whichever route was in flight and must name none: {response:?}"
+  );
 
   let captured = logs.contents();
   assert!(

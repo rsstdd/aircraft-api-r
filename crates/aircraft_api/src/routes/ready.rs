@@ -35,9 +35,39 @@ pub struct ReadyResponse {
       )
     ),
     (
+      status = 400,
+      description = "The request body could not be read",
+      body = ProblemDetails,
+      content_type = "application/problem+json",
+      headers(
+        ("X-Request-Id" = String, description = "The correlation identifier for this \
+         request, echoed from the client or generated here.")
+      )
+    ),
+    (
       status = 503,
-      description = "The service is draining, or the database could not be reached \
-                     within the probe deadline",
+      description = "The service is draining, is at capacity, or could not reach \
+                     the database within the probe deadline",
+      body = ProblemDetails,
+      content_type = "application/problem+json",
+      headers(
+        ("X-Request-Id" = String, description = "The correlation identifier for this \
+         request, echoed from the client or generated here.")
+      )
+    ),
+    (
+      status = 413,
+      description = "The request body is larger than the perimeter accepts",
+      body = ProblemDetails,
+      content_type = "application/problem+json",
+      headers(
+        ("X-Request-Id" = String, description = "The correlation identifier for this \
+         request, echoed from the client or generated here.")
+      )
+    ),
+    (
+      status = 504,
+      description = "The handler did not answer within the perimeter deadline",
       body = ProblemDetails,
       content_type = "application/problem+json",
       headers(

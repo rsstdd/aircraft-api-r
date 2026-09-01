@@ -30,10 +30,35 @@ pub struct ProblemDetails {
   pub title: &'static str,
   pub status: u16,
   pub detail: &'static str,
-  pub instance: &'static str,
+  /// The specific occurrence this problem describes.
+  ///
+  /// Optional, as RFC 9457 section 3.1 allows. A route-owned problem names its
+  /// route; a perimeter problem names nothing, because the same rejection can
+  /// answer any request and a fixed route here would be a false statement about
+  /// which one was refused. Omitted from the wire rather than sent as `null`, so
+  /// the two route problems that predate this field serialize exactly as before.
+  ///
+  /// `nullable = false` keeps the generated schema honest: `Option` would
+  /// otherwise be published as `["string", "null"]`, describing a `null` this
+  /// server never emits and telling a generated client to model one.
+  #[serde(skip_serializing_if = "Option::is_none")]
+  #[schema(nullable = false)]
+  pub instance: Option<&'static str>,
 }
 
 impl ProblemDetails {
+  /// The request body could not be read as a complete byte sequence.
+  #[must_use]
+  pub const fn malformed_input() -> Self {
+    Self {
+      kind: "/problems/malformed-input",
+      title: "Bad Request",
+      status: 400,
+      detail: "The request body could not be read.",
+      instance: None,
+    }
+  }
+
   /// The readiness probe could not confirm the database.
   ///
   /// One cause is reported for every failure -- unreachable, saturated, or too
@@ -46,7 +71,7 @@ impl ProblemDetails {
       title: "Service Unavailable",
       status: 503,
       detail: "The service cannot reach its database.",
-      instance: "/ready",
+      instance: Some("/ready"),
     }
   }
 
@@ -63,7 +88,82 @@ impl ProblemDetails {
       title: "Service Unavailable",
       status: 503,
       detail: "The service is shutting down and is not accepting new work.",
-      instance: "/ready",
+      instance: Some("/ready"),
+    }
+  }
+
+  /// The drain window expired while this request was still in flight.
+  ///
+  /// The same problem *type* as [`Self::shutting_down`], because it is the same
+  /// failure class -- the service is shutting down -- and
+  /// `docs/architecture/http_v1_decisions.md` gives each class one stable type.
+  /// The `detail` and the absent `instance` are what distinguish being refused
+  /// at the door from being cut off partway through, on a route this can answer
+  /// for but cannot name.
+  #[must_use]
+  pub const fn shutdown_cancelled() -> Self {
+    Self {
+      kind: "/problems/shutting-down",
+      title: "Service Unavailable",
+      status: 503,
+      detail: "The service stopped waiting for this request so it could shut down.",
+      instance: None,
+    }
+  }
+
+  /// The request body is larger than the perimeter accepts.
+  ///
+  /// One of the three perimeter problems below. All three name no `instance`:
+  /// they are answers the boundary gives before routing is meaningful, so there
+  /// is no single occurrence to point at. The correlation identifier in
+  /// `X-Request-Id` is what ties one of these to a specific request, and it is
+  /// present because `correlation::correlate` wraps the whole perimeter.
+  ///
+  /// The detail names no limit. Publishing the exact ceiling tells a caller
+  /// probing for one precisely how much to send, and an operator who needs the
+  /// number has it in configuration.
+  #[must_use]
+  pub const fn payload_too_large() -> Self {
+    Self {
+      kind: "/problems/payload-too-large",
+      title: "Payload Too Large",
+      status: 413,
+      detail: "The request body is larger than this service accepts.",
+      instance: None,
+    }
+  }
+
+  /// The service is already serving as many requests as it admits.
+  ///
+  /// A third `503` alongside [`Self::database_unavailable`] and
+  /// [`Self::shutting_down`], and distinct from both for the same reason they
+  /// are distinct from each other: an operator seeing a `503` must be able to
+  /// tell overload from a database outage and from an orderly rollout without
+  /// correlating logs. Shed load is the only one of the three a client can fix
+  /// by retrying.
+  #[must_use]
+  pub const fn overloaded() -> Self {
+    Self {
+      kind: "/problems/overloaded",
+      title: "Service Unavailable",
+      status: 503,
+      detail: "The service is at capacity and refused this request rather than queueing it.",
+      instance: None,
+    }
+  }
+
+  /// The handler did not answer within the perimeter deadline.
+  ///
+  /// `504` rather than `408`: a `408` says the *client* was too slow to send its
+  /// request, which blames the wrong party for a handler that overran.
+  #[must_use]
+  pub const fn deadline_exceeded() -> Self {
+    Self {
+      kind: "/problems/deadline-exceeded",
+      title: "Gateway Timeout",
+      status: 504,
+      detail: "The service did not produce a response within its deadline.",
+      instance: None,
     }
   }
 }
