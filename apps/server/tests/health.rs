@@ -468,6 +468,82 @@ async fn an_unreachable_database_exits_non_zero_without_echoing_the_credential()
   Ok(())
 }
 
+/// Neither shipped filter lets a dependency publish a database credential.
+///
+/// The filter is a security boundary, not a verbosity preference. This service
+/// controls what *it* logs, but a dependency logs what it likes at the level it
+/// likes, so the only durable control is which targets are enabled at all. A
+/// global `info` floor enables `sqlx`'s connect-parameter warning, and that
+/// warning carries the value -- so the floor is `error`, and the workspace's own
+/// targets are raised by name above it.
+///
+/// Both configurations that actually ship are covered, because they are
+/// maintained in different files and either can regress alone: the built-in
+/// `DEFAULT_FILTER` in `aircraft_observability::logging`, and the `RUST_LOG`
+/// line in `.env.example` that `documented_log_filter` reads back.
+///
+/// The database is reachable so the run reaches `listening`, and that is the
+/// anti-vacuity guard. Absence alone is satisfied by a filter that logs nothing
+/// whatsoever, so each case also requires an owned `INFO` event to have arrived.
+/// It has to be one that `tracing` emits: an earlier version of this gate
+/// asserted the startup failure text instead, which `main` returns through
+/// `anyhow` rather than the subscriber, so it survived `DEFAULT_FILTER = "off"`
+/// and the gate passed while proving the service silent rather than discreet.
+///
+/// Reading stops at `listening` rather than draining to exit, which is sound
+/// because the leak necessarily precedes it: `sqlx` warns while *parsing* the
+/// URL, which happens before the pool it then builds can report ready.
+#[tokio::test]
+async fn no_connect_parameter_reaches_the_log() -> Result<()> {
+  let container = database().await?;
+  let url = format!("{}?sslpassword={PASSWORD}", container.database_url);
+  let documented = documented_log_filter()?;
+  let cases: [(&str, Option<&str>); 2] = [
+    ("the built-in default filter", None),
+    ("the filter .env.example documents", Some(documented)),
+  ];
+
+  for (description, filter) in cases {
+    let port = probe_port().await?;
+    let mut child = server_command(&port.to_string(), Some(&url), filter)
+      .spawn()
+      .context("spawning aircraft-server")?;
+    let stderr =
+      child.stderr.take().ok_or_else(|| anyhow!("aircraft-server stderr was not captured"))?;
+    let mut lines = BufReader::new(stderr).lines();
+
+    let deadline = Instant::now() + STARTUP;
+    let mut observed = String::new();
+    let mut listening = false;
+    while let Some(line) = timeout_at(deadline, lines.next_line())
+      .await
+      .context("aircraft-server never reported listening")?
+      .context("reading aircraft-server stderr")?
+    {
+      let plain = strip_ansi(&line);
+      listening = plain.contains("listening");
+      observed.push_str(&plain);
+      observed.push('\n');
+      if listening {
+        break;
+      }
+    }
+    child.kill().await.context("stopping aircraft-server")?;
+
+    // Deliberately does not render the captured output: printing it on failure
+    // would put the credential in the very log this gate exists to keep clean.
+    assert!(
+      !observed.contains(PASSWORD),
+      "{description} published a database credential from a connect parameter"
+    );
+    assert!(
+      listening,
+      "{description} emitted no owned INFO event, so the absence above proves nothing"
+    );
+  }
+  Ok(())
+}
+
 /// The pool is built before the listener, so a server that cannot reach its
 /// database never takes the port. Without this, that ordering would be a comment
 /// in `main` that nothing checks: reversing it leaves every other gate green,
