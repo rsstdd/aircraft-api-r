@@ -2,6 +2,8 @@ use axum::Json;
 use serde::Serialize;
 use utoipa::ToSchema;
 
+use crate::problem::PerimeterResponses;
+
 #[derive(Debug, Serialize, ToSchema)]
 pub struct HealthResponse {
   pub status: &'static str,
@@ -27,7 +29,8 @@ pub struct HealthResponse {
         ("X-Request-Id" = String, description = "The correlation identifier for this \
          request, echoed from the client or generated here.")
       )
-    )
+    ),
+    PerimeterResponses,
   )
 )]
 #[allow(clippy::unused_async)] // Axum handlers must return a future even when no work is awaited.

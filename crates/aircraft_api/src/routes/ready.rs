@@ -6,7 +6,10 @@ use axum::{
 use serde::Serialize;
 use utoipa::ToSchema;
 
-use crate::{ApiState, problem::ProblemDetails};
+use crate::{
+  ApiState,
+  problem::{PerimeterResponses, ProblemDetails},
+};
 
 #[derive(Debug, Serialize, ToSchema)]
 pub struct ReadyResponse {
@@ -34,17 +37,18 @@ pub struct ReadyResponse {
          request, echoed from the client or generated here.")
       )
     ),
+    PerimeterResponses,
     (
       status = 503,
-      description = "The service is draining, or the database could not be reached \
-                     within the probe deadline",
+      description = "The service is draining, is at capacity, or could not reach \
+                     the database within the probe deadline",
       body = ProblemDetails,
       content_type = "application/problem+json",
       headers(
         ("X-Request-Id" = String, description = "The correlation identifier for this \
          request, echoed from the client or generated here.")
       )
-    )
+    ),
   )
 )]
 pub async fn ready(State(state): State<ApiState>) -> Response {

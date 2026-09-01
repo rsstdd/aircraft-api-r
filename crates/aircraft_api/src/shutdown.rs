@@ -12,11 +12,12 @@ use std::sync::{
 
 use axum::{
   extract::{Request, State},
-  http::StatusCode,
   middleware::Next,
   response::{IntoResponse as _, Response},
 };
 use tokio::sync::watch;
+
+use crate::problem::ProblemDetails;
 
 #[derive(Clone, Copy, Debug, Default, Eq, Ord, PartialEq, PartialOrd)]
 enum Phase {
@@ -69,7 +70,12 @@ impl ShutdownState {
     *self.inner.phase.borrow() >= Phase::Draining
   }
 
-  /// How many requests are inside a handler right now.
+  /// How many requests the perimeter is currently carrying.
+  ///
+  /// This counts body reception as well as handler execution: `track_in_flight`
+  /// sits outside `enforce_deadline` and `refuse_oversized_body`, so a request
+  /// still uploading its body is already counted. That is deliberate -- a drain
+  /// must wait for a slow upload just as it waits for a slow handler.
   #[must_use]
   pub fn in_flight(&self) -> usize {
     self.inner.in_flight.load(Ordering::Acquire)
@@ -104,27 +110,30 @@ impl Drop for InFlightGuard {
   }
 }
 
-/// Counts a request for as long as its handler is running and abandons it if
-/// the drain window expires first.
+/// Counts a request for as long as the perimeter is carrying it and abandons it
+/// if the drain window expires first.
 ///
-/// The guard is released when the handler returns its response, not when the
-/// body finishes reaching the client. Every route here answers with a complete
-/// in-memory body, so the two coincide; a streaming route would need the guard
-/// carried into the body.
+/// The scope is body reception *and* handler execution, since this sits outside
+/// both `enforce_deadline` and `refuse_oversized_body`: a drain waits for a slow
+/// upload the same way it waits for a slow handler. The guard releases when the
+/// handler answers, not when the body reaches the client -- the two coincide
+/// while every route answers in memory.
 ///
-/// Forced cancellation returns only a status. The structured shutdown problem
-/// belongs to `/ready`; reusing it here would falsely name `/ready` as the
-/// instance of a cancelled request to any other route.
+/// Cancellation answers with [`ProblemDetails::shutdown_cancelled`], which
+/// shares `/ready`'s shutdown type but not its `detail`.
 pub async fn track_in_flight(
   State(shutdown): State<ShutdownState>,
   request: Request,
   next: Next,
 ) -> Response {
   let _guard = shutdown.enter();
+  // Captured before the request is moved into the branch below, which the
+  // cancellation arm may never let return.
+  let instance = request.uri().path().to_owned();
 
   tokio::select! {
     response = next.run(request) => response,
-    () = shutdown.cancelled() => StatusCode::SERVICE_UNAVAILABLE.into_response(),
+    () = shutdown.cancelled() => ProblemDetails::shutdown_cancelled(&instance).into_response(),
   }
 }
 

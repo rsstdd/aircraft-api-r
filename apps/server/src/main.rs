@@ -3,7 +3,7 @@
 //! Configuration, telemetry, persistence, and routing are each owned by their
 //! own crate, so this binary only resolves them in order and hands the bound
 //! socket to [`aircraft_server::serve`] together with the signal that ends it.
-//! Perimeter limits are a separate story and are deliberately absent.
+//! The perimeter bounds are resolved here too, and the router enforces them.
 
 use std::{sync::Arc, time::Duration};
 
@@ -45,6 +45,19 @@ async fn main() -> Result<()> {
   .context("connecting the database pool")?;
   tracing::info!(max_connections = pool.options().get_max_connections(), "database pool ready");
 
+  // Settings become perimeter limits here rather than in `aircraft_api`, which
+  // may not depend on `aircraft_config`. The origins were already validated
+  // while loading, so this only fails on an origin that parsed as a URL but
+  // cannot be a header value -- a case that should be unreachable, and is
+  // reported naming the setting rather than by panicking.
+  let limits = aircraft_api::PerimeterLimits::new(
+    settings.http.max_request_body_bytes,
+    Duration::from_secs(settings.http.request_timeout_seconds),
+    settings.http.max_concurrent_requests,
+    &settings.http.cors_allowed_origins,
+  )
+  .context("building perimeter limits from http.cors_allowed_origins")?;
+
   // The build identity is resolved here because this is the crate that is
   // actually built and deployed; `aircraft_api` would otherwise report its own
   // package version, which is a different thing that happens to match today.
@@ -55,6 +68,7 @@ async fn main() -> Result<()> {
     version: env!("CARGO_PKG_VERSION"),
     build_commit: option_env!("BUILD_COMMIT"),
     shutdown: ShutdownState::new(),
+    limits,
   };
 
   let address = settings.bind_address();
