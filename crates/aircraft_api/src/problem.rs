@@ -7,6 +7,8 @@
 //! a connection string, but it does see `PersistenceError`, whose message
 //! carries whatever `SQLx` reported.
 
+use std::borrow::Cow;
+
 use axum::{
   Json,
   http::{StatusCode, header},
@@ -32,30 +34,33 @@ pub struct ProblemDetails {
   pub detail: &'static str,
   /// The specific occurrence this problem describes.
   ///
-  /// Optional, as RFC 9457 section 3.1 allows. A route-owned problem names its
-  /// route; a perimeter problem names nothing, because the same rejection can
-  /// answer any request and a fixed route here would be a false statement about
-  /// which one was refused. Omitted from the wire rather than sent as `null`, so
-  /// the two route problems that predate this field serialize exactly as before.
+  /// Always present. A route-owned problem names its route as a borrowed
+  /// constant; a perimeter problem names the path of the request it refused,
+  /// which it owns. `Cow` is what lets one required field be both.
   ///
-  /// `nullable = false` keeps the generated schema honest: `Option` would
-  /// otherwise be published as `["string", "null"]`, describing a `null` this
-  /// server never emits and telling a generated client to model one.
-  #[serde(skip_serializing_if = "Option::is_none")]
-  #[schema(nullable = false)]
-  pub instance: Option<&'static str>,
+  /// This field was briefly optional, so that a perimeter refusal -- which can
+  /// answer any request -- would not have to name a route it could not know.
+  /// That was a mistake: `/ready` has answered `503` with an `instance` since
+  /// the readiness route shipped, and a shed or drain-cancelled `503` on that
+  /// same route dropped it. `oasdiff` classifies that as
+  /// `response-property-became-optional`, an error under the `fail-on: WARN`
+  /// gate in `.github/workflows/ci.yml`, and it is a real break for any client
+  /// that reads the field. Naming the actual request path answers the original
+  /// objection honestly: it is the occurrence, not a guess at a route.
+  #[schema(value_type = String)]
+  pub instance: Cow<'static, str>,
 }
 
 impl ProblemDetails {
   /// The request body could not be read as a complete byte sequence.
   #[must_use]
-  pub const fn malformed_input() -> Self {
+  pub fn malformed_input(instance: &str) -> Self {
     Self {
       kind: "/problems/malformed-input",
       title: "Bad Request",
       status: 400,
       detail: "The request body could not be read.",
-      instance: None,
+      instance: Self::bounded_instance(instance),
     }
   }
 
@@ -71,7 +76,7 @@ impl ProblemDetails {
       title: "Service Unavailable",
       status: 503,
       detail: "The service cannot reach its database.",
-      instance: Some("/ready"),
+      instance: Cow::Borrowed("/ready"),
     }
   }
 
@@ -88,7 +93,7 @@ impl ProblemDetails {
       title: "Service Unavailable",
       status: 503,
       detail: "The service is shutting down and is not accepting new work.",
-      instance: Some("/ready"),
+      instance: Cow::Borrowed("/ready"),
     }
   }
 
@@ -97,39 +102,39 @@ impl ProblemDetails {
   /// The same problem *type* as [`Self::shutting_down`], because it is the same
   /// failure class -- the service is shutting down -- and
   /// `docs/architecture/http_v1_decisions.md` gives each class one stable type.
-  /// The `detail` and the absent `instance` are what distinguish being refused
-  /// at the door from being cut off partway through, on a route this can answer
-  /// for but cannot name.
+  /// The `detail` is what distinguishes being refused at the door from being
+  /// cut off partway through; both name the request they answered.
   #[must_use]
-  pub const fn shutdown_cancelled() -> Self {
+  pub fn shutdown_cancelled(instance: &str) -> Self {
     Self {
       kind: "/problems/shutting-down",
       title: "Service Unavailable",
       status: 503,
       detail: "The service stopped waiting for this request so it could shut down.",
-      instance: None,
+      instance: Self::bounded_instance(instance),
     }
   }
 
   /// The request body is larger than the perimeter accepts.
   ///
-  /// One of the three perimeter problems below. All three name no `instance`:
-  /// they are answers the boundary gives before routing is meaningful, so there
-  /// is no single occurrence to point at. The correlation identifier in
-  /// `X-Request-Id` is what ties one of these to a specific request, and it is
-  /// present because `correlation::correlate` wraps the whole perimeter.
+  /// One of the three perimeter problems below. All three name the path of the
+  /// request they refused rather than a route, because the boundary answers
+  /// before routing is meaningful and has no matched route to cite. The
+  /// correlation identifier in `X-Request-Id` is what ties one of these to a
+  /// specific request, and it is present because `correlation::correlate`
+  /// wraps the whole perimeter.
   ///
   /// The detail names no limit. Publishing the exact ceiling tells a caller
   /// probing for one precisely how much to send, and an operator who needs the
   /// number has it in configuration.
   #[must_use]
-  pub const fn payload_too_large() -> Self {
+  pub fn payload_too_large(instance: &str) -> Self {
     Self {
       kind: "/problems/payload-too-large",
       title: "Payload Too Large",
       status: 413,
       detail: "The request body is larger than this service accepts.",
-      instance: None,
+      instance: Self::bounded_instance(instance),
     }
   }
 
@@ -142,13 +147,13 @@ impl ProblemDetails {
   /// correlating logs. Shed load is the only one of the three a client can fix
   /// by retrying.
   #[must_use]
-  pub const fn overloaded() -> Self {
+  pub fn overloaded(instance: &str) -> Self {
     Self {
       kind: "/problems/overloaded",
       title: "Service Unavailable",
       status: 503,
       detail: "The service is at capacity and refused this request rather than queueing it.",
-      instance: None,
+      instance: Self::bounded_instance(instance),
     }
   }
 
@@ -157,14 +162,29 @@ impl ProblemDetails {
   /// `504` rather than `408`: a `408` says the *client* was too slow to send its
   /// request, which blames the wrong party for a handler that overran.
   #[must_use]
-  pub const fn deadline_exceeded() -> Self {
+  pub fn deadline_exceeded(instance: &str) -> Self {
     Self {
       kind: "/problems/deadline-exceeded",
       title: "Gateway Timeout",
       status: 504,
       detail: "The service did not produce a response within its deadline.",
-      instance: None,
+      instance: Self::bounded_instance(instance),
     }
+  }
+
+  /// The refused request's path, bounded before it is reflected back.
+  ///
+  /// The path is caller-controlled. `serde_json` escapes it on the way out, so
+  /// this is not an injection guard; it is the size and control-character bound
+  /// `AGENTS.md` requires of anything untrusted that reaches a response, and it
+  /// uses the same 255-character ceiling `aircraft_ingest::sanitize_locator`
+  /// applies to the other untrusted string this workspace echoes back.
+  fn bounded_instance(path: &str) -> Cow<'static, str> {
+    const MAX_INSTANCE_CHARS: usize = 255;
+
+    Cow::Owned(
+      path.chars().filter(|character| !character.is_control()).take(MAX_INSTANCE_CHARS).collect(),
+    )
   }
 }
 

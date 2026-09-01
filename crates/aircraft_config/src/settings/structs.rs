@@ -286,6 +286,17 @@ where
 /// The origin spelling that `tower_http::cors::AllowOrigin::list` panics on.
 const WILDCARD_ORIGIN: &str = "*";
 
+/// The largest concurrency bound the perimeter's semaphore can be built with.
+///
+/// Mirrors `tokio::sync::Semaphore::MAX_PERMITS` (`usize::MAX >> 3` in
+/// `tokio 1.52`), which `tokio::sync::Semaphore::new` asserts against and
+/// **panics** above. `aircraft_api::PerimeterLimits::permits` passes this
+/// setting straight to that constructor, so without this check an operator
+/// could turn a configuration typo into a startup crash rather than a typed
+/// error. It is duplicated rather than imported because `aircraft_config` has
+/// no `tokio` dependency and should not gain one to hold a constant.
+const MAX_CONCURRENT_REQUESTS: usize = usize::MAX >> 3;
+
 /// Rejects a perimeter bound the server could not enforce.
 ///
 /// Every branch names its full setting path, the way the host, port, and pool
@@ -310,6 +321,11 @@ fn validate_perimeter_limits(settings: &HttpSettings) -> Result<(), ConfigError>
     return Err(ConfigError::Message(
       "http.max_concurrent_requests must be greater than zero".to_owned(),
     ));
+  }
+  if settings.max_concurrent_requests > MAX_CONCURRENT_REQUESTS {
+    return Err(ConfigError::Message(format!(
+      "http.max_concurrent_requests must be at most {MAX_CONCURRENT_REQUESTS}"
+    )));
   }
 
   settings.cors_allowed_origins.iter().try_for_each(|origin| validate_cors_origin(origin))
@@ -660,6 +676,31 @@ mod tests {
         "the failure must name its setting path for {key}: {error}"
       );
     }
+  }
+
+  /// A concurrency bound above the semaphore's ceiling is a typed error, not a
+  /// startup panic.
+  ///
+  /// `tokio::sync::Semaphore::new` asserts against `MAX_PERMITS` and panics
+  /// above it, and `aircraft_api::PerimeterLimits::permits` hands this setting
+  /// straight to that constructor. The accepted value directly below the
+  /// ceiling is the anti-vacuity guard: a check written with the comparison
+  /// inverted, or against the wrong constant, fails on it rather than passing
+  /// both halves.
+  #[test]
+  fn a_concurrency_bound_above_the_semaphore_ceiling_is_rejected() {
+    const CEILING: usize = usize::MAX >> 3;
+
+    let error = load_http(&[("APP__HTTP__MAX_CONCURRENT_REQUESTS", &(CEILING + 1).to_string())])
+      .expect_err("a bound above MAX_PERMITS must not reach Semaphore::new");
+    assert!(
+      error.to_string().contains("http.max_concurrent_requests"),
+      "the failure must name its setting path: {error}"
+    );
+
+    let settings = load_http(&[("APP__HTTP__MAX_CONCURRENT_REQUESTS", &CEILING.to_string())])
+      .expect("the ceiling itself is a usable bound");
+    assert_eq!(settings.http.max_concurrent_requests, CEILING);
   }
 
   /// Acceptance criterion 4.

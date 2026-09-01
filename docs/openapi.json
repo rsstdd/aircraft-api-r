@@ -378,7 +378,8 @@
           "type",
           "title",
           "status",
-          "detail"
+          "detail",
+          "instance"
         ],
         "properties": {
           "detail": {
@@ -386,7 +387,7 @@
           },
           "instance": {
             "type": "string",
-            "description": "The specific occurrence this problem describes.\n\nOptional, as RFC 9457 section 3.1 allows. A route-owned problem names its\nroute; a perimeter problem names nothing, because the same rejection can\nanswer any request and a fixed route here would be a false statement about\nwhich one was refused. Omitted from the wire rather than sent as `null`, so\nthe two route problems that predate this field serialize exactly as before.\n\n`nullable = false` keeps the generated schema honest: `Option` would\notherwise be published as `[\"string\", \"null\"]`, describing a `null` this\nserver never emits and telling a generated client to model one."
+            "description": "The specific occurrence this problem describes.\n\nAlways present. A route-owned problem names its route as a borrowed\nconstant; a perimeter problem names the path of the request it refused,\nwhich it owns. `Cow` is what lets one required field be both.\n\nThis field was briefly optional, so that a perimeter refusal -- which can\nanswer any request -- would not have to name a route it could not know.\nThat was a mistake: `/ready` has answered `503` with an `instance` since\nthe readiness route shipped, and a shed or drain-cancelled `503` on that\nsame route dropped it. `oasdiff` classifies that as\n`response-property-became-optional`, an error under the `fail-on: WARN`\ngate in `.github/workflows/ci.yml`, and it is a real break for any client\nthat reads the field. Naming the actual request path answers the original\nobjection honestly: it is the occurrence, not a guess at a route."
           },
           "status": {
             "type": "integer",

@@ -92,6 +92,11 @@ impl PerimeterLimits {
   /// Built here rather than stored so the count and the thing enforcing it
   /// cannot drift apart, and so a `PerimeterLimits` clone carries a bound
   /// rather than a share of somebody else's live permits.
+  ///
+  /// `Semaphore::new` **panics** above `tokio::sync::Semaphore::MAX_PERMITS`.
+  /// `aircraft_config`'s `MAX_CONCURRENT_REQUESTS` mirrors that ceiling and
+  /// rejects a larger setting while configuration loads, which is what keeps
+  /// this call infallible.
   pub(crate) fn permits(&self) -> Arc<Semaphore> {
     Arc::new(Semaphore::new(self.max_concurrent))
   }
@@ -130,7 +135,7 @@ impl PerimeterLimits {
     next: Next,
   ) -> Response {
     if request.method() == Method::OPTIONS && Self::declares_more_than(&request, max_bytes) {
-      return ProblemDetails::payload_too_large().into_response();
+      return ProblemDetails::payload_too_large(request.uri().path()).into_response();
     }
 
     next.run(request).await
@@ -149,19 +154,21 @@ impl PerimeterLimits {
     next: Next,
   ) -> Response {
     if Self::declares_more_than(&request, max_bytes) {
-      return ProblemDetails::payload_too_large().into_response();
+      return ProblemDetails::payload_too_large(request.uri().path()).into_response();
     }
 
     let (parts, body) = request.into_parts();
+    // The path is needed after `parts` is moved into the rebuilt request below.
+    let instance = parts.uri.path().to_owned();
     let mut stream = body.into_data_stream();
     let mut buffered = Vec::new();
 
     while let Some(chunk) = stream.next().await {
       let Ok(chunk) = chunk else {
-        return ProblemDetails::malformed_input().into_response();
+        return ProblemDetails::malformed_input(&instance).into_response();
       };
       if buffered.len().checked_add(chunk.len()).is_none_or(|length| length > max_bytes) {
-        return ProblemDetails::payload_too_large().into_response();
+        return ProblemDetails::payload_too_large(&instance).into_response();
       }
       buffered.extend_from_slice(&chunk);
     }
@@ -208,7 +215,7 @@ impl PerimeterLimits {
     next: Next,
   ) -> Response {
     let Ok(_permit) = permits.try_acquire_owned() else {
-      return ProblemDetails::overloaded().into_response();
+      return ProblemDetails::overloaded(request.uri().path()).into_response();
     };
 
     next.run(request).await
@@ -226,8 +233,12 @@ impl PerimeterLimits {
     request: Request,
     next: Next,
   ) -> Response {
+    // Captured before the request is moved into the inner future, which the
+    // timeout may drop before it returns.
+    let instance = request.uri().path().to_owned();
+
     tokio::time::timeout(deadline, next.run(request))
       .await
-      .unwrap_or_else(|_elapsed| ProblemDetails::deadline_exceeded().into_response())
+      .unwrap_or_else(|_elapsed| ProblemDetails::deadline_exceeded(&instance).into_response())
   }
 }

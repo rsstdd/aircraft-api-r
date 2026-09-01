@@ -231,9 +231,10 @@ async fn an_in_flight_request_completes_inside_the_drain_window() -> Result<()> 
 /// cancellation path. The body is asserted through the real socket rather than
 /// in-process because `docs/architecture/http_v1_decisions.md` requires every
 /// API-originated `5xx` to be an RFC 9457 document, and a router test cannot
-/// show that the document survives HTTP framing. The absent `instance` is what
-/// distinguishes this cross-cutting response from `/ready`'s own shutdown
-/// problem, which names its route.
+/// show that the document survives HTTP framing. The `instance` names the path
+/// that was actually cut off, which is what carries a cancellation's occurrence
+/// through the socket; `detail` is what distinguishes it from `/ready`'s own
+/// shutdown problem, since the two deliberately share a problem type.
 #[tokio::test]
 async fn a_request_still_running_at_expiry_is_cancelled_and_counted() -> Result<()> {
   let logs = CapturedLogs::default();
@@ -267,8 +268,8 @@ async fn a_request_still_running_at_expiry_is_cancelled_and_counted() -> Result<
     "the document must name the shutdown problem type: {response:?}"
   );
   assert!(
-    !body.contains(r#""instance""#),
-    "a cancellation answers for whichever route was in flight and must name none: {response:?}"
+    body.contains(r#""instance":"/ready""#),
+    "the document must name the request that was cancelled: {response:?}"
   );
 
   let captured = logs.contents();

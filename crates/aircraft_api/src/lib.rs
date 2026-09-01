@@ -604,7 +604,8 @@ mod tests {
         "type": "/problems/shutting-down",
         "title": "Service Unavailable",
         "status": 503,
-        "detail": "The service stopped waiting for this request so it could shut down."
+        "detail": "The service stopped waiting for this request so it could shut down.",
+        "instance": "/ready"
       }),
     )
     .await
@@ -668,7 +669,8 @@ mod tests {
         "type": "/problems/payload-too-large",
         "title": "Payload Too Large",
         "status": 413,
-        "detail": "The request body is larger than this service accepts."
+        "detail": "The request body is larger than this service accepts.",
+        "instance": "/ready"
       }),
     )
     .await
@@ -706,7 +708,8 @@ mod tests {
         "type": "/problems/payload-too-large",
         "title": "Payload Too Large",
         "status": 413,
-        "detail": "The request body is larger than this service accepts."
+        "detail": "The request body is larger than this service accepts.",
+        "instance": "/ready"
       }),
     )
     .await
@@ -755,7 +758,8 @@ mod tests {
         "type": "/problems/malformed-input",
         "title": "Bad Request",
         "status": 400,
-        "detail": "The request body could not be read."
+        "detail": "The request body could not be read.",
+        "instance": "/ready"
       }),
     )
     .await
@@ -844,7 +848,8 @@ mod tests {
         "type": "/problems/deadline-exceeded",
         "title": "Gateway Timeout",
         "status": 504,
-        "detail": "The service did not produce a response within its deadline."
+        "detail": "The service did not produce a response within its deadline.",
+        "instance": "/ready"
       }),
     )
     .await
@@ -914,7 +919,8 @@ mod tests {
         "type": "/problems/overloaded",
         "title": "Service Unavailable",
         "status": 503,
-        "detail": "The service is at capacity and refused this request rather than queueing it."
+        "detail": "The service is at capacity and refused this request rather than queueing it.",
+        "instance": "/ready"
       }),
     )
     .await
@@ -1112,7 +1118,8 @@ mod tests {
         "type": "/problems/payload-too-large",
         "title": "Payload Too Large",
         "status": 413,
-        "detail": "The request body is larger than this service accepts."
+        "detail": "The request body is larger than this service accepts.",
+        "instance": "/ready"
       }),
     )
     .await
@@ -1165,36 +1172,109 @@ mod tests {
     Ok(())
   }
 
-  /// The published shape of `instance` must be the shape the server emits.
+  /// A perimeter problem names the request it actually refused.
   ///
-  /// Serde omits the field when it is absent, so the server never sends
-  /// `null`. `Option` alone would have utoipa publish `["string", "null"]`,
-  /// which tells a generated client to model a value that cannot occur and
-  /// contradicts the field's own documentation.
+  /// The path here is deliberately not a route: the perimeter answers before
+  /// routing, so it must report what was asked for rather than a matched route.
+  /// This is the anti-vacuity guard for every other problem assertion in this
+  /// file -- they all request `/ready`, so a `bounded_instance` that returned a
+  /// constant would satisfy them and fail only here.
+  #[tokio::test]
+  async fn a_perimeter_problem_names_the_refused_request_path() -> Result<()> {
+    const LIMIT: usize = 1024;
+    const UNROUTED: &str = "/not-a-route";
+
+    let state = state_with_limits(
+      Arc::new(NeverConsulted),
+      limits_with(LIMIT, Duration::from_secs(30), 256, &[]),
+    );
+
+    let response = router(state)
+      .oneshot(
+        Request::get(UNROUTED).header(header::CONTENT_LENGTH, LIMIT + 1).body(Body::empty())?,
+      )
+      .await?;
+
+    assert_eq!(response.status(), StatusCode::PAYLOAD_TOO_LARGE);
+    let body = to_bytes(response.into_body(), 4096).await?;
+    let document: serde_json::Value = serde_json::from_slice(&body)?;
+    assert_eq!(
+      document.pointer("/instance"),
+      Some(&json!(UNROUTED)),
+      "the problem must name the path that was refused: {document}"
+    );
+    Ok(())
+  }
+
+  /// The reflected path is bounded before it reaches the response body.
   ///
-  /// Both halves are load-bearing: the first fails if the field becomes
-  /// nullable again, the second if it becomes required -- and a required
-  /// `instance` would be a contract every perimeter problem violates.
+  /// The path is caller-controlled, so an unbounded copy would let a caller
+  /// choose the size of the document this service emits. `AGENTS.md` requires a
+  /// ceiling on anything untrusted that reaches a response.
+  #[tokio::test]
+  async fn a_reflected_request_path_is_bounded() -> Result<()> {
+    const LIMIT: usize = 1024;
+    const MAX_INSTANCE_CHARS: usize = 255;
+
+    let long_path = format!("/{}", "a".repeat(4096));
+    let state = state_with_limits(
+      Arc::new(NeverConsulted),
+      limits_with(LIMIT, Duration::from_secs(30), 256, &[]),
+    );
+
+    let response = router(state)
+      .oneshot(
+        Request::get(&long_path).header(header::CONTENT_LENGTH, LIMIT + 1).body(Body::empty())?,
+      )
+      .await?;
+
+    let body = to_bytes(response.into_body(), 4096).await?;
+    let document: serde_json::Value = serde_json::from_slice(&body)?;
+    let instance = document
+      .pointer("/instance")
+      .and_then(serde_json::Value::as_str)
+      .context("the problem names no instance")?;
+
+    assert_eq!(
+      instance.chars().count(),
+      MAX_INSTANCE_CHARS,
+      "an oversized path must be truncated, not echoed whole"
+    );
+    Ok(())
+  }
+
+  /// `instance` is a required part of the published problem contract.
+  ///
+  /// `/ready` has answered `503` with an `instance` since the readiness route
+  /// shipped. Making the field optional so perimeter problems could omit it
+  /// broke that: `oasdiff` reports `response-property-became-optional` for
+  /// `GET /ready` `503`, an error under the `fail-on: WARN` gate in
+  /// `.github/workflows/ci.yml`. Every problem now names the request it
+  /// answered, so the field is required again.
+  ///
+  /// Both halves are load-bearing: the first fails if the field is dropped from
+  /// `required`, the second if it is published as nullable -- and a nullable
+  /// `instance` would describe a `null` this server never emits.
   #[test]
-  fn the_optional_problem_instance_is_published_as_absent_rather_than_null() -> Result<()> {
+  fn the_problem_instance_is_published_as_required_and_never_nullable() -> Result<()> {
     let document = serde_json::to_value(openapi())?;
     let schema = document
       .pointer("/components/schemas/ProblemDetails")
       .context("ProblemDetails is not published")?;
-
-    assert_eq!(
-      schema.pointer("/properties/instance/type"),
-      Some(&json!("string")),
-      "instance must not be published as nullable: {schema}"
-    );
 
     let required = schema
       .pointer("/required")
       .and_then(serde_json::Value::as_array)
       .context("ProblemDetails publishes no required list")?;
     assert!(
-      !required.contains(&json!("instance")),
-      "instance must stay optional; every perimeter problem omits it: {required:?}"
+      required.contains(&json!("instance")),
+      "instance must stay required; /ready's 503 has always carried it: {required:?}"
+    );
+
+    assert_eq!(
+      schema.pointer("/properties/instance/type"),
+      Some(&json!("string")),
+      "instance must not be published as nullable: {schema}"
     );
     Ok(())
   }

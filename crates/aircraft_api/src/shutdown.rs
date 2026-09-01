@@ -70,7 +70,12 @@ impl ShutdownState {
     *self.inner.phase.borrow() >= Phase::Draining
   }
 
-  /// How many requests are inside a handler right now.
+  /// How many requests the perimeter is currently carrying.
+  ///
+  /// This counts body reception as well as handler execution: `track_in_flight`
+  /// sits outside `enforce_deadline` and `refuse_oversized_body`, so a request
+  /// still uploading its body is already counted. That is deliberate -- a drain
+  /// must wait for a slow upload just as it waits for a slow handler.
   #[must_use]
   pub fn in_flight(&self) -> usize {
     self.inner.in_flight.load(Ordering::Acquire)
@@ -105,8 +110,13 @@ impl Drop for InFlightGuard {
   }
 }
 
-/// Counts a request for as long as its handler is running and abandons it if
-/// the drain window expires first.
+/// Counts a request for as long as the perimeter is carrying it and abandons it
+/// if the drain window expires first.
+///
+/// The scope is body reception *and* handler execution, because this layer sits
+/// outside both `enforce_deadline` and `refuse_oversized_body`. A request that
+/// is still uploading is already counted, so a drain waits for a slow upload the
+/// same way it waits for a slow handler.
 ///
 /// The guard is released when the handler returns its response, not when the
 /// body finishes reaching the client. Every route here answers with a complete
@@ -115,18 +125,21 @@ impl Drop for InFlightGuard {
 ///
 /// Forced cancellation answers with [`ProblemDetails::shutdown_cancelled`]
 /// rather than `/ready`'s document. The two share a problem type because they
-/// are the same failure class, but only the route-owned one names an instance:
-/// this layer answers for whichever route was in flight and cannot name it.
+/// are the same failure class; they differ in `detail`, and each names the
+/// request it actually answered.
 pub async fn track_in_flight(
   State(shutdown): State<ShutdownState>,
   request: Request,
   next: Next,
 ) -> Response {
   let _guard = shutdown.enter();
+  // Captured before the request is moved into the branch below, which the
+  // cancellation arm may never let return.
+  let instance = request.uri().path().to_owned();
 
   tokio::select! {
     response = next.run(request) => response,
-    () = shutdown.cancelled() => ProblemDetails::shutdown_cancelled().into_response(),
+    () = shutdown.cancelled() => ProblemDetails::shutdown_cancelled(&instance).into_response(),
   }
 }
 
