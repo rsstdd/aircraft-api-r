@@ -26,7 +26,12 @@ fail readiness, and drain in-flight requests for a configured window before
 cancelling them. Every response carries an `X-Request-Id`, adopted from the
 caller when it is usable and generated otherwise, and every request leaves one
 structured event recording its method, matched route, status, latency, and that
-identifier. There are no perimeter limits. General
+identifier. The perimeter bounds request body size, handler duration, and
+concurrency, and answers cross-origin requests only for explicitly configured
+origins; a wildcard origin is rejected while settings load. Every perimeter
+refusal is an RFC 9457 problem document, as
+`docs/architecture/http_v1_decisions.md` requires of every API-originated `4xx`
+and `5xx`. General
 aircraft CRUD, search, comparison, mission scoring, authentication, and SQLx
 offline metadata are not implemented end to end.
 Canonical-value curation is implemented (`aircraft-ingest curate`), and the
@@ -239,13 +244,13 @@ server -> composes adapters and runtime infrastructure
 |---|---|---|
 | `Cargo.toml` | Workspace membership, shared dependencies, lints, profiles | Cargo resolves eleven packages |
 | `apps/ingest/` | Ingestion CLI composition root | Working deployment candidate with Docker-backed gates |
-| `apps/server/` | HTTP runtime composition | Boots, builds a verified database pool, serves health, readiness, and version, correlates and traces every request, and drains on signal; no perimeter limits |
+| `apps/server/` | HTTP runtime composition | Boots, builds a verified database pool, serves health, readiness, and version, correlates and traces every request, enforces perimeter limits and CORS, and drains on signal |
 | `crates/aircraft_domain/` | Pure entities, values, units, invariants | Ingestion invariants implemented; broader domain mostly scaffolded |
 | `crates/aircraft_app/` | Use cases and ports | Ingestion orchestration implemented; broader application incomplete |
 | `crates/aircraft_api/` | Axum DTOs, routes, middleware, OpenAPI | Health, readiness, and version routes, RFC 9457 problem documents, and the OpenAPI contract |
 | `crates/aircraft_db/` | SQLx repositories and schema mappings | Ingestion repository implemented; broader persistence incomplete |
 | `crates/aircraft_ingest/` | Source capture, parsing, normalization | PlanePHD adapter implemented |
-| `crates/aircraft_config/` | Typed runtime configuration | Ingestion, HTTP, database-URL, and database pool settings implemented; limit and CORS settings land with their consumers |
+| `crates/aircraft_config/` | Typed runtime configuration | Ingestion, HTTP, database-URL, database pool, and perimeter limit and CORS settings implemented |
 | `crates/aircraft_observability/` | Structured tracing and telemetry | Basic tracing setup implemented; broader telemetry partial |
 | `crates/aircraft_testsupport/` | Disposable PostgreSQL harness shared by integration tests | Dev-only; referenced solely from `[dev-dependencies]` |
 | `crates/aircraft_testsupport/` | Disposable PostgreSQL test harness | Active test-only support crate |

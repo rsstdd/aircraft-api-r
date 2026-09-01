@@ -16,8 +16,8 @@ simply because they were parsed successfully.
 > and several repository automation commands are implemented. The Axum API
 > currently contains health, readiness, and version contracts. `apps/server`
 > boots and serves them over HTTP, builds a verified database pool, correlates
-> and traces every request, and drains in-flight requests on SIGINT or SIGTERM,
-> but has no perimeter limits.
+> and traces every request, enforces perimeter limits and CORS, and drains
+> in-flight requests on SIGINT or SIGTERM.
 > Search, comparison, and authentication are not implemented end to end. The
 > Rust ingestion path passed all six deployment gates, including the
 > SQL-versus-Rust parity run that justified retiring the legacy loader; that gate is now a golden-snapshot
@@ -47,8 +47,8 @@ simply because they were parsed successfully.
 | Ingestion semantics | Immutable input capture, SHA-256 identity, bounded streaming, preflight validation, transactional promotion, audit history, and idempotent replay are implemented |
 | Persistence | SQLx ingestion repository implemented; the broader repository surface remains incomplete |
 | Domain and application | Ingestion rules and orchestration are implemented; most general aircraft, mission, search, and comparison behavior remains scaffolded |
-| HTTP API | Axum health, readiness, and version routes with a generated OpenAPI contract, plus `X-Request-Id` correlation and one structured trace event per request; no product routes or perimeter limits |
-| Server | Runnable Axum server in the workspace; it serves health, readiness, and version, builds a verified, bounded database pool, correlates and traces every request, and drains in-flight requests on SIGINT or SIGTERM, but has no perimeter limits |
+| HTTP API | Axum health, readiness, and version routes with a generated OpenAPI contract, plus `X-Request-Id` correlation, one structured trace event per request, and perimeter limits with explicit-origin CORS; no product routes |
+| Server | Runnable Axum server in the workspace; it serves health, readiness, and version, builds a verified, bounded database pool, correlates and traces every request, refuses oversized, over-long, and excess-concurrency work at the perimeter, and drains in-flight requests on SIGINT or SIGTERM |
 | Repository automation | Boundaries, migration policy, OpenAPI compatibility, dependency review, supply-chain policy, workflow linting, secret scanning, CodeQL, and ingestion golden snapshots are enforced locally or in CI |
 | Tests | Meaningful unit, application, property, repository, and disposable-PostgreSQL ingestion tests. The three placeholder files under `tests/` were deleted; that directory now holds only fixtures |
 | Production readiness | Not ready; target-environment gates remain, and the authenticated HTTP product is incomplete |
