@@ -158,6 +158,12 @@ retrievable by SHA. Only GitHub Support can purge it. Prevention is the only
 control that works. It applies to every path a message can take: `-m`, `-F`, a
 message file handed to the user, a squash-merge body, and an amend.
 
+`hooks/commit-msg` enforces this mechanically and is the authority when a
+default disagrees. It is checked in, but `core.hooksPath` is local git config
+and cannot be committed, so **each clone runs `just hooks-install` once**;
+`just hooks-check` reports whether this clone is covered. A genuine human
+`Co-authored-by:` is still accepted — only agent attribution is refused.
+
 ## Architectural invariants
 
 The dependency direction is inward:
