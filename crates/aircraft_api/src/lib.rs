@@ -1,13 +1,6 @@
 #![deny(clippy::as_conversions, clippy::indexing_slicing)]
 
-// Public as a module, empty as an API: every item inside is `pub(crate)`, so
-// nothing here is reachable from outside this crate, and a consumer that tries
-// gets `private constant` rather than a usable handle. The module is not simply
-// made private because `unreachable_pub` and `clippy::redundant_pub_crate` give
-// opposite orders for a crate-visible item in a private module -- one demands
-// `pub(crate)`, the other `pub` -- and the workspace denies both as warnings.
-// This spelling closes the API surface without suppressing either lint.
-pub mod correlation;
+mod correlation;
 pub mod problem;
 pub mod routes;
 pub mod shutdown;

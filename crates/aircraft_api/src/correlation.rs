@@ -10,6 +10,14 @@
 //! Subscriber installation is `aircraft_observability`'s job. This module only
 //! emits.
 
+// `unreachable_pub` rejects a bare `pub` here and `clippy::redundant_pub_crate`
+// rejects `pub(crate)`; `-D warnings` denies both. `pub(super)` is not a third
+// option: this module is a child of the crate root, so it resolves to the same
+// visibility and trips the same lint, which reports it as `pub(crate)`.
+// Silencing that beats widening the crate's public API for a style lint. Scoped
+// to this file, not the workspace.
+#![allow(clippy::redundant_pub_crate)]
+
 use std::time::Instant;
 
 use axum::{
