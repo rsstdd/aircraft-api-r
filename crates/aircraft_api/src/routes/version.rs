@@ -24,7 +24,22 @@ pub struct VersionResponse {
   tag = "health",
   summary = "Report the running build",
   description = "Report the package version and, when it was stamped in at build time, the commit.",
-  responses((status = 200, description = "The running build", body = VersionResponse))
+  params(
+    ("X-Request-Id" = Option<String>, Header, description = "Correlation identifier. \
+     Adopted when it is 1-128 visible ASCII characters sent exactly once; otherwise \
+     the service generates one.", nullable = false)
+  ),
+  responses(
+    (
+      status = 200,
+      description = "The running build",
+      body = VersionResponse,
+      headers(
+        ("X-Request-Id" = String, description = "The correlation identifier for this \
+         request, echoed from the client or generated here.")
+      )
+    )
+  )
 )]
 #[allow(clippy::unused_async)] // Axum handlers must return a future even when no work is awaited.
 pub async fn version(State(state): State<ApiState>) -> Json<VersionResponse> {
