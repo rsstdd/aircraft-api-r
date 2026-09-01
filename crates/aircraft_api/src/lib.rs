@@ -88,12 +88,13 @@ struct ApiDoc;
 /// stack below reads innermost first and runs outermost first:
 ///
 /// ```text
-/// correlate              stamps and traces every response, refusals included
-/// CorsLayer              a preflight is answered before a permit is taken
-/// shed_when_saturated    bounds concurrent handlers and body buffers
-/// track_in_flight        makes body reads and handlers cancellable on shutdown
-/// enforce_deadline       bounds body reception and handler execution together
-/// refuse_oversized_body  innermost, reads at most the configured body limit
+/// correlate                   stamps and traces every response, refusals included
+/// refuse_oversized_preflight  the only bound CORS would otherwise swallow
+/// CorsLayer                   a preflight is answered before a permit is taken
+/// shed_when_saturated         bounds concurrent handlers and body buffers
+/// track_in_flight             makes body reads and handlers cancellable on shutdown
+/// enforce_deadline            bounds body reception and handler execution together
+/// refuse_oversized_body       innermost, reads at most the configured body limit
 /// ```
 ///
 /// Correlation is outermost so the `503` a shutdown cancellation produces is
@@ -101,7 +102,13 @@ struct ApiDoc;
 /// which no route ever sees. The perimeter's own `413`, `504`, and `503`
 /// are correlated for the same reason.
 ///
-/// CORS remains above the semaphore because preflight is a header-only answer.
+/// CORS remains above the semaphore because preflight is a header-only answer,
+/// and below the body limit only for `OPTIONS`: `CorsLayer` answers a preflight
+/// without calling the inner stack, so a preflight declaring an oversized body
+/// would otherwise be answered `200`. Every other method is refused inside
+/// `CorsLayer` instead, which is what puts `Access-Control-Allow-Origin` on the
+/// `413` so a cross-origin caller can read the problem document.
+///
 /// The semaphore wraps body buffering so the configured concurrency limit also
 /// bounds aggregate request memory. The timeout wraps both body reception and
 /// handler execution, so a slow chunked upload cannot occupy a permit or an
@@ -128,6 +135,10 @@ pub fn router(state: ApiState) -> Router {
       PerimeterLimits::shed_when_saturated,
     ))
     .layer(limits.cors_layer())
+    .layer(axum::middleware::from_fn_with_state(
+      limits.body_bytes(),
+      PerimeterLimits::refuse_oversized_preflight,
+    ))
     .layer(axum::middleware::from_fn(correlation::correlate))
     .with_state(state)
 }
@@ -1016,6 +1027,95 @@ mod tests {
       "content-type,x-request-id"
     );
     Ok(())
+  }
+
+  /// A perimeter refusal stays readable to the cross-origin caller it refuses.
+  ///
+  /// The `413` is raised inside `CorsLayer`, so it leaves with
+  /// `Access-Control-Allow-Origin` and a browser can read the problem document.
+  /// Refusing the same request outside CORS would answer the same status with no
+  /// CORS header, which a browser surfaces as an opaque network error — the
+  /// RFC 9457 body would be published and then be unreadable by the one caller
+  /// it was written for. This is why
+  /// [`PerimeterLimits::refuse_oversized_preflight`] is restricted to `OPTIONS`
+  /// rather than refusing every oversized request at the outer edge.
+  #[tokio::test]
+  async fn a_cross_origin_refusal_still_carries_its_cors_header() -> Result<()> {
+    const ALLOWED: &str = "https://app.example.com";
+    const LIMIT: usize = 1024;
+
+    let origins = [ALLOWED.to_owned()];
+    let state = state_with_limits(
+      Arc::new(NeverConsulted),
+      limits_with(LIMIT, Duration::from_secs(30), 256, &origins),
+    );
+
+    let response = router(state)
+      .oneshot(
+        Request::get("/ready")
+          .header(header::ORIGIN, ALLOWED)
+          .header(header::CONTENT_LENGTH, LIMIT + 1)
+          .body(Body::empty())?,
+      )
+      .await?;
+
+    assert_eq!(response.status(), StatusCode::PAYLOAD_TOO_LARGE);
+    assert_eq!(
+      response
+        .headers()
+        .get(header::ACCESS_CONTROL_ALLOW_ORIGIN)
+        .context("a refused cross-origin request must still name the allowed origin")?,
+      ALLOWED
+    );
+    Ok(())
+  }
+
+  /// A preflight is a header-only question, so it may not smuggle a body past
+  /// the perimeter's byte ceiling.
+  ///
+  /// `CorsLayer` answers any `OPTIONS` on the method alone and drops the body
+  /// without reading it (`tower-http-0.7.0/src/cors/mod.rs:715`), so the
+  /// declared-length refusal has to sit outside it. The panicking body is the
+  /// anti-vacuity guard: it proves the refusal is driven by `content-length`
+  /// rather than by reading, which is the same property
+  /// `a_declared_oversized_body_is_refused_without_reading_it` pins for a `GET`.
+  #[tokio::test]
+  async fn a_preflight_declaring_an_oversized_body_is_refused() -> Result<()> {
+    const ALLOWED: &str = "https://app.example.com";
+    const LIMIT: usize = 1024;
+
+    let body =
+      Body::from_stream(futures::stream::repeat_with(|| -> Result<Vec<u8>, Infallible> {
+        panic!("a preflight body must never be read")
+      }));
+
+    let origins = [ALLOWED.to_owned()];
+    let state = state_with_limits(
+      Arc::new(NeverConsulted),
+      limits_with(LIMIT, Duration::from_secs(30), 256, &origins),
+    );
+
+    let response = router(state)
+      .oneshot(
+        Request::options("/ready")
+          .header(header::ORIGIN, ALLOWED)
+          .header(header::ACCESS_CONTROL_REQUEST_METHOD, "GET")
+          .header(header::CONTENT_LENGTH, LIMIT + 1)
+          .body(body)?,
+      )
+      .await?;
+
+    assert_eq!(response.status(), StatusCode::PAYLOAD_TOO_LARGE);
+    assert_problem(
+      response,
+      json!({
+        "type": "/problems/payload-too-large",
+        "title": "Payload Too Large",
+        "status": 413,
+        "detail": "The request body is larger than this service accepts."
+      }),
+    )
+    .await
   }
 
   #[test]

@@ -112,6 +112,30 @@ impl PerimeterLimits {
       .expose_headers([crate::correlation::REQUEST_ID])
   }
 
+  /// Refuses a preflight that declares a body larger than the perimeter accepts.
+  ///
+  /// `CorsLayer` answers every `OPTIONS` on the method alone and discards the
+  /// body unread (`tower-http-0.7.0/src/cors/mod.rs:700,715`), so
+  /// [`Self::refuse_oversized_body`] never sees a preflight at all. This layer
+  /// sits outside CORS to close that gap.
+  ///
+  /// It deliberately refuses nothing else. Every other method keeps its refusal
+  /// inside `CorsLayer`, which is what puts `Access-Control-Allow-Origin` on the
+  /// `413` and lets a cross-origin caller read the problem document rather than
+  /// see an opaque network error. A real preflight carries no body, so no
+  /// browser reaches this refusal.
+  pub(crate) async fn refuse_oversized_preflight(
+    State(max_bytes): State<usize>,
+    request: Request,
+    next: Next,
+  ) -> Response {
+    if request.method() == Method::OPTIONS && Self::declares_more_than(&request, max_bytes) {
+      return ProblemDetails::payload_too_large().into_response();
+    }
+
+    next.run(request).await
+  }
+
   /// Refuses a request whose body exceeds the limit.
   ///
   /// A declared oversized body is refused before a byte is read. Otherwise the
@@ -119,24 +143,12 @@ impl PerimeterLimits {
   /// body is rebuilt for the handler. Reading at the boundary is what makes the
   /// limit apply to chunked requests even when the selected handler reads no
   /// body at all.
-  ///
-  /// An unparsable `content-length` is treated as absent rather than as a
-  /// rejection. Hyper refuses a malformed framing header before this point, so a
-  /// value that survives to here and still fails to parse as `usize` is one this
-  /// bound has no opinion about; answering it with a size error would report a
-  /// limit that was never compared against anything.
   pub(crate) async fn refuse_oversized_body(
     State(max_bytes): State<usize>,
     request: Request,
     next: Next,
   ) -> Response {
-    let declared = request
-      .headers()
-      .get(header::CONTENT_LENGTH)
-      .and_then(|value| value.to_str().ok())
-      .and_then(|value| value.parse::<usize>().ok());
-
-    if declared.is_some_and(|length| length > max_bytes) {
+    if Self::declares_more_than(&request, max_bytes) {
       return ProblemDetails::payload_too_large().into_response();
     }
 
@@ -155,6 +167,23 @@ impl PerimeterLimits {
     }
 
     next.run(Request::from_parts(parts, Body::from(buffered))).await
+  }
+
+  /// Whether the request declares a body larger than the perimeter accepts.
+  ///
+  /// An unparsable `content-length` is treated as absent rather than as a
+  /// rejection. Hyper refuses a malformed framing header before this point, so a
+  /// value that survives to here and still fails to parse as `usize` is one this
+  /// bound has no opinion about; answering it with a size error would report a
+  /// limit that was never compared against anything. An undeclared body is
+  /// covered by the streaming bound in [`Self::refuse_oversized_body`] instead.
+  fn declares_more_than(request: &Request, max_bytes: usize) -> bool {
+    request
+      .headers()
+      .get(header::CONTENT_LENGTH)
+      .and_then(|value| value.to_str().ok())
+      .and_then(|value| value.parse::<usize>().ok())
+      .is_some_and(|length| length > max_bytes)
   }
 
   /// Sheds a request rather than queueing it when the service is saturated.
