@@ -56,6 +56,78 @@
                 }
               }
             }
+          },
+          "400": {
+            "description": "The request body could not be read",
+            "headers": {
+              "X-Request-Id": {
+                "schema": {
+                  "type": "string"
+                },
+                "description": "The correlation identifier for this request, echoed from the client or generated here."
+              }
+            },
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemDetails"
+                }
+              }
+            }
+          },
+          "413": {
+            "description": "The request body is larger than the perimeter accepts",
+            "headers": {
+              "X-Request-Id": {
+                "schema": {
+                  "type": "string"
+                },
+                "description": "The correlation identifier for this request, echoed from the client or generated here."
+              }
+            },
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemDetails"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "The service is at capacity, or is shutting down",
+            "headers": {
+              "X-Request-Id": {
+                "schema": {
+                  "type": "string"
+                },
+                "description": "The correlation identifier for this request, echoed from the client or generated here."
+              }
+            },
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemDetails"
+                }
+              }
+            }
+          },
+          "504": {
+            "description": "The handler did not answer within the perimeter deadline",
+            "headers": {
+              "X-Request-Id": {
+                "schema": {
+                  "type": "string"
+                },
+                "description": "The correlation identifier for this request, echoed from the client or generated here."
+              }
+            },
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemDetails"
+                }
+              }
+            }
           }
         }
       }
@@ -98,8 +170,62 @@
               }
             }
           },
+          "400": {
+            "description": "The request body could not be read",
+            "headers": {
+              "X-Request-Id": {
+                "schema": {
+                  "type": "string"
+                },
+                "description": "The correlation identifier for this request, echoed from the client or generated here."
+              }
+            },
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemDetails"
+                }
+              }
+            }
+          },
+          "413": {
+            "description": "The request body is larger than the perimeter accepts",
+            "headers": {
+              "X-Request-Id": {
+                "schema": {
+                  "type": "string"
+                },
+                "description": "The correlation identifier for this request, echoed from the client or generated here."
+              }
+            },
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemDetails"
+                }
+              }
+            }
+          },
           "503": {
-            "description": "The service is draining, or the database could not be reached within the probe deadline",
+            "description": "The service is draining, is at capacity, or could not reach the database within the probe deadline",
+            "headers": {
+              "X-Request-Id": {
+                "schema": {
+                  "type": "string"
+                },
+                "description": "The correlation identifier for this request, echoed from the client or generated here."
+              }
+            },
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemDetails"
+                }
+              }
+            }
+          },
+          "504": {
+            "description": "The handler did not answer within the perimeter deadline",
             "headers": {
               "X-Request-Id": {
                 "schema": {
@@ -156,6 +282,78 @@
                 }
               }
             }
+          },
+          "400": {
+            "description": "The request body could not be read",
+            "headers": {
+              "X-Request-Id": {
+                "schema": {
+                  "type": "string"
+                },
+                "description": "The correlation identifier for this request, echoed from the client or generated here."
+              }
+            },
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemDetails"
+                }
+              }
+            }
+          },
+          "413": {
+            "description": "The request body is larger than the perimeter accepts",
+            "headers": {
+              "X-Request-Id": {
+                "schema": {
+                  "type": "string"
+                },
+                "description": "The correlation identifier for this request, echoed from the client or generated here."
+              }
+            },
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemDetails"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "The service is at capacity, or is shutting down",
+            "headers": {
+              "X-Request-Id": {
+                "schema": {
+                  "type": "string"
+                },
+                "description": "The correlation identifier for this request, echoed from the client or generated here."
+              }
+            },
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemDetails"
+                }
+              }
+            }
+          },
+          "504": {
+            "description": "The handler did not answer within the perimeter deadline",
+            "headers": {
+              "X-Request-Id": {
+                "schema": {
+                  "type": "string"
+                },
+                "description": "The correlation identifier for this request, echoed from the client or generated here."
+              }
+            },
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemDetails"
+                }
+              }
+            }
           }
         }
       }
@@ -188,7 +386,8 @@
             "type": "string"
           },
           "instance": {
-            "type": "string"
+            "type": "string",
+            "description": "The specific occurrence this problem describes.\n\nRequired, because `/ready` has published one since it shipped and\n`oasdiff` fails the build on `response-property-became-optional`. A route\nnames itself with a borrowed constant, a perimeter refusal owns the path\nit refused, and `Cow` is what lets one required field be both."
           },
           "status": {
             "type": "integer",

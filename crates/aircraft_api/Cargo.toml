@@ -16,6 +16,7 @@ aircraft_app.workspace = true
 
 # Asynchronous HTTP Transport Core
 axum.workspace = true
+futures.workspace = true
 tower.workspace = true
 # `sync` only: the shutdown state needs a notifier to end in-flight requests
 # with, and nothing here drives a runtime.

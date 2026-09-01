@@ -2,7 +2,7 @@ use axum::{Json, extract::State};
 use serde::Serialize;
 use utoipa::ToSchema;
 
-use crate::ApiState;
+use crate::{ApiState, problem::PerimeterResponses};
 
 #[derive(Debug, Serialize, ToSchema)]
 pub struct VersionResponse {
@@ -38,7 +38,8 @@ pub struct VersionResponse {
         ("X-Request-Id" = String, description = "The correlation identifier for this \
          request, echoed from the client or generated here.")
       )
-    )
+    ),
+    PerimeterResponses,
   )
 )]
 #[allow(clippy::unused_async)] // Axum handlers must return a future even when no work is awaited.
