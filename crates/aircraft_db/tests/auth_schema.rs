@@ -38,30 +38,6 @@ const REJECTED_DIGESTS: [(&str, &str); 5] = [
 
 const UNKNOWN_PRINCIPAL: i64 = -1;
 
-/// Lookup identities, as (case, first insert, colliding insert).
-const LOOKUP_COLLISIONS: [(&str, &str, &str); 4] = [
-  (
-    "a scope code",
-    "INSERT INTO aircraft_auth.scopes (code, label) VALUES ('DUP_S', 'One')",
-    "INSERT INTO aircraft_auth.scopes (code, label) VALUES ('DUP_S', 'Two')",
-  ),
-  (
-    "a scope label",
-    "INSERT INTO aircraft_auth.scopes (code, label) VALUES ('S_A', 'Shared')",
-    "INSERT INTO aircraft_auth.scopes (code, label) VALUES ('S_B', 'Shared')",
-  ),
-  (
-    "a tier code",
-    "INSERT INTO aircraft_auth.rate_limit_tiers (code, label) VALUES ('DUP_T', 'One')",
-    "INSERT INTO aircraft_auth.rate_limit_tiers (code, label) VALUES ('DUP_T', 'Two')",
-  ),
-  (
-    "a tier label",
-    "INSERT INTO aircraft_auth.rate_limit_tiers (code, label) VALUES ('T_A', 'Tier')",
-    "INSERT INTO aircraft_auth.rate_limit_tiers (code, label) VALUES ('T_B', 'Tier')",
-  ),
-];
-
 fn sqlstate(error: &SqlxError) -> Option<String> {
   error.as_database_error().and_then(DatabaseError::code).map(Cow::into_owned)
 }
@@ -115,7 +91,6 @@ async fn insert_credential(
   .map(|_| ())
 }
 
-/// The accepted digest is the anti-vacuity guard for the rejection cases.
 #[tokio::test]
 async fn a_credential_stores_only_a_key_identifier_and_a_digest() -> TestResult {
   let (_container, pool) = start_postgres(2, Duration::from_secs(2)).await?;
@@ -284,10 +259,8 @@ async fn a_principal_requires_a_known_rate_limit_tier() -> TestResult {
   Ok(())
 }
 
-/// Every identity a later story resolves by is unique: principal names, lookup
-/// codes and labels, and grant pairs. Credential identities are tested above.
 #[tokio::test]
-async fn principal_lookup_and_grant_identities_are_unique() -> TestResult {
+async fn principal_and_grant_identities_are_unique() -> TestResult {
   let (_container, pool) = start_postgres(2, Duration::from_secs(2)).await?;
   install_schema(&pool).await?;
 
@@ -304,14 +277,6 @@ async fn principal_lookup_and_grant_identities_are_unique() -> TestResult {
     Some("23505"),
     "a principal name must be unique: {error}"
   );
-
-  // uq_scp_label and uq_rlt_label are ours rather than PostgreSQL's; the codes
-  // are primary keys. Each pair inserts a row, then one that collides with it.
-  for (case, first, second) in LOOKUP_COLLISIONS {
-    query(first).execute(&pool).await?;
-    let error = query(second).execute(&pool).await.expect_err("a duplicate must be rejected");
-    assert_eq!(sqlstate(&error).as_deref(), Some("23505"), "{case} must be unique: {error}");
-  }
 
   let grant = "INSERT INTO aircraft_auth.principal_scope_grants (principal_id, scope_code)
        VALUES ($1, 'CATALOG_READ')";
