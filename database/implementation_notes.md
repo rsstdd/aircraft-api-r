@@ -69,6 +69,7 @@ deployment.
 | Phase 4 before Phases 5-15 | Domain tables reference aircraft_core.variants |
 | Phase 14 before Phase 17 promotion | Promotion writes provenance documents and assertions |
 | Phase 16 before ingestion refresh | The search materialized views must exist before refresh |
+| Phase 25 before `004_authentication_seed_data.sql` | The scope seed fills a table migration 025 creates |
 
 Do not run the migration glob directly; its lexical order cannot express the
 required Phase 2 seed boundary.
@@ -175,6 +176,29 @@ columns as unreliable.
 
 
 ---
+
+### 2.8 Authentication Schema: Storage Restrictions and Unseeded Tiers
+
+**Current state.** Migration 025 adds `aircraft_auth` with principals, API
+credentials, scopes, principal-scope grants, and rate-limit tiers. It is schema
+only: credential issuance, verification middleware, route policy, scope
+enforcement, and rate limiting are later stories, and no application role has
+been granted access to these tables yet.
+
+`api_credentials` stores only a UUID key identifier, a 64-character lowercase
+SHA-256 digest, ownership, timestamps, and a bounded non-secret label. Its exact
+column inventory and digest constraint are pinned by the validation companion
+and `crates/aircraft_db/tests/auth_schema.rs`; there is no clear-token or recovery
+field. The hex shape cannot accept a raw 32-byte secret accidentally.
+
+Disablement and revocation use indexed nullable timestamps with no boolean
+companion. Credential ownership is `ON DELETE RESTRICT`, preserving revoked key
+identifiers; grants may cascade with their principal, while granted scopes are
+restricted from deletion.
+
+Rate-tier rows store identity only because capacities and refill rates are
+operational settings. No tier vocabulary is specified or seeded, so an operator
+or the issuance story must define a tier before creating the first principal.
 
 ## 3. Curator Workflow Guide
 
@@ -411,6 +435,11 @@ ON CONFLICT (code) DO NOTHING;
 | `aircraft_read.mv_variant_search` | 20 indexes total | GIN and B-tree | Three GIN/trigram indexes and 17 B-tree/partial indexes |
 | `aircraft_prov.source_assertions` | `(entity_type_code, entity_id, field_name) WHERE is_accepted` | Unique B-tree partial | `uq_assertion_accepted`; canonical assertion lookup |
 | `aircraft_power.engine_variants` | `name_aliases` | GIN | Ingestion alias resolution |
+| `aircraft_auth.api_credentials` | `key_id` | Unique B-tree (primary key) | Verification resolves a credential in one probe; global, so a revoked identifier is never reissued |
+| `aircraft_auth.api_credentials` | `(principal_id)` | B-tree | `idx_apc_principal`; the RESTRICT delete check would otherwise scan every credential ever issued |
+| `aircraft_auth.api_credentials` | `(revoked_at) WHERE revoked_at IS NOT NULL` | B-tree partial | `idx_apc_revoked`; live credentials are the common case and stay out |
+| `aircraft_auth.principals` | `(disabled_at) WHERE disabled_at IS NOT NULL` | B-tree partial | `idx_prn_disabled`; near-empty on a healthy deployment |
+| `aircraft_auth.principal_scope_grants` | `(scope_code)` | B-tree | `idx_psg_scope`; the reverse lookup the composite primary key cannot serve |
 
 ### 4.2 Query Plans to Watch
 
@@ -502,7 +531,7 @@ ALTER TABLE aircraft_prov.source_assertions SET (
 | Local legacy reconciliation | database/reconcile_local_legacy.sql | Verify and adopt complete pre-ledger Phase 1/2 local schemas; reject partial states |
 | Installer | database/install.sql | Dependency-aware migration and canonical-seed orchestration |
 | Migrations | database/migrations/*.sql | Canonical ordered schema history; immutable once written, hashed in migrations.lock.json |
-| Canonical seeds | database/seeds/001_*.sql through 003_*.sql | Units, lookup data, and mission profiles |
+| Canonical seeds | database/seeds/001_*.sql through 004_*.sql | Units, lookup data, mission profiles, and authentication scopes |
 | Ingestion | apps/ingest + database/snapshots/ | Rust CLI import, snapshot queries, and committed golden output |
 | Verification | database/validation/000_migration_history_validation.sql and remaining database/validation/*.sql | Exact ledger assertion against the shipped migrations, plus phase-specific structural and behavioral checks |
 | Documentation | database/README.md, data_dictionary.md, implementation_notes.md | Lifecycle, schema meaning, and operational guidance |

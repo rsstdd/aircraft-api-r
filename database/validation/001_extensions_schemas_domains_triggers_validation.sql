@@ -2,15 +2,19 @@
 -- Phase 1 validation: schema, extension, domain, and function existence.
 -- =============================================================================
 
--- 1. All 15 namespaces present
+-- 1. All 16 namespaces present
 SELECT nspname
 FROM pg_namespace
 WHERE nspname LIKE 'aircraft_%'
 ORDER BY 1;
--- expect 15 rows: aircraft_compare, aircraft_core, aircraft_cert, aircraft_geo,
--- aircraft_ingest, aircraft_maint, aircraft_market, aircraft_military,
--- aircraft_org, aircraft_power, aircraft_prov, aircraft_read, aircraft_ref,
--- aircraft_specs, aircraft_systems
+-- expect 16 rows: aircraft_auth, aircraft_compare, aircraft_core, aircraft_cert,
+-- aircraft_geo, aircraft_ingest, aircraft_maint, aircraft_market,
+-- aircraft_military, aircraft_org, aircraft_power, aircraft_prov,
+-- aircraft_read, aircraft_ref, aircraft_specs, aircraft_systems
+--
+-- aircraft_auth arrives with migration 025. These statements report rather than
+-- assert -- this file raises nothing -- so a stale roll-call here fails no gate
+-- and has to be maintained by hand.
 
 -- 2. pg_trgm installed in public
 SELECT extname, extnamespace::regnamespace AS schema

@@ -148,5 +148,10 @@ node_modules/
 npm-debug.log*
 yarn-debug.log*
 yarn-error.log*
-pnpm-debug.log*.env
+pnpm-debug.log*
 .env
+
+# Local agent/review tooling (CodeRabbit CLI installs skill packs into the repo)
+.agents/
+.aider-desk/
+skills-lock.json

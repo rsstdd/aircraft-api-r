@@ -7,7 +7,7 @@
 Each namespace section opens with a **summary paragraph** explaining the purpose,
 the entities it models, and its position in the dependency chain. Detailed
 column tables are provided for the principal, high-use tables. This document is
-not an exhaustive catalog of all 99 migration-defined tables: junction tables,
+not an exhaustive catalog of every migration-defined table: junction tables,
 secondary detail tables, and some supporting entities are intentionally
 summarized at namespace level. The migration SQL remains authoritative for the
 complete schema. Column tables use the following fields:
@@ -42,6 +42,9 @@ aircraft_core  ◀────────────────────�
 aircraft_prov  ──▶  polymorphic into every namespace (source assertions)
 aircraft_ingest ──▶  transient staging; feeds aircraft_prov → canonical tables
 aircraft_read   ──▶  views and materialized views over all of the above
+
+aircraft_auth   ──▶  standalone; depends only on aircraft_ref domains and holds
+                     no aircraft data
 ```
 
 ---
@@ -944,3 +947,104 @@ rather than inserting a second one, and `role` is left as curation set it.
 **Recovering a missed refresh.** Curation commits its decision and rebuilds the matviews afterwards, so the rebuild can fail with the decision already durable. The decision therefore enqueues a `read_model_refresh_requests` row inside its own transaction; the row survives a failed rebuild and is closed only by one that succeeded. `aircraft-ingest curate refresh` drains whatever is outstanding, so a stale read model never depends on repeating a decision the state machine would refuse.
 
 **Critical refresh note.** `mv_variant_search` is created `WITH NO DATA`. It returns zero rows until `refresh_search_matviews(FALSE)` is called. Subsequent incremental updates use `refresh_search_matviews()` (concurrent = TRUE by default), which does not block reads.
+
+
+---
+
+## 16. `aircraft_auth` — Authentication and Authorization
+
+**Purpose.** The principals, credentials, scopes, and rate tiers behind the HTTP
+boundary, added by migration 025. It holds no aircraft data, and credential
+material is never served. It depends only on `aircraft_ref` domains.
+
+**Key design choices.** `docs/architecture/http_v1_decisions.md` fixes what a
+credential may store: a key identifier, a SHA-256 digest, ownership, timestamps,
+and non-secret metadata — and nothing else. No DDL can forbid a column that does
+not exist yet, so the exact column inventory of `api_credentials` is asserted in
+`validation/025_authentication_schema_validation.sql` and in
+`crates/aircraft_db/tests/auth_schema.rs`; a migration adding a clear-token or
+recovery column fails both.
+
+The digest is 64 lowercase hexadecimal characters rather than 32 raw bytes,
+matching `chk_ingest_run_hash` in migration 017. Issuance generates at least 256
+bits of secret material, and 256 bits is exactly 32 bytes, so a `bytea` column
+constrained to `octet_length = 32` would accept the raw clear secret itself. The
+hex form rejects it, and cannot be confused with the hyphenated 36-character key
+identifier either.
+
+Principals are disabled and credentials revoked, never deleted: both are nullable
+timestamps, with no boolean companion to drift from them. `fk_apc_principal` is
+`RESTRICT` so credential history survives, which is also what stops a revoked key
+identifier being freed for reissue through its principal.
+
+Rate tiers carry identity only. Capacity and refill values are operational
+configuration rather than schema, and no tier code is seeded, so an operator
+defines the first tier before the first principal can be created.
+
+### `aircraft_auth.rate_limit_tiers`
+
+| Column | Type | Null | Default | Constraint / FK | Description |
+|---|---|---|---|---|---|
+| `code` | `aircraft_ref.lookup_code` | NOT NULL | &mdash; | PK | Tier name referenced by `principals`. No code is seeded |
+| `label` | `text` | NOT NULL | &mdash; | UNIQUE `uq_rlt_label`, non-blank `chk_rlt_label` | Display label |
+| `description` | `text` | nullable | &mdash; | &mdash; |  |
+| `created_at` | `timestamp with time zone` | NOT NULL | `now()` | &mdash; |  |
+| `updated_at` | `timestamp with time zone` | NOT NULL | `now()` | &mdash; | Stamped by `trg_rlt_updated` |
+
+Capacity and refill rate are deliberately absent: they are operational
+configuration, not a versioned contract, so a quota changes without a migration.
+
+### `aircraft_auth.scopes`
+
+| Column | Type | Null | Default | Constraint / FK | Description |
+|---|---|---|---|---|---|
+| `code` | `aircraft_ref.lookup_code` | NOT NULL | &mdash; | PK | `CATALOG_READ`, `MILITARY_READ`, `CURATION_READ`, `CURATION_WRITE`, `ADMIN`. A 403 names one of these, so a code is contract |
+| `label` | `text` | NOT NULL | &mdash; | UNIQUE `uq_scp_label`, non-blank `chk_scp_label` | Display label |
+| `description` | `text` | nullable | &mdash; | &mdash; |  |
+| `sort_order` | `smallint` | NOT NULL | `0` | &mdash; | Display order. Carries the lookup shape of migration 002; the `SMALLINT` is waived from Squawk's `prefer-bigint-over-smallint` on the column line |
+| `created_at` | `timestamp with time zone` | NOT NULL | `now()` | &mdash; |  |
+| `updated_at` | `timestamp with time zone` | NOT NULL | `now()` | &mdash; | Stamped by `trg_scp_updated` |
+
+Seeded by `seeds/004_authentication_seed_data.sql`. The `Public` route policy
+requires no credential and therefore has no row.
+
+### `aircraft_auth.principals`
+
+| Column | Type | Null | Default | Constraint / FK | Description |
+|---|---|---|---|---|---|
+| `id` | `bigint` | NOT NULL | identity | PK | Rate-limit buckets are keyed by this |
+| `name` | `text` | NOT NULL | &mdash; | UNIQUE `uq_prn_name`, non-blank `chk_prn_name` | Operator-facing identifier. Never appears in a response |
+| `rate_limit_tier_code` | `aircraft_ref.lookup_code` | NOT NULL | &mdash; | `aircraft_auth.rate_limit_tiers(code)` ON DELETE RESTRICT | Required, and no tier is seeded, so a tier is defined before the first principal |
+| `disabled_at` | `timestamp with time zone` | nullable | &mdash; | `chk_prn_disabled_at` (not before `created_at`) | NULL means enabled. The single representation of that fact; there is deliberately no `is_active` companion. Indexed by `idx_prn_disabled` |
+| `created_at` | `timestamp with time zone` | NOT NULL | `now()` | &mdash; |  |
+| `updated_at` | `timestamp with time zone` | NOT NULL | `now()` | &mdash; | Stamped by `trg_prn_updated` |
+
+### `aircraft_auth.api_credentials`
+
+The column list is a contract. Adding to it fails the validation companion and
+`a_credential_stores_only_a_key_identifier_and_a_digest`.
+
+| Column | Type | Null | Default | Constraint / FK | Description |
+|---|---|---|---|---|---|
+| `key_id` | `uuid` | NOT NULL | &mdash; | PK | Non-enumerable public lookup handle supplied by future credential issuance; its primary key supports a single verification probe |
+| `principal_id` | `bigint` | NOT NULL | &mdash; | `aircraft_auth.principals(id)` ON DELETE RESTRICT | RESTRICT, not CASCADE: deleting a principal would otherwise free its revoked key identifiers for reissue. Indexed by `idx_apc_principal` |
+| `secret_digest` | `text` | NOT NULL | &mdash; | UNIQUE `uq_apc_secret_digest`, `chk_apc_secret_digest` (`^[0-9a-f]{64}$`) | SHA-256 of the clear credential as 64 lowercase hex characters. The future verifier must compare it in constant time and never disclose it |
+| `label` | `text` | NOT NULL | &mdash; | `chk_apc_label` (non-blank, at most 200 characters) | Bounded non-secret operator note, for example `ci-runner`. Non-blank, because it is the only thing telling one key from another in an operator's list. The length bound makes it a poor place to paste a credential; a nuisance control, not a guarantee |
+| `revoked_at` | `timestamp with time zone` | nullable | &mdash; | `chk_apc_revoked_at` (not before `created_at`) | NULL means live. The future verifier must read this state without exposing it. Indexed by `idx_apc_revoked` |
+| `created_at` | `timestamp with time zone` | NOT NULL | `now()` | &mdash; |  |
+| `updated_at` | `timestamp with time zone` | NOT NULL | `now()` | &mdash; | Stamped by `trg_apc_updated` |
+
+The clear credential is returned once at issuance and is never stored, logged, or
+served.
+
+### `aircraft_auth.principal_scope_grants`
+
+| Column | Type | Null | Default | Constraint / FK | Description |
+|---|---|---|---|---|---|
+| `principal_id` | `bigint` | NOT NULL | &mdash; | PK part 1; `aircraft_auth.principals(id)` ON DELETE CASCADE | A grant has no meaning without its principal, and carries no identifier anyone can reuse, so cascading is safe here |
+| `scope_code` | `aircraft_ref.lookup_code` | NOT NULL | &mdash; | PK part 2; `aircraft_auth.scopes(code)` ON DELETE RESTRICT | A scope still granted cannot be deleted out from under an authorization decision. Reverse lookup indexed by `idx_psg_scope` |
+| `granted_at` | `timestamp with time zone` | NOT NULL | `now()` | &mdash; | A grant is inserted or deleted, never updated, so there is no `updated_at` and no trigger |
+
+`fk_psg_scope` is what bounds the verification query's `array_agg` to the closed
+scope set, which is how a principal, its scopes, and its tier resolve in one
+statement.

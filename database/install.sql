@@ -284,6 +284,21 @@ INSERT INTO public.aircraft_schema_migrations(version) VALUES ('024');
 \echo 'Skipping applied migration 024'
 \endif
 
+SELECT NOT EXISTS (
+    SELECT 1 FROM public.aircraft_schema_migrations WHERE version = '025'
+) AS apply_migration \gset
+\if :apply_migration
+\echo 'Applying migration 025: 025_authentication_schema.sql'
+\ir migrations/025_authentication_schema.sql
+INSERT INTO public.aircraft_schema_migrations(version) VALUES ('025');
+\else
+\echo 'Skipping applied migration 025'
+\endif
+
+-- The authentication scope vocabulary, seeded after the migration that creates
+-- the table it fills.
+\ir seeds/004_authentication_seed_data.sql
+
 
 \echo 'Database schema and canonical seed installation complete.'
 SELECT pg_advisory_unlock(hashtextextended(current_database() || ':aircraft-install', 0));

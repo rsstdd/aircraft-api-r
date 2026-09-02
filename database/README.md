@@ -5,7 +5,10 @@ This directory owns the SQL lifecycle for the Aircraft Management Engine.
 ## Layout
 
 - `migrations/`: ordered, one-time schema migrations.
-- `seeds/`: idempotent canonical reference and mission-profile data only.
+- `seeds/`: idempotent canonical reference, mission-profile, and
+  authentication-scope data only. Each seed is applied by `install.sql` at the
+  point its tables exist, so `004_authentication_seed_data.sql` follows
+  migration 025 rather than sitting with the other lookup seeds.
 - `validation/`: post-install schema and behavioral verification.
 - `snapshots/`: normalized business snapshot queries, plus the committed golden
   output in `snapshots/golden/<fixture>/` that `cargo xtask snapshots` diffs the
@@ -21,6 +24,13 @@ This directory owns the SQL lifecycle for the Aircraft Management Engine.
   once written; `cargo xtask migrations` fails if a file's contents change, so a
   correction goes in a new migration and in this documentation, never by editing
   an applied one.
+- Credential storage is restricted by contract: `aircraft_auth.api_credentials`
+  may hold a key identifier, a SHA-256 digest, ownership, timestamps, and a
+  non-secret label, and nothing else. No DDL can forbid a column that does not
+  exist yet, so the exact column list is asserted by
+  `validation/025_authentication_schema_validation.sql` and by
+  `crates/aircraft_db/tests/auth_schema.rs`. A migration that adds a
+  clear-token, plaintext, or recovery column fails both.
 - `validation/000_migration_history_validation.sql`: asserts that the applied
   ledger matches the shipped migrations exactly. Its version list is compared to
   `migrations/` by `cargo xtask migrations`, so adding a migration without
