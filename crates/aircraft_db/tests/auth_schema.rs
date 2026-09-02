@@ -38,6 +38,29 @@ const REJECTED_DIGESTS: [(&str, &str); 5] = [
 
 const UNKNOWN_PRINCIPAL: i64 = -1;
 
+const LOOKUP_COLLISIONS: [(&str, &str, &str); 4] = [
+  (
+    "a scope code",
+    "INSERT INTO aircraft_auth.scopes (code, label) VALUES ('DUP_S', 'One')",
+    "INSERT INTO aircraft_auth.scopes (code, label) VALUES ('DUP_S', 'Two')",
+  ),
+  (
+    "a scope label",
+    "INSERT INTO aircraft_auth.scopes (code, label) VALUES ('S_A', 'Shared')",
+    "INSERT INTO aircraft_auth.scopes (code, label) VALUES ('S_B', 'Shared')",
+  ),
+  (
+    "a tier code",
+    "INSERT INTO aircraft_auth.rate_limit_tiers (code, label) VALUES ('DUP_T', 'One')",
+    "INSERT INTO aircraft_auth.rate_limit_tiers (code, label) VALUES ('DUP_T', 'Two')",
+  ),
+  (
+    "a tier label",
+    "INSERT INTO aircraft_auth.rate_limit_tiers (code, label) VALUES ('T_A', 'Tier')",
+    "INSERT INTO aircraft_auth.rate_limit_tiers (code, label) VALUES ('T_B', 'Tier')",
+  ),
+];
+
 fn sqlstate(error: &SqlxError) -> Option<String> {
   error.as_database_error().and_then(DatabaseError::code).map(Cow::into_owned)
 }
@@ -284,6 +307,12 @@ async fn principal_and_grant_identities_are_unique() -> TestResult {
     Some("23505"),
     "a principal name must be unique: {error}"
   );
+
+  for (case, first, second) in LOOKUP_COLLISIONS {
+    query(first).execute(&pool).await?;
+    let error = query(second).execute(&pool).await.expect_err("a duplicate must be rejected");
+    assert_eq!(sqlstate(&error).as_deref(), Some("23505"), "{case} must be unique: {error}");
+  }
 
   let grant = "INSERT INTO aircraft_auth.principal_scope_grants (principal_id, scope_code)
        VALUES ($1, 'CATALOG_READ')";
