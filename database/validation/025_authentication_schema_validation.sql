@@ -50,52 +50,49 @@ BEGIN
 END
 $validation$;
 
--- The inventory alone would not detect a relaxed digest constraint.
+-- Value constraints are compared as complete normalized definitions, never by
+-- substring. A substring match cannot express "and nothing else": a digest
+-- constraint relaxed to '[0-9a-f]{64}' still contains the intended pattern, and
+-- so does one widened with an extra disjunct such as OR secret_digest = '...'.
+-- Both would be accepted by a LIKE and both would let a clear credential in,
+-- because PostgreSQL's ~ is a containment match unless anchored.
 --
--- The anchors are the load-bearing part of the pattern and are matched
--- literally here. PostgreSQL's ~ is a containment match, so dropping them to
--- '[0-9a-f]{64}' would leave a constraint that accepts any string merely
--- containing 64 hexadecimal characters -- a clear credential among them --
--- while still satisfying an assertion that only looked for the character class.
--- In LIKE only % and _ are wildcards, so ^, $, [, ], { and } are literal.
-DO $validation$
-BEGIN
-    IF NOT EXISTS (
-        SELECT 1 FROM pg_constraint
-        WHERE conname = 'chk_apc_secret_digest'
-          AND conrelid = 'aircraft_auth.api_credentials'::regclass
-          AND pg_get_constraintdef(oid) LIKE '%^[0-9a-f]{64}$%'
-    ) THEN
-        RAISE EXCEPTION
-            'chk_apc_secret_digest must pin an anchored 64-character lowercase hex digest';
-    END IF;
-END
-$validation$;
-
--- The non-blank constraints are asserted by definition, not merely by name.
--- btrim(x) <> '' reads as equivalent but strips spaces only, so a tab- or
--- newline-only value satisfies it. Asserting the name alone cannot tell the two
--- apart, which is how a relaxed constraint would reach a live database unseen.
+-- The same trap applies to the non-blank tests: btrim(x) <> '' reads as
+-- equivalent to a non-whitespace test but strips spaces only, so a tab- or
+-- newline-only value survives it.
+--
+-- pg_get_constraintdef renders from the parsed expression. A later migration
+-- that changes any of these constraints must change this table with it. That
+-- coupling is the point of asserting the whole definition.
 DO $validation$
 DECLARE
     expected CONSTANT TEXT[][] := ARRAY[
-        ['chk_rlt_label', 'aircraft_auth.rate_limit_tiers'],
-        ['chk_scp_label', 'aircraft_auth.scopes'],
-        ['chk_prn_name', 'aircraft_auth.principals'],
-        ['chk_apc_label', 'aircraft_auth.api_credentials']
+        ['chk_apc_secret_digest', 'aircraft_auth.api_credentials',
+         'CHECK ((secret_digest ~ ''^[0-9a-f]{64}$''::text))'],
+        ['chk_apc_label', 'aircraft_auth.api_credentials',
+         'CHECK (((label ~ ''[^[:space:]]''::text) AND (char_length(label) <= 200)))'],
+        ['chk_prn_name', 'aircraft_auth.principals',
+         'CHECK ((name ~ ''[^[:space:]]''::text))'],
+        ['chk_rlt_label', 'aircraft_auth.rate_limit_tiers',
+         'CHECK ((label ~ ''[^[:space:]]''::text))'],
+        ['chk_scp_label', 'aircraft_auth.scopes',
+         'CHECK ((label ~ ''[^[:space:]]''::text))']
     ];
+    actual TEXT;
     index_position INTEGER;
 BEGIN
     FOR index_position IN 1 .. array_length(expected, 1) LOOP
-        IF NOT EXISTS (
-            SELECT 1 FROM pg_constraint
-            WHERE conname = expected[index_position][1]
-              AND conrelid = expected[index_position][2]::regclass
-              AND pg_get_constraintdef(oid) LIKE '%[^[:space:]]%'
-        ) THEN
+        SELECT pg_get_constraintdef(oid) INTO actual
+        FROM pg_constraint
+        WHERE conname = expected[index_position][1]
+          AND conrelid = expected[index_position][2]::regclass;
+
+        IF actual IS DISTINCT FROM expected[index_position][3] THEN
             RAISE EXCEPTION
-                '% must require a non-whitespace character, not merely a non-empty string',
-                expected[index_position][1];
+                '% is %, expected exactly %',
+                expected[index_position][1],
+                coalesce(actual, 'absent'),
+                expected[index_position][3];
         END IF;
     END LOOP;
 END
