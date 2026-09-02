@@ -23,6 +23,7 @@ use async_trait::async_trait;
 use chrono::{DateTime, Utc};
 use secrecy::{ExposeSecret, SecretString, zeroize::Zeroizing};
 use sha2::{Digest, Sha256};
+use subtle::{Choice, ConstantTimeEq};
 use thiserror::Error;
 use uuid::{Builder, Uuid};
 
@@ -139,8 +140,25 @@ impl fmt::Debug for ClearCredential {
 /// the hashed text embeds `key_id`, that guarantees distinct *identifiers*; two
 /// credentials with the same 32 secret bytes under different identifiers would
 /// still hash apart. Distinct *secrets* rest on the CSPRNG, not the constraint.
-#[derive(Clone, PartialEq, Eq)]
+#[derive(Clone)]
 pub struct CredentialVerifier([u8; 32]);
+
+impl ConstantTimeEq for CredentialVerifier {
+  fn ct_eq(&self, other: &Self) -> Choice {
+    self.0.ct_eq(&other.0)
+  }
+}
+
+/// `==` is the constant-time comparison, so it is the one a verifier may use
+/// on the digest of a presented token. A derived `PartialEq` would stop at the
+/// first differing byte and time the stored digest out one byte at a time.
+impl PartialEq for CredentialVerifier {
+  fn eq(&self, other: &Self) -> bool {
+    self.ct_eq(other).into()
+  }
+}
+
+impl Eq for CredentialVerifier {}
 
 impl CredentialVerifier {
   /// Wraps a digest computed elsewhere, such as over a presented token.
@@ -227,8 +245,12 @@ impl CredentialIssuanceError {
   }
 }
 
+/// Fills a buffer with random bytes, in the shape of `getrandom::fill`.
+pub type EntropySource = fn(&mut [u8]) -> Result<(), getrandom::Error>;
+
 pub struct CredentialIssuanceService {
   store: Arc<dyn CredentialStore>,
+  entropy: EntropySource,
 }
 
 impl fmt::Debug for CredentialIssuanceService {
@@ -240,7 +262,15 @@ impl fmt::Debug for CredentialIssuanceService {
 impl CredentialIssuanceService {
   #[must_use]
   pub fn new(store: Arc<dyn CredentialStore>) -> Self {
-    Self { store }
+    Self::with_entropy(store, getrandom::fill)
+  }
+
+  /// A service drawing from `entropy` in place of the operating-system CSPRNG.
+  /// It exists so a test can make the random source fail; composition roots
+  /// use [`Self::new`], and nothing here would notice a weak source.
+  #[must_use]
+  pub fn with_entropy(store: Arc<dyn CredentialStore>, entropy: EntropySource) -> Self {
+    Self { store, entropy }
   }
 
   pub async fn issue(
@@ -250,8 +280,9 @@ impl CredentialIssuanceService {
     let mut key = Zeroizing::new([0_u8; KEY_ID_BYTES]);
     let mut secret = Zeroizing::new([0_u8; SECRET_BYTES]);
     for buffer in [key.as_mut_slice(), secret.as_mut_slice()] {
-      getrandom::fill(buffer)
-        .map_err(|error| CredentialIssuanceError::EntropyUnavailable(error.to_string()))?;
+      (self.entropy)(buffer).map_err(|error| {
+        refuse(CredentialIssuanceError::EntropyUnavailable(error.to_string()), request.principal_id)
+      })?;
     }
     let material = CredentialMaterial::build(&key, &secret);
 
@@ -264,21 +295,19 @@ impl CredentialIssuanceService {
         label: request.label,
       })
       .await
-      .map_err(|error| {
-        let error = classify(error, request.principal_id);
-        // The code is a constant; the message, even scrubbed, stays out of
-        // the trace so nothing an adapter formats can reach it.
-        tracing::warn!(
-          principal_id = request.principal_id,
-          code = error.code(),
-          "credential issuance failed"
-        );
-        error
-      })?;
+      .map_err(|error| refuse(classify(error, request.principal_id), request.principal_id))?;
 
     tracing::info!(key_id = %record.key_id, principal_id = record.principal_id, "credential issued");
     Ok(IssuedCredential { record, clear: material.clear })
   }
+}
+
+/// One event for every refused issuance, whether the random source or the
+/// store refused. The code is a constant; the message, even scrubbed, stays
+/// out of the trace so nothing an adapter formats can reach it.
+fn refuse(error: CredentialIssuanceError, principal_id: i64) -> CredentialIssuanceError {
+  tracing::warn!(principal_id, code = error.code(), "credential issuance failed");
+  error
 }
 
 struct CredentialMaterial {
@@ -373,12 +402,15 @@ mod tests {
 
   use async_trait::async_trait;
   use chrono::Utc;
-  use secrecy::ExposeSecret as _;
+  use secrecy::{ExposeSecret as _, zeroize::ZeroizeOnDrop};
+  use sha2::Sha256;
+  use subtle::ConstantTimeEq;
 
   use super::{
     CredentialInputError, CredentialIssuanceError, CredentialIssuanceService, CredentialMaterial,
     CredentialRecord, CredentialStore, CredentialVerifier, IssueCredential, KEY_ID_BYTES,
-    MAX_LABEL_CHARS, NewCredential, PersistenceError, REDACTED, SECRET_BYTES, redact_digest_runs,
+    MAX_LABEL_CHARS, NewCredential, PersistenceError, REDACTED, SECRET_BYTES, TOKEN_CHARS,
+    redact_digest_runs,
   };
 
   /// Published test vector, so a diff of it discloses nothing.
@@ -458,6 +490,44 @@ mod tests {
     assert_eq!(secret.len(), 64, "32 secret bytes encode to 64 hex characters");
     assert!(secret.chars().all(|c| c.is_ascii_hexdigit() && !c.is_ascii_uppercase()));
     assert_eq!(material.verifier.hex(), TOKEN_SHA256, "the digest covers the complete token");
+  }
+
+  /// `build` reserves exactly `TOKEN_CHARS`. A token of any other length was
+  /// reallocated on its way into the `SecretString`, leaving an unwiped copy
+  /// of the secret behind, and nothing at the call site would show it.
+  #[test]
+  fn the_clear_token_fills_its_reserved_capacity_exactly() {
+    assert_eq!(fixed_material().clear.expose_secret().len(), TOKEN_CHARS);
+  }
+
+  /// The hasher's block buffer holds the token's final partial block after
+  /// `Sha256::digest`. Only `sha2`'s `zeroize` feature makes dropping it wipe
+  /// that buffer, and only this bound notices the feature going missing.
+  #[test]
+  fn the_token_hasher_wipes_its_buffer_on_drop() {
+    fn wipes_on_drop<T: ZeroizeOnDrop>() {}
+
+    wipes_on_drop::<Sha256>();
+  }
+
+  /// Timing is not observable from a test. What is: the comparison is the
+  /// `subtle` one, and it still answers exactly for a first-byte and a
+  /// last-byte difference, the two cases a short-circuiting compare treats
+  /// differently.
+  #[test]
+  fn verifier_equality_is_constant_time_and_exact() {
+    fn compares_in_constant_time<T: ConstantTimeEq>() {}
+    compares_in_constant_time::<CredentialVerifier>();
+
+    let digest = fixed_material().verifier.0;
+    let mut first_byte = digest;
+    first_byte[0] ^= 1;
+    let mut last_byte = digest;
+    last_byte[31] ^= 1;
+
+    assert_eq!(CredentialVerifier(digest), CredentialVerifier::from_digest(digest));
+    assert_ne!(CredentialVerifier(digest), CredentialVerifier(first_byte), "first byte");
+    assert_ne!(CredentialVerifier(digest), CredentialVerifier(last_byte), "last byte");
   }
 
   #[test]

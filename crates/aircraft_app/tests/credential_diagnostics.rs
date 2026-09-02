@@ -13,7 +13,10 @@
 
 use std::{
   panic::{AssertUnwindSafe, catch_unwind},
-  sync::{Arc, Mutex},
+  sync::{
+    Arc, Mutex,
+    atomic::{AtomicUsize, Ordering},
+  },
 };
 
 use aircraft_app::credential_issuance::{
@@ -142,4 +145,53 @@ async fn a_verifier_echoed_by_the_store_reaches_neither_the_error_nor_the_trace(
     assert_absent(&raw, &verifier, "the verifier");
     assert_absent(&raw, "rejected", "the store's message");
   }
+}
+
+/// Records whether it was asked at all; no store call may follow a failed
+/// entropy read.
+#[derive(Default)]
+struct CountingStore {
+  calls: AtomicUsize,
+}
+
+#[async_trait]
+impl CredentialStore for CountingStore {
+  async fn persist(&self, _: NewCredential) -> Result<CredentialRecord, PersistenceError> {
+    self.calls.fetch_add(1, Ordering::SeqCst);
+    Err(PersistenceError::Invariant("unreachable".to_owned()))
+  }
+}
+
+const fn no_entropy(_: &mut [u8]) -> Result<(), getrandom::Error> {
+  Err(getrandom::Error::UNSUPPORTED)
+}
+
+/// A failed CSPRNG is the one issuance failure an operator cannot see from
+/// the store, so it has to announce itself with the same field discipline as
+/// a store failure: the constant code, the principal, nothing else.
+#[tokio::test]
+async fn a_failed_random_source_is_traced_before_the_error_returns() {
+  let store = Arc::new(CountingStore::default());
+  let service = CredentialIssuanceService::with_entropy(store.clone(), no_entropy);
+  let request = IssueCredential::new(7, "ci-runner".to_owned()).expect("valid input");
+  let logs = CapturedLogs::default();
+  let subscriber = tracing_subscriber::fmt()
+    .json()
+    .flatten_event(true)
+    .with_max_level(tracing::Level::TRACE)
+    .with_writer(logs.clone())
+    .finish();
+
+  let error = service
+    .issue(request)
+    .with_subscriber(tracing::Dispatch::new(subscriber))
+    .await
+    .expect_err("no entropy, no credential");
+
+  let raw = logs.contents();
+  assert!(matches!(error, CredentialIssuanceError::EntropyUnavailable(_)), "variant: {error:?}");
+  assert_eq!(store.calls.load(Ordering::SeqCst), 0, "the store must not be reached");
+  assert!(raw.contains("ENTROPY_UNAVAILABLE"), "the failure event was not captured");
+  assert!(raw.contains("\"principal_id\":7"), "the event names the principal");
+  assert!(raw.contains("credential issuance failed"), "the event shares the store-failure wording");
 }
