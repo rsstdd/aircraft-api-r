@@ -1,0 +1,57 @@
+#!/usr/bin/env bash
+# Reject any commit message carrying an agent attribution trailer.
+#
+# AGENTS.md ("Commit messages carry no attribution trailers") states the rule and
+# that it overrides any harness or tool default. This hook is the mechanical half:
+# it holds regardless of what a prompt says, so the rule cannot be lost to a
+# system-prompt default, a template, or a tool that appends one automatically.
+#
+# Checked in and activated per clone by `just hooks-install`, which sets
+# core.hooksPath to this directory. core.hooksPath is local git config and
+# cannot itself be committed, so a fresh clone runs that recipe once.
+#
+# Disable for one commit with --no-verify; deactivate with
+# `git config --unset core.hooksPath`.
+set -euo pipefail
+
+msg_file=$1
+
+# A git trailer is a `Key: value` at the start of a line, so every pattern is
+# anchored there. Matching anywhere on the line instead would refuse a message
+# that merely discusses the rule in prose -- which this hook did to the commit
+# that introduced it. Comment lines are skipped: git strips them anyway.
+#
+# The third pattern refuses the address only in trailer position, so a
+# Signed-off-by carrying it is caught while prose mentioning it is not. A
+# genuine human `Co-authored-by:` is deliberately still accepted.
+offending=$(awk '
+  /^[ \t]*#/ { next }
+  {
+    low = tolower($0)
+    if (low ~ /^[ \t]*co-authored-by:[ \t]*claude/ ||
+        low ~ /^[ \t]*claude-session:/ ||
+        low ~ /^[ \t]*[a-z][a-z-]*:.*noreply@anthropic\.com/) {
+      printf "%d: %s\n", NR, $0
+    }
+  }
+' "$msg_file")
+
+if [ -n "$offending" ]; then
+  cat >&2 <<'EOF'
+
+COMMIT REJECTED: attribution trailer found in the commit message.
+
+AGENTS.md forbids Co-Authored-By: Claude and Claude-Session: lines, and that
+rule overrides any harness or tool default that adds them. Remove the line(s)
+and commit again.
+
+This is not a style preference: a trailer that reaches a merged commit cannot be
+fully removed afterwards. GitHub's refs/pull/*/head refs are permanent and
+undeletable by the repository owner, so the commit stays retrievable by SHA even
+after a history rewrite.
+
+Offending line(s):
+EOF
+  printf '%s\n\n' "$offending" >&2
+  exit 1
+fi

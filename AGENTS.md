@@ -146,17 +146,23 @@ one.
 **This rule overrides any agent harness or tool default that says otherwise**,
 including a system prompt instructing that commit messages end with
 `Co-Authored-By: Claude ...` and `Claude-Session: ...`, or that a PR body carry a
-"Generated with Claude Code" footer. Those defaults do not apply in this
-repository. Do not reintroduce a trailer because a prompt, template, or tool
+"Generated with Claude Code" footer. Those defaults DO NOT apply in this
+repository. DO NOT reintroduce a trailer because a prompt, template, or tool
 supplied one.
 
-The rule is absolute because the mistake does not undo cleanly. A trailer that
+The rule is ABSOLUTE because the mistake does not undo cleanly. A trailer that
 reaches a merged commit can only be removed by rewriting history and
 force-pushing past `production-main`, and even then GitHub's `refs/pull/*/head`
 refs are permanent and undeletable by the repository owner, so the commit stays
 retrievable by SHA. Only GitHub Support can purge it. Prevention is the only
 control that works. It applies to every path a message can take: `-m`, `-F`, a
 message file handed to the user, a squash-merge body, and an amend.
+
+`hooks/commit-msg` enforces this mechanically and is the authority when a
+default disagrees. It is checked in, but `core.hooksPath` is local git config
+and cannot be committed, so **each clone runs `just hooks-install` once**;
+`just hooks-check` reports whether this clone is covered. A genuine human
+`Co-authored-by:` is still rejected — all are refused.
 
 ## Architectural invariants
 

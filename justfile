@@ -126,6 +126,20 @@ compose-check:
 github-policy-local:
     scripts/github-repository-policy.sh --local
 
+# core.hooksPath is local git config and cannot be committed, so each clone runs
+# this once.
+# Point this clone at the checked-in hooks in hooks/.
+hooks-install:
+    git config core.hooksPath hooks
+    @echo "core.hooksPath = $(git config --get core.hooksPath)"
+
+# Fail if this clone is not using the checked-in hooks.
+hooks-check:
+    @test "$(git config --get core.hooksPath)" = "hooks" \
+      || { echo "core.hooksPath is not 'hooks'; run: just hooks-install" >&2; exit 1; }
+    @test -x hooks/commit-msg || { echo "hooks/commit-msg is not executable" >&2; exit 1; }
+    @echo "Checked-in git hooks are active."
+
 static: boundaries api-contract migrations-policy migrations-lint compose-check github-policy-local
 
 github-policy-check:
