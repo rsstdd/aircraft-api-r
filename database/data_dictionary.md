@@ -1026,10 +1026,10 @@ The column list is a contract. Adding to it fails the validation companion and
 
 | Column | Type | Null | Default | Constraint / FK | Description |
 |---|---|---|---|---|---|
-| `key_id` | `uuid` | NOT NULL | &mdash; | PK | Non-enumerable public lookup handle supplied by future credential issuance; its primary key supports a single verification probe |
+| `key_id` | `uuid` | NOT NULL | &mdash; | PK | Non-enumerable public lookup handle: a version-4 UUID drawn from the OS random source by `aircraft_app::credential_issuance`; its primary key supports a single verification probe |
 | `principal_id` | `bigint` | NOT NULL | &mdash; | `aircraft_auth.principals(id)` ON DELETE RESTRICT | RESTRICT, not CASCADE: deleting a principal would otherwise free its revoked key identifiers for reissue. Indexed by `idx_apc_principal` |
 | `secret_digest` | `text` | NOT NULL | &mdash; | UNIQUE `uq_apc_secret_digest`, `chk_apc_secret_digest` (`^[0-9a-f]{64}$`) | SHA-256 of the clear credential as 64 lowercase hex characters. The future verifier must compare it in constant time and never disclose it |
-| `label` | `text` | NOT NULL | &mdash; | `chk_apc_label` (non-blank, at most 200 characters) | Bounded non-secret operator note, for example `ci-runner`. Non-blank, because it is the only thing telling one key from another in an operator's list. The length bound makes it a poor place to paste a credential; a nuisance control, not a guarantee |
+| `label` | `text` | NOT NULL | &mdash; | `chk_apc_label` (non-blank, at most 200 characters; mirrored by `MAX_LABEL_CHARS` in `aircraft_app::credential_issuance`) | Bounded non-secret operator note, for example `ci-runner`. Non-blank, because it is the only thing telling one key from another in an operator's list. The length bound makes it a poor place to paste a credential; a nuisance control, not a guarantee |
 | `revoked_at` | `timestamp with time zone` | nullable | &mdash; | `chk_apc_revoked_at` (not before `created_at`) | NULL means live. The future verifier must read this state without exposing it. Indexed by `idx_apc_revoked` |
 | `created_at` | `timestamp with time zone` | NOT NULL | `now()` | &mdash; |  |
 | `updated_at` | `timestamp with time zone` | NOT NULL | `now()` | &mdash; | Stamped by `trg_apc_updated` |
