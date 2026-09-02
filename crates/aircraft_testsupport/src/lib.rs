@@ -29,10 +29,14 @@ pub type TestResult<T = ()> = Result<T, Box<dyn Error + Send + Sync>>;
 /// drift from the SQL on disk.
 ///
 /// Ordering mirrors `database/install.sql`: the reference seeds land after
-/// migration 002 because later lookup data references measurement units, and
-/// the mission-profile seed lands after migration 015.
+/// migration 002 because later lookup data references measurement units, the
+/// mission-profile seed lands after migration 015, and the authentication scope
+/// seed lands after migration 025, which creates the table it fills.
 /// `schema_steps_cover_every_migration` guards the list against a new migration
-/// being added without being gated here.
+/// being added without being gated here. It does not guard the seeds: nothing
+/// reads `database/seeds/`, so a seed dropped from this list is caught only by
+/// a test that asserts its rows, such as
+/// `every_accepted_route_policy_scope_is_seeded`.
 pub const SCHEMA_STEPS: &[&str] = &[
   include_str!("../../../database/migrations/001_extensions_schemas_domains_triggers.sql"),
   include_str!("../../../database/migrations/002_core_reference_tables.sql"),
@@ -61,6 +65,8 @@ pub const SCHEMA_STEPS: &[&str] = &[
   include_str!("../../../database/migrations/022_read_model_refresh_requests.sql"),
   include_str!("../../../database/migrations/023_backfill_ingestion_identity_projections.sql"),
   include_str!("../../../database/migrations/024_promote_existing_manufacturer_links.sql"),
+  include_str!("../../../database/migrations/025_authentication_schema.sql"),
+  include_str!("../../../database/seeds/004_authentication_seed_data.sql"),
   include_str!("../../../database/validation/017_rust_ingestion_adapter_validation.sql"),
   include_str!("../../../database/validation/018_staged_aircraft_variant_fk_validation.sql"),
   include_str!("../../../database/validation/019_weight_metrics_curation_gate_validation.sql"),
@@ -75,6 +81,7 @@ pub const SCHEMA_STEPS: &[&str] = &[
   include_str!(
     "../../../database/validation/024_promote_existing_manufacturer_links_validation.sql"
   ),
+  include_str!("../../../database/validation/025_authentication_schema_validation.sql"),
 ];
 
 /// Filenames of the migrations covered by [`SCHEMA_STEPS`], in apply order.
@@ -106,6 +113,7 @@ pub const COVERED_MIGRATIONS: &[&str] = &[
   "022_read_model_refresh_requests.sql",
   "023_backfill_ingestion_identity_projections.sql",
   "024_promote_existing_manufacturer_links.sql",
+  "025_authentication_schema.sql",
 ];
 
 /// A disposable `PostgreSQL` container, force-removed when the guard drops.

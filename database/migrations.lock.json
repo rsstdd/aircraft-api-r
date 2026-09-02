@@ -96,6 +96,10 @@
     {
       "file": "024_promote_existing_manufacturer_links.sql",
       "sha256": "15dbc7b85a52933357b69fd3f78d60017944e10531d3c1d0cd2b96ca44b274f0"
+    },
+    {
+      "file": "025_authentication_schema.sql",
+      "sha256": "52baf35fae371eed21f214053bbb0123e7251927a9249bc3c39dbd62755e284a"
     }
   ]
 }
