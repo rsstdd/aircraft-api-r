@@ -22,8 +22,18 @@ async-trait.workspace = true
 chrono.workspace = true
 serde.workspace = true
 serde_json.workspace = true
-sha2.workspace = true
+# `zeroize` wipes the hasher's block buffer, which holds the tail of the clear
+# token, when `Sha256::digest` drops it; `the_token_hasher_wipes_its_buffer_on_drop`
+# fails to compile without it.
+sha2 = { workspace = true, features = ["zeroize"] }
 uuid.workspace = true
+
+# Credential issuance: OS entropy in, a contained clear credential out
+getrandom.workspace = true
+secrecy.workspace = true
+# Constant-time equality on the stored verifier. Already in the graph through
+# `sqlx-postgres`, so this adds a manifest line and no package.
+subtle = "2.6"
 
 # Async Synchronization Tools (for managing internal channels/use-case orchestration)
 tokio = { workspace = true, features = ["sync"] }
@@ -31,3 +41,6 @@ tokio = { workspace = true, features = ["sync"] }
 [dev-dependencies]
 # Allows testing coordinate sequences with full async execution trees
 tokio = { workspace = true, features = ["macros", "rt"] }
+# `tests/credential_diagnostics.rs` reads the issuance failure event back
+# through a JSON subscriber it installs on its own future.
+tracing-subscriber.workspace = true

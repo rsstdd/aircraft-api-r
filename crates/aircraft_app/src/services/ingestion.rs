@@ -517,7 +517,9 @@ impl ImportError {
   }
 }
 
-fn hex_digest(bytes: &[u8]) -> String {
+/// Lowercase hexadecimal, the encoding every digest column in the schema
+/// expects; shared with credential issuance.
+pub(crate) fn hex_digest(bytes: &[u8]) -> String {
   use std::fmt::Write as _;
 
   let mut output = String::with_capacity(bytes.len() * 2);

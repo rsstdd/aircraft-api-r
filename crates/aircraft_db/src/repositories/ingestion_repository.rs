@@ -1273,15 +1273,25 @@ fn serialization_error(error: serde_json::Error) -> PersistenceError {
 
 #[allow(clippy::needless_pass_by_value)]
 pub(crate) fn database_error(error: SqlxError) -> PersistenceError {
-  let code = error
-    .as_database_error()
-    .and_then(DatabaseError::code)
-    .map_or_else(|| "DATABASE_ERROR".to_owned(), |code| format!("DATABASE_{code}"));
-  let message = sanitize_database_message(&error.to_string());
-  PersistenceError::Database { code, message }
+  PersistenceError::Database {
+    code: database_code(&error),
+    message: sanitize_database_message(&error.to_string()),
+  }
 }
 
-fn sanitize_database_message(message: &str) -> String {
+/// The SQLSTATE folded into the stable code, or the generic code when the
+/// driver reports no database error. `aircraft_app` reads the folded form.
+pub(crate) fn database_code(error: &SqlxError) -> String {
+  error
+    .as_database_error()
+    .and_then(DatabaseError::code)
+    .map_or_else(|| "DATABASE_ERROR".to_owned(), |code| format!("DATABASE_{code}"))
+}
+
+/// Bounds and control-strips a driver message. A mapper that must scrub the
+/// text first runs its scrub on the full message and this last, so the bound
+/// never cuts what the scrub is looking for.
+pub(crate) fn sanitize_database_message(message: &str) -> String {
   message.chars().filter(|character| !character.is_control()).take(1_000).collect()
 }
 

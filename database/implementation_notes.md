@@ -180,10 +180,15 @@ columns as unreliable.
 ### 2.8 Authentication Schema: Storage Restrictions and Unseeded Tiers
 
 **Current state.** Migration 025 adds `aircraft_auth` with principals, API
-credentials, scopes, principal-scope grants, and rate-limit tiers. It is schema
-only: credential issuance, verification middleware, route policy, scope
-enforcement, and rate limiting are later stories, and no application role has
-been granted access to these tables yet.
+credentials, scopes, principal-scope grants, and rate-limit tiers. Credential
+issuance is implemented as a library: `aircraft_app::credential_issuance` mints
+an `ak1_<key_id>_<64 hex>` token from two operating-system random reads, 16
+bytes for the identifier and 32 for the secret, and
+`aircraft_db::SqlxCredentialStore` writes its SHA-256 digest with one bound
+`INSERT` inside a transaction that commits only after the returned row has
+decoded. Nothing composes it yet: verification middleware, route policy, scope
+enforcement, rate limiting, and any administrative route are later stories, and
+no application role has been granted access to these tables.
 
 `api_credentials` stores only a UUID key identifier, a 64-character lowercase
 SHA-256 digest, ownership, timestamps, and a bounded non-secret label. Its exact
