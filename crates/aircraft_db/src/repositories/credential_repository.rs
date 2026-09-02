@@ -24,7 +24,7 @@ use async_trait::async_trait;
 use sqlx_core::{error::Error as SqlxError, query::query, row::Row};
 use sqlx_postgres::{PgPool, PgRow};
 
-use super::ingestion_repository::database_error;
+use super::ingestion_repository::{database_code, sanitize_database_message};
 
 /// Timestamps come from the column defaults, so the record returned is the row
 /// as stored rather than a client-side guess at it.
@@ -78,14 +78,16 @@ fn record_from_row(row: &PgRow) -> Result<CredentialRecord, PersistenceError> {
 /// operation and with any digest-length hexadecimal run replaced. `detail()`
 /// and `constraint()` are never read: a unique or check violation's detail
 /// renders the offending row, digest included.
+///
+/// Redaction runs on the driver's full text and the bound is applied after:
+/// a digest cut at the bound would be shorter than the run redaction looks
+/// for, and would survive.
 #[allow(clippy::needless_pass_by_value)]
 fn credential_database_error(error: SqlxError) -> PersistenceError {
-  match database_error(error) {
-    PersistenceError::Database { code, message } => PersistenceError::Database {
-      code,
-      message: format!("credential insert: {}", redact_digest_runs(&message)),
-    },
-    invariant @ PersistenceError::Invariant(_) => invariant,
+  let redacted = redact_digest_runs(&error.to_string());
+  PersistenceError::Database {
+    code: database_code(&error),
+    message: format!("credential insert: {}", sanitize_database_message(&redacted)),
   }
 }
 
@@ -109,5 +111,25 @@ mod tests {
       "DATABASE_ERROR: credential insert: encountered unexpected or invalid data: row [REDACTED] \
        rejected"
     );
+  }
+
+  /// `sanitize_database_message` cuts at 1000 characters. A digest cut there
+  /// is shorter than the redaction threshold, so redaction has to see the
+  /// driver's full text first. The padding sweep crosses the bound with the
+  /// digest at every offset; the first case, well inside the bound, is the
+  /// anti-vacuity guard that the digest was in the text at all.
+  #[test]
+  fn a_digest_straddling_the_message_bound_is_still_redacted() {
+    let message_with = |padding: usize| {
+      credential_database_error(SqlxError::Protocol(format!("{}{DIGEST}", "x".repeat(padding))))
+        .to_string()
+    };
+
+    assert!(message_with(900).contains("[REDACTED]"), "a digest inside the bound is replaced");
+    for padding in 900..=1_000 {
+      // Any surviving prefix of the digest four characters or longer starts
+      // with this; the assertion must not render the message itself.
+      assert!(!message_with(padding).contains("dead"), "padding {padding}: a fragment survived");
+    }
   }
 }
