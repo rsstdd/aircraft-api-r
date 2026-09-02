@@ -69,7 +69,40 @@ BEGIN
         RAISE EXCEPTION
             'chk_apc_secret_digest must pin an anchored 64-character lowercase hex digest';
     END IF;
+END
+$validation$;
 
+-- The non-blank constraints are asserted by definition, not merely by name.
+-- btrim(x) <> '' reads as equivalent but strips spaces only, so a tab- or
+-- newline-only value satisfies it. Asserting the name alone cannot tell the two
+-- apart, which is how a relaxed constraint would reach a live database unseen.
+DO $validation$
+DECLARE
+    expected CONSTANT TEXT[][] := ARRAY[
+        ['chk_rlt_label', 'aircraft_auth.rate_limit_tiers'],
+        ['chk_scp_label', 'aircraft_auth.scopes'],
+        ['chk_prn_name', 'aircraft_auth.principals'],
+        ['chk_apc_label', 'aircraft_auth.api_credentials']
+    ];
+    index_position INTEGER;
+BEGIN
+    FOR index_position IN 1 .. array_length(expected, 1) LOOP
+        IF NOT EXISTS (
+            SELECT 1 FROM pg_constraint
+            WHERE conname = expected[index_position][1]
+              AND conrelid = expected[index_position][2]::regclass
+              AND pg_get_constraintdef(oid) LIKE '%[^[:space:]]%'
+        ) THEN
+            RAISE EXCEPTION
+                '% must require a non-whitespace character, not merely a non-empty string',
+                expected[index_position][1];
+        END IF;
+    END LOOP;
+END
+$validation$;
+
+DO $validation$
+BEGIN
     IF NOT EXISTS (
         SELECT 1 FROM pg_attribute
         WHERE attrelid = 'aircraft_auth.api_credentials'::regclass

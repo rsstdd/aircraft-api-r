@@ -17,6 +17,9 @@ COMMENT ON SCHEMA aircraft_auth IS
     'Principals, API credentials, scope grants, and rate-limit tiers for the '
     'HTTP boundary. No aircraft data or clear credential lives here.';
 
+-- Non-blank fields require a non-whitespace character rather than
+-- btrim(x) <> '', because single-argument btrim() strips spaces only: a
+-- tab- or newline-only value survives it and would pass such a check.
 CREATE TABLE IF NOT EXISTS aircraft_auth.rate_limit_tiers (
     code        aircraft_ref.lookup_code PRIMARY KEY,
     label       TEXT NOT NULL,
@@ -24,7 +27,7 @@ CREATE TABLE IF NOT EXISTS aircraft_auth.rate_limit_tiers (
     created_at  TIMESTAMPTZ NOT NULL DEFAULT now(),
     updated_at  TIMESTAMPTZ NOT NULL DEFAULT now(),
     CONSTRAINT uq_rlt_label UNIQUE (label),
-    CONSTRAINT chk_rlt_label CHECK (btrim(label) <> '')
+    CONSTRAINT chk_rlt_label CHECK (label ~ '[^[:space:]]')
 );
 COMMENT ON TABLE aircraft_auth.rate_limit_tiers IS
     'Named rate-limit tier a principal belongs to. Identity only: the capacity '
@@ -45,7 +48,7 @@ CREATE TABLE IF NOT EXISTS aircraft_auth.scopes (
     created_at  TIMESTAMPTZ NOT NULL DEFAULT now(),
     updated_at  TIMESTAMPTZ NOT NULL DEFAULT now(),
     CONSTRAINT uq_scp_label UNIQUE (label),
-    CONSTRAINT chk_scp_label CHECK (btrim(label) <> '')
+    CONSTRAINT chk_scp_label CHECK (label ~ '[^[:space:]]')
 );
 COMMENT ON TABLE aircraft_auth.scopes IS
     'The closed authorization vocabulary of '
@@ -67,7 +70,7 @@ CREATE TABLE IF NOT EXISTS aircraft_auth.principals (
     created_at           TIMESTAMPTZ NOT NULL DEFAULT now(),
     updated_at           TIMESTAMPTZ NOT NULL DEFAULT now(),
     CONSTRAINT uq_prn_name UNIQUE (name),
-    CONSTRAINT chk_prn_name CHECK (btrim(name) <> ''),
+    CONSTRAINT chk_prn_name CHECK (name ~ '[^[:space:]]'),
     CONSTRAINT chk_prn_disabled_at
         CHECK (disabled_at IS NULL OR disabled_at >= created_at),
     CONSTRAINT fk_prn_rate_limit_tier
@@ -103,7 +106,7 @@ CREATE TABLE IF NOT EXISTS aircraft_auth.api_credentials (
     CONSTRAINT uq_apc_secret_digest UNIQUE (secret_digest),
     CONSTRAINT chk_apc_secret_digest CHECK (secret_digest ~ '^[0-9a-f]{64}$'),
     CONSTRAINT chk_apc_label
-        CHECK (btrim(label) <> '' AND char_length(label) <= 200),
+        CHECK (label ~ '[^[:space:]]' AND char_length(label) <= 200),
     CONSTRAINT chk_apc_revoked_at
         CHECK (revoked_at IS NULL OR revoked_at >= created_at),
     CONSTRAINT fk_apc_principal

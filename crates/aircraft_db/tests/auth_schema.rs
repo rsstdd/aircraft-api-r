@@ -126,7 +126,14 @@ async fn a_credential_stores_only_a_key_identifier_and_a_digest() -> TestResult 
   // chk_apc_label bounds both ends: the label is the only thing telling one key
   // from another in an operator's list, so it may be neither blank nor unbounded.
   for (case, label) in
-    [("empty", String::new()), ("blank", "  ".to_owned()), ("long", "x".repeat(201))]
+    // btrim() strips spaces only, so tabs and newlines need their own cases.
+    [
+      ("empty", String::new()),
+      ("spaces", "  ".to_owned()),
+      ("tab", "\t".to_owned()),
+      ("newline", "\n".to_owned()),
+      ("long", "x".repeat(201)),
+    ]
   {
     let error = insert_credential(&pool, Uuid::new_v4(), owner, &digest('b'), &label)
       .await
