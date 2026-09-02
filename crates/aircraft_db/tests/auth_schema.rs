@@ -402,35 +402,77 @@ async fn disablement_and_revocation_cannot_precede_creation() -> TestResult {
   Ok(())
 }
 
-/// Backdating prevents a missing trigger from passing vacuously.
+/// Every table carrying `updated_at` is exercised, because the validation
+/// companion can only prove a trigger is defined and enabled, not that
+/// `aircraft_ref.set_updated_at()` reaches the row.
+///
+/// Each row is inserted already backdated. Without its trigger `updated_at`
+/// keeps the value the INSERT supplied and never overtakes `created_at`, so a
+/// dropped trigger fails here instead of passing vacuously.
 #[tokio::test]
-async fn disabling_a_principal_stamps_updated_at() -> TestResult {
+async fn updating_a_mutable_authentication_row_stamps_updated_at() -> TestResult {
   let (_container, pool) = start_postgres(2, Duration::from_secs(2)).await?;
   install_schema(&pool).await?;
 
-  tier(&pool).await?;
-  let subject: i64 = query_scalar(
-    "INSERT INTO aircraft_auth.principals (name, rate_limit_tier_code, created_at, updated_at)
-         VALUES ('stamped', $1, now() - interval '1 day', now() - interval '1 day')
-         RETURNING id",
-  )
-  .bind(TIER_CODE)
-  .fetch_one(&pool)
-  .await?;
+  let owner = principal(&pool, "credential owner").await?;
+  let backdated = "now() - interval '1 day'";
+  let cases = [
+    (
+      "trg_rlt_updated",
+      format!(
+        "INSERT INTO aircraft_auth.rate_limit_tiers (code, label, created_at, updated_at)
+             VALUES ('BACKDATED', 'Backdated tier', {backdated}, {backdated})"
+      ),
+      "UPDATE aircraft_auth.rate_limit_tiers SET label = 'Renamed tier'
+           WHERE code = 'BACKDATED'"
+        .to_owned(),
+      "SELECT updated_at > created_at FROM aircraft_auth.rate_limit_tiers
+           WHERE code = 'BACKDATED'",
+    ),
+    (
+      "trg_scp_updated",
+      format!(
+        "INSERT INTO aircraft_auth.scopes (code, label, created_at, updated_at)
+             VALUES ('BACKDATED', 'Backdated scope', {backdated}, {backdated})"
+      ),
+      "UPDATE aircraft_auth.scopes SET label = 'Renamed scope' WHERE code = 'BACKDATED'".to_owned(),
+      "SELECT updated_at > created_at FROM aircraft_auth.scopes WHERE code = 'BACKDATED'",
+    ),
+    (
+      "trg_prn_updated",
+      format!(
+        "INSERT INTO aircraft_auth.principals
+             (name, rate_limit_tier_code, created_at, updated_at)
+             VALUES ('backdated', '{TIER_CODE}', {backdated}, {backdated})"
+      ),
+      "UPDATE aircraft_auth.principals SET disabled_at = now() WHERE name = 'backdated'".to_owned(),
+      "SELECT updated_at > created_at AND disabled_at IS NOT NULL
+           FROM aircraft_auth.principals WHERE name = 'backdated'",
+    ),
+    (
+      "trg_apc_updated",
+      format!(
+        "INSERT INTO aircraft_auth.api_credentials
+             (key_id, principal_id, secret_digest, label, created_at, updated_at)
+             VALUES ('{}', {owner}, '{}', 'backdated', {backdated}, {backdated})",
+        Uuid::from_u128(0x0B),
+        digest('b'),
+      ),
+      "UPDATE aircraft_auth.api_credentials SET revoked_at = now()
+           WHERE label = 'backdated'"
+        .to_owned(),
+      "SELECT updated_at > created_at AND revoked_at IS NOT NULL
+           FROM aircraft_auth.api_credentials WHERE label = 'backdated'",
+    ),
+  ];
 
-  query("UPDATE aircraft_auth.principals SET disabled_at = now() WHERE id = $1")
-    .bind(subject)
-    .execute(&pool)
-    .await?;
+  for (trigger, insert, update, stamped) in cases {
+    query(&insert).execute(&pool).await?;
+    query(&update).execute(&pool).await?;
 
-  let stamped: bool = query_scalar(
-    "SELECT updated_at > created_at AND disabled_at IS NOT NULL
-         FROM aircraft_auth.principals WHERE id = $1",
-  )
-  .bind(subject)
-  .fetch_one(&pool)
-  .await?;
-  assert!(stamped, "trg_prn_updated must advance updated_at when a principal is disabled");
+    let advanced: bool = query_scalar(stamped).fetch_one(&pool).await?;
+    assert!(advanced, "{trigger} must advance updated_at when the row is updated");
+  }
   Ok(())
 }
 

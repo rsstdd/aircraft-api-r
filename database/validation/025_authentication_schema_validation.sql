@@ -158,52 +158,98 @@ BEGIN
 END
 $validation$;
 
+-- An index name is not index behavior. Matching schema, table, and name alone
+-- accepts idx_apc_revoked with its predicate dropped, which silently widens the
+-- revocation index to every live credential, and accepts it pointed at another
+-- column. Columns come from indkey and the partial predicate from pg_get_expr,
+-- both rendered from the parsed definition, so a later migration that changes
+-- either must change this table with it.
+--
+-- A predicate renders without schema qualification and the table is resolved
+-- through an explicitly qualified regclass, so neither side of the comparison
+-- depends on the validating role's search_path.
 DO $validation$
 DECLARE
     expected CONSTANT TEXT[][] := ARRAY[
-        ['aircraft_auth', 'principals', 'idx_prn_disabled'],
-        ['aircraft_auth', 'api_credentials', 'idx_apc_principal'],
-        ['aircraft_auth', 'api_credentials', 'idx_apc_revoked'],
-        ['aircraft_auth', 'principal_scope_grants', 'idx_psg_scope']
+        ['aircraft_auth.idx_prn_disabled', 'aircraft_auth.principals',
+         'disabled_at', '(disabled_at IS NOT NULL)'],
+        ['aircraft_auth.idx_apc_principal', 'aircraft_auth.api_credentials',
+         'principal_id', ''],
+        ['aircraft_auth.idx_apc_revoked', 'aircraft_auth.api_credentials',
+         'revoked_at', '(revoked_at IS NOT NULL)'],
+        ['aircraft_auth.idx_psg_scope', 'aircraft_auth.principal_scope_grants',
+         'scope_code', '']
     ];
+    actual_columns TEXT;
+    actual_predicate TEXT;
     index_position INTEGER;
 BEGIN
     FOR index_position IN 1 .. array_length(expected, 1) LOOP
-        IF NOT EXISTS (
-            SELECT 1 FROM pg_indexes
-            WHERE schemaname = expected[index_position][1]
-              AND tablename = expected[index_position][2]
-              AND indexname = expected[index_position][3]
-        ) THEN
+        SELECT
+            (
+                SELECT string_agg(pg_attribute.attname, ',' ORDER BY indexed.ord)
+                FROM unnest(pg_index.indkey) WITH ORDINALITY AS indexed(att, ord)
+                JOIN pg_attribute
+                  ON pg_attribute.attrelid = pg_index.indrelid
+                 AND pg_attribute.attnum = indexed.att
+            ),
+            coalesce(pg_get_expr(pg_index.indpred, pg_index.indrelid), '')
+        INTO actual_columns, actual_predicate
+        FROM pg_index
+        WHERE pg_index.indexrelid = to_regclass(expected[index_position][1])
+          AND pg_index.indrelid = expected[index_position][2]::regclass;
+
+        IF actual_columns IS DISTINCT FROM expected[index_position][3]
+            OR actual_predicate IS DISTINCT FROM expected[index_position][4] THEN
             RAISE EXCEPTION
-                'index % must index revocation, disablement, ownership, and grants',
-                expected[index_position][3];
+                '% indexes (%) where %, expected (%) where %',
+                expected[index_position][1],
+                coalesce(actual_columns, 'nothing'),
+                coalesce(nullif(actual_predicate, ''), 'true'),
+                expected[index_position][3],
+                coalesce(nullif(expected[index_position][4], ''), 'true');
         END IF;
     END LOOP;
 END
 $validation$;
 
 -- Grants are inserted or deleted, so only mutable entity tables need triggers.
+--
+-- Name, table, and function do not say when a trigger fires: an AFTER trigger,
+-- a statement-level trigger, and an INSERT-only trigger each satisfy all three
+-- and none of them stamps updated_at on an UPDATE. tgtype carries those bits,
+-- where ROW (1), BEFORE (2), and UPDATE (16) together are 19 and no other bit
+-- may be set. tgenabled carries firing state separately, because ALTER TABLE
+-- ... DISABLE TRIGGER leaves the definition intact and only moves 'O' to 'D'.
 DO $validation$
 DECLARE
+    row_before_update CONSTANT SMALLINT := 19;
     expected CONSTANT TEXT[][] := ARRAY[
         ['trg_rlt_updated', 'aircraft_auth.rate_limit_tiers'],
         ['trg_scp_updated', 'aircraft_auth.scopes'],
         ['trg_prn_updated', 'aircraft_auth.principals'],
         ['trg_apc_updated', 'aircraft_auth.api_credentials']
     ];
+    actual_type SMALLINT;
+    actual_enabled "char";
     index_position INTEGER;
 BEGIN
     FOR index_position IN 1 .. array_length(expected, 1) LOOP
-        IF NOT EXISTS (
-            SELECT 1 FROM pg_trigger
-            WHERE tgname = expected[index_position][1]
-              AND tgrelid = expected[index_position][2]::regclass
-              AND tgfoid = 'aircraft_ref.set_updated_at'::regproc
-        ) THEN
+        SELECT tgtype, tgenabled
+        INTO actual_type, actual_enabled
+        FROM pg_trigger
+        WHERE tgname = expected[index_position][1]
+          AND tgrelid = expected[index_position][2]::regclass
+          AND tgfoid = 'aircraft_ref.set_updated_at'::regproc;
+
+        IF actual_type IS DISTINCT FROM row_before_update
+            OR actual_enabled IS DISTINCT FROM 'O'::"char" THEN
             RAISE EXCEPTION
-                '% must stamp updated_at through aircraft_ref.set_updated_at()',
-                expected[index_position][1];
+                '% must be an enabled BEFORE UPDATE row trigger calling '
+                'aircraft_ref.set_updated_at(); tgtype is %, tgenabled is %',
+                expected[index_position][1],
+                coalesce(actual_type::TEXT, 'absent'),
+                coalesce(actual_enabled::TEXT, 'absent');
         END IF;
     END LOOP;
 END
