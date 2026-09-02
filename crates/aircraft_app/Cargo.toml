@@ -25,9 +25,16 @@ serde_json.workspace = true
 sha2.workspace = true
 uuid.workspace = true
 
+# Credential issuance: OS entropy in, a contained clear credential out
+getrandom.workspace = true
+secrecy.workspace = true
+
 # Async Synchronization Tools (for managing internal channels/use-case orchestration)
 tokio = { workspace = true, features = ["sync"] }
 
 [dev-dependencies]
 # Allows testing coordinate sequences with full async execution trees
 tokio = { workspace = true, features = ["macros", "rt"] }
+# `tests/credential_diagnostics.rs` reads the issuance failure event back
+# through a JSON subscriber it installs on its own future.
+tracing-subscriber.workspace = true

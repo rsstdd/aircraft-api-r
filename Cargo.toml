@@ -70,6 +70,8 @@ sqlx-postgres = { version = "=0.8.6", features = ["chrono", "uuid", "bigdecimal"
 
 # Secret Hygiene & Memory Defenses
 secrecy = { version = "0.10", features = ["serde"] }
+# Fallible OS CSPRNG for credential secrets; already in the graph through uuid
+getrandom = "0.4"
 zeroize = { version = "1.8", features = ["derive"] }
 
 # API Contract Discovery & Documentation

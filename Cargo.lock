@@ -62,12 +62,15 @@ dependencies = [
  "aircraft_domain",
  "async-trait",
  "chrono",
+ "getrandom 0.4.2",
+ "secrecy",
  "serde",
  "serde_json",
  "sha2 0.11.0",
  "thiserror",
  "tokio",
  "tracing",
+ "tracing-subscriber",
  "uuid",
 ]
 
@@ -97,13 +100,16 @@ dependencies = [
  "bigdecimal",
  "chrono",
  "pretty_assertions",
+ "secrecy",
  "serde",
  "serde_json",
+ "sha2 0.11.0",
  "sqlx-core",
  "sqlx-postgres",
  "thiserror",
  "tokio",
  "tracing",
+ "tracing-subscriber",
  "uuid",
 ]
 
