@@ -51,16 +51,23 @@ END
 $validation$;
 
 -- The inventory alone would not detect a relaxed digest constraint.
+--
+-- The anchors are the load-bearing part of the pattern and are matched
+-- literally here. PostgreSQL's ~ is a containment match, so dropping them to
+-- '[0-9a-f]{64}' would leave a constraint that accepts any string merely
+-- containing 64 hexadecimal characters -- a clear credential among them --
+-- while still satisfying an assertion that only looked for the character class.
+-- In LIKE only % and _ are wildcards, so ^, $, [, ], { and } are literal.
 DO $validation$
 BEGIN
     IF NOT EXISTS (
         SELECT 1 FROM pg_constraint
         WHERE conname = 'chk_apc_secret_digest'
           AND conrelid = 'aircraft_auth.api_credentials'::regclass
-          AND pg_get_constraintdef(oid) LIKE '%[0-9a-f]{64}%'
+          AND pg_get_constraintdef(oid) LIKE '%^[0-9a-f]{64}$%'
     ) THEN
         RAISE EXCEPTION
-            'chk_apc_secret_digest must pin a 64-character lowercase hex digest';
+            'chk_apc_secret_digest must pin an anchored 64-character lowercase hex digest';
     END IF;
 
     IF NOT EXISTS (
