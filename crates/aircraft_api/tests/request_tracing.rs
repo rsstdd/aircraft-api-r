@@ -21,28 +21,12 @@ use std::{
   time::Duration,
 };
 
-use aircraft_api::{
-  ApiState, PerimeterLimits, authentication::require_authentication, problem::ApiProblem,
-  router_with_routes, shutdown::ShutdownState,
-};
-use aircraft_app::{
-  authentication::{
-    AuthenticatedPrincipal, AuthenticationService, CredentialLookup, CredentialLookupRecord, Scope,
-  },
-  credential_issuance::CredentialVerifier,
-  ingestion::PersistenceError,
-  readiness::ReadinessProbe,
-};
+use aircraft_api::{ApiState, PerimeterLimits, shutdown::ShutdownState};
+use aircraft_app::{ingestion::PersistenceError, readiness::ReadinessProbe};
 use anyhow::{Context, Result};
 use async_trait::async_trait;
-use axum::{
-  Extension, Router,
-  body::{Body, to_bytes},
-  http::{Request, StatusCode, header},
-  response::{IntoResponse, Response},
-  routing::get,
-};
-use serde_json::{Value, json};
+use axum::{body::Body, http::Request, response::Response};
+use serde_json::Value;
 use tower::ServiceExt as _;
 use tracing::instrument::WithSubscriber as _;
 use tracing_subscriber::fmt::MakeWriter;

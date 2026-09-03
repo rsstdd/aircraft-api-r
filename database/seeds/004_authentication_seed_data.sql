@@ -15,20 +15,36 @@
 -- both enums publishes a scope the API cannot name, or a grant verification
 -- refuses to read.
 -- =============================================================================
-
 BEGIN;
-
 INSERT INTO aircraft_auth.scopes (code, label, description, sort_order)
-VALUES ('CATALOG_READ', 'Catalog read',
-        'Read ordinary aircraft catalog data.', 10),
-       ('MILITARY_READ', 'Military reference read',
-        'Read military platform capabilities and public loadout metadata.', 20),
-       ('CURATION_READ', 'Curation read',
-        'Read pending source evidence, assertions, and curation flags.', 30),
-       ('CURATION_WRITE', 'Curation write',
-        'Accept or reject assertions and record curation decisions.', 40),
-       ('ADMIN', 'Administration',
-        'Credential lifecycle and other administrative operations.', 50)
-ON CONFLICT (code) DO NOTHING;
-
+VALUES (
+                'CATALOG_READ',
+                'Catalog read',
+                'Read ordinary aircraft catalog data.',
+                10
+        ),
+        (
+                'MILITARY_READ',
+                'Military reference read',
+                'Read military platform capabilities and public loadout metadata.',
+                20
+        ),
+        (
+                'CURATION_READ',
+                'Curation read',
+                'Read pending source evidence, assertions, and curation flags.',
+                30
+        ),
+        (
+                'CURATION_WRITE',
+                'Curation write',
+                'Accept or reject assertions and record curation decisions.',
+                40
+        ),
+        (
+                'ADMIN',
+                'Administration',
+                'Credential lifecycle and other administrative operations.',
+                50
+        ) ON CONFLICT (code) DO NOTHING;
 COMMIT;
