@@ -9,10 +9,15 @@ pub mod shutdown;
 use std::sync::Arc;
 
 use aircraft_app::readiness::ReadinessProbe;
-use axum::{Router, routing::get};
+use axum::{
+  Router,
+  extract::{DefaultBodyLimit, OriginalUri},
+  routing::get,
+};
 use utoipa::OpenApi;
 
 pub use crate::limits::{InvalidOrigin, PerimeterLimits};
+use crate::problem::ApiProblem;
 use crate::shutdown::ShutdownState;
 
 /// What the router needs from its composition root.
@@ -67,12 +72,31 @@ impl std::fmt::Debug for ApiState {
     ),
     servers((url = "/", description = "Current deployment origin")),
     paths(routes::health::health, routes::ready::ready, routes::version::version),
-    components(schemas(
-      routes::health::HealthResponse,
-      routes::ready::ReadyResponse,
-      routes::version::VersionResponse,
-      problem::ProblemDetails
-    )),
+    components(
+      schemas(
+        routes::health::HealthResponse,
+        routes::ready::ReadyResponse,
+        routes::version::VersionResponse,
+        problem::ProblemDetails,
+        problem::RequiredScope
+      ),
+      responses(
+        problem::MalformedInputProblem,
+        problem::ValidationFailedProblem,
+        problem::AuthenticationRequiredProblem,
+        problem::InsufficientScopeProblem,
+        problem::NotFoundProblem,
+        problem::MethodNotAllowedProblem,
+        problem::ConflictProblem,
+        problem::PayloadTooLargeProblem,
+        problem::RateLimitedProblem,
+        problem::DatabaseUnavailableProblem,
+        problem::ShuttingDownProblem,
+        problem::OverloadedProblem,
+        problem::InternalErrorProblem,
+        problem::DeadlineExceededProblem
+      )
+    ),
     tags((name = "health", description = "Service health checks"))
 )]
 struct ApiDoc;
@@ -95,6 +119,7 @@ struct ApiDoc;
 /// track_in_flight             makes body reads and handlers cancellable on shutdown
 /// enforce_deadline            bounds body reception and handler execution together
 /// refuse_oversized_body       innermost, reads at most the configured body limit
+/// disable Axum's default      leaves the configured perimeter as the one size authority
 /// ```
 ///
 /// Three orderings carry weight. Correlation is outermost, so every response --
@@ -106,7 +131,21 @@ struct ApiDoc;
 /// `Access-Control-Allow-Origin` that makes the `413` readable. The semaphore
 /// wraps body buffering so concurrency also bounds aggregate memory, and the
 /// timeout wraps reception and execution so a slow upload cannot hold either.
+///
+/// Both fallbacks are registered on the same router as the routes, so an
+/// unmatched path and an unsupported method are answered by the same problem
+/// contract every other refusal uses, under the same layers.
 pub fn router(state: ApiState) -> Router {
+  router_with_routes(state, Router::new())
+}
+
+/// The router, with `additional_routes` merged in before the fallbacks.
+///
+/// The extension point exists so a test can mount a handler that returns a
+/// given problem and drive it through the real layer stack. Rebuilding that
+/// stack in a test module instead would let the two drift, and the ordering
+/// this function documents is exactly what a drifting copy would stop proving.
+pub fn router_with_routes(state: ApiState, additional_routes: Router<ApiState>) -> Router {
   let shutdown = state.shutdown.clone();
   let limits = state.limits.clone();
 
@@ -114,6 +153,10 @@ pub fn router(state: ApiState) -> Router {
     .route("/health", get(routes::health::health))
     .route("/ready", get(routes::ready::ready))
     .route("/version", get(routes::version::version))
+    .merge(additional_routes)
+    .fallback(not_found)
+    .method_not_allowed_fallback(method_not_allowed)
+    .layer(DefaultBodyLimit::disable())
     .layer(axum::middleware::from_fn_with_state(
       limits.body_bytes(),
       PerimeterLimits::refuse_oversized_body,
@@ -136,6 +179,17 @@ pub fn router(state: ApiState) -> Router {
     .with_state(state)
 }
 
+/// `OriginalUri` rather than `Uri`: a fallback runs with the router's own
+/// matched prefix stripped, and the path a refusal names must be the one the
+/// caller sent.
+async fn not_found(OriginalUri(uri): OriginalUri) -> ApiProblem {
+  ApiProblem::not_found(uri.path())
+}
+
+async fn method_not_allowed(OriginalUri(uri): OriginalUri) -> ApiProblem {
+  ApiProblem::method_not_allowed(uri.path())
+}
+
 #[must_use]
 pub fn openapi() -> utoipa::openapi::OpenApi {
   ApiDoc::openapi()
@@ -148,6 +202,7 @@ mod tests {
   #![allow(clippy::expect_used, clippy::panic)]
 
   use std::{
+    collections::BTreeSet,
     convert::Infallible,
     sync::{
       Arc,
@@ -162,12 +217,15 @@ mod tests {
   use axum::{
     body::{Body, HttpBody as _, to_bytes},
     http::{HeaderValue, Request, StatusCode, header},
+    routing::post,
   };
+  use serde::Deserialize;
   use serde_json::json;
   use tokio::sync::{Notify, mpsc};
   use tower::ServiceExt;
 
   use super::*;
+  use crate::problem::{ApiJson, ApiQuery, RequiredScope};
 
   struct AlwaysReady;
 
@@ -286,6 +344,50 @@ mod tests {
     Perimeter::default().state(readiness)
   }
 
+  #[derive(Deserialize)]
+  struct TypedBody {
+    count: u8,
+  }
+
+  #[derive(Deserialize)]
+  struct TypedQuery {
+    limit: u8,
+  }
+
+  async fn accept_json(ApiJson(body): ApiJson<TypedBody>) -> StatusCode {
+    let _ = body.count;
+    StatusCode::NO_CONTENT
+  }
+
+  async fn accept_query(ApiQuery(query): ApiQuery<TypedQuery>) -> StatusCode {
+    let _ = query.limit;
+    StatusCode::NO_CONTENT
+  }
+
+  fn router_with_test_routes() -> Router {
+    let routes = Router::new()
+      .route("/__test/json", post(accept_json))
+      .route("/__test/query", get(accept_query))
+      .route(
+        "/__test/authentication",
+        get(|| async { ApiProblem::authentication_required("/__test/authentication") }),
+      )
+      .route(
+        "/__test/authorization",
+        get(|| async {
+          ApiProblem::insufficient_scope("/__test/authorization", RequiredScope::CurationWrite)
+        }),
+      )
+      .route("/__test/not-found", get(|| async { ApiProblem::not_found("/__test/not-found") }))
+      .route("/__test/conflict", get(|| async { ApiProblem::conflict("/__test/conflict") }))
+      .route(
+        "/__test/rate-limit",
+        get(|| async { ApiProblem::rate_limited("/__test/rate-limit", 37) }),
+      );
+
+    router_with_routes(state(Arc::new(AlwaysReady)), routes)
+  }
+
   async fn body_of(response: axum::response::Response) -> Result<serde_json::Value> {
     let bytes = to_bytes(response.into_body(), 4096).await?;
     Ok(serde_json::from_slice(&bytes)?)
@@ -306,6 +408,11 @@ mod tests {
     instance: &str,
   ) -> Result<()> {
     assert_eq!(response.status().as_u16(), status);
+    let request_id = request_id_of(&response)?;
+    assert!(
+      correlation::RequestId::accepted(&request_id).is_some(),
+      "a problem returned an unusable request ID"
+    );
     assert_eq!(
       response.headers().get(header::CONTENT_TYPE).context("a problem needs a media type")?,
       "application/problem+json",
@@ -587,6 +694,157 @@ mod tests {
         "path {path} returned an unusable identifier: {returned:?}"
       );
     }
+    Ok(())
+  }
+
+  #[tokio::test]
+  async fn an_unknown_route_returns_a_correlated_problem_document() -> Result<()> {
+    const REQUEST_ID: &str = "unknown-route-test";
+
+    let response = router(state(Arc::new(AlwaysReady)))
+      .oneshot(
+        Request::get("/no-such-route")
+          .header(correlation::REQUEST_ID, REQUEST_ID)
+          .body(Body::empty())?,
+      )
+      .await?;
+
+    assert_eq!(request_id_of(&response)?, REQUEST_ID);
+    assert_refusal(response, 404, "/problems/not-found", "/no-such-route").await
+  }
+
+  #[tokio::test]
+  async fn a_wrong_method_returns_a_correlated_problem_and_preserves_allow() -> Result<()> {
+    let response = router(state(Arc::new(AlwaysReady)))
+      .oneshot(Request::post("/health").body(Body::empty())?)
+      .await?;
+
+    let allowed = response
+      .headers()
+      .get(header::ALLOW)
+      .context("a method refusal must name the allowed methods")?
+      .to_str()?
+      .split(',')
+      .map(str::trim)
+      .collect::<BTreeSet<_>>();
+    assert_eq!(allowed, BTreeSet::from(["GET", "HEAD"]));
+    assert_refusal(response, 405, "/problems/method-not-allowed", "/health").await
+  }
+
+  #[tokio::test]
+  async fn malformed_json_returns_a_malformed_input_problem() -> Result<()> {
+    let response = router_with_test_routes()
+      .oneshot(
+        Request::post("/__test/json")
+          .header(header::CONTENT_TYPE, "application/json")
+          .body(Body::from(br#"{"count": }"#.as_slice()))?,
+      )
+      .await?;
+
+    assert_refusal(response, 400, "/problems/malformed-input", "/__test/json").await
+  }
+
+  #[tokio::test]
+  async fn invalid_json_data_returns_a_validation_problem() -> Result<()> {
+    let response = router_with_test_routes()
+      .oneshot(
+        Request::post("/__test/json")
+          .header(header::CONTENT_TYPE, "application/json")
+          .body(Body::from(r#"{"count":"secret-value"}"#))?,
+      )
+      .await?;
+
+    assert_refusal(response, 400, "/problems/validation-failed", "/__test/json").await
+  }
+
+  #[tokio::test]
+  async fn json_without_a_content_type_returns_a_malformed_input_problem() -> Result<()> {
+    let response = router_with_test_routes()
+      .oneshot(Request::post("/__test/json").body(Body::from(r#"{"count":1}"#))?)
+      .await?;
+
+    assert_refusal(response, 400, "/problems/malformed-input", "/__test/json").await
+  }
+
+  #[tokio::test]
+  async fn a_route_local_json_size_limit_returns_a_payload_too_large_problem() -> Result<()> {
+    let routes =
+      Router::new().route("/__test/json", post(accept_json)).layer(DefaultBodyLimit::max(8));
+    let app = router_with_routes(state(Arc::new(AlwaysReady)), routes);
+    let response = app
+      .oneshot(
+        Request::post("/__test/json")
+          .header(header::CONTENT_TYPE, "application/json")
+          .body(Body::from(r#"{"count":1}"#))?,
+      )
+      .await?;
+
+    assert_refusal(response, 413, "/problems/payload-too-large", "/__test/json").await
+  }
+
+  #[tokio::test]
+  async fn the_configured_perimeter_replaces_axums_default_json_limit() -> Result<()> {
+    let body = format!(r#"{{"count":1,"padding":"{}"}}"#, "x".repeat(2_097_152));
+    let state =
+      Perimeter { body_bytes: body.len(), ..Perimeter::default() }.state(Arc::new(AlwaysReady));
+    let response =
+      router_with_routes(state, Router::new().route("/__test/json", post(accept_json)))
+        .oneshot(
+          Request::post("/__test/json")
+            .header(header::CONTENT_TYPE, "application/json")
+            .body(Body::from(body))?,
+        )
+        .await?;
+
+    assert_eq!(response.status(), StatusCode::NO_CONTENT);
+    Ok(())
+  }
+
+  #[tokio::test]
+  async fn invalid_query_returns_a_validation_problem_without_echoing_the_query() -> Result<()> {
+    const SENTINEL: &str = "postgres://curator:hunter2@db.internal/aircraft";
+    let response = router_with_test_routes()
+      .oneshot(Request::get(format!("/__test/query?limit={SENTINEL}")).body(Body::empty())?)
+      .await?;
+
+    assert_refusal(response, 400, "/problems/validation-failed", "/__test/query").await
+  }
+
+  #[tokio::test]
+  async fn known_semantic_failures_have_stable_problem_types_and_statuses() -> Result<()> {
+    const CASES: [(&str, u16, &str); 5] = [
+      ("/__test/authentication", 401, "/problems/authentication-required"),
+      ("/__test/authorization", 403, "/problems/insufficient-scope"),
+      ("/__test/not-found", 404, "/problems/not-found"),
+      ("/__test/conflict", 409, "/problems/conflict"),
+      ("/__test/rate-limit", 429, "/problems/rate-limit-exceeded"),
+    ];
+
+    for (path, status, kind) in CASES {
+      let response =
+        router_with_test_routes().oneshot(Request::get(path).body(Body::empty())?).await?;
+      assert_refusal(response, status, kind, path).await?;
+    }
+    Ok(())
+  }
+
+  #[tokio::test]
+  async fn authorization_and_rate_limit_problems_carry_their_typed_metadata() -> Result<()> {
+    let authorization = router_with_test_routes()
+      .oneshot(Request::get("/__test/authorization").body(Body::empty())?)
+      .await?;
+    assert_eq!(
+      body_of(authorization).await?.pointer("/required_scope"),
+      Some(&json!("CURATION_WRITE"))
+    );
+
+    let rate_limit = router_with_test_routes()
+      .oneshot(Request::get("/__test/rate-limit").body(Body::empty())?)
+      .await?;
+    assert_eq!(
+      rate_limit.headers().get(header::RETRY_AFTER),
+      Some(&HeaderValue::from_static("37"))
+    );
     Ok(())
   }
 
@@ -1089,6 +1347,66 @@ mod tests {
     Ok(())
   }
 
+  #[test]
+  fn openapi_publishes_every_reusable_problem_response() -> Result<()> {
+    const RESPONSES: [(&str, u16, &str); 14] = [
+      ("MalformedInputProblem", 400, "/problems/malformed-input"),
+      ("ValidationFailedProblem", 400, "/problems/validation-failed"),
+      ("AuthenticationRequiredProblem", 401, "/problems/authentication-required"),
+      ("InsufficientScopeProblem", 403, "/problems/insufficient-scope"),
+      ("NotFoundProblem", 404, "/problems/not-found"),
+      ("MethodNotAllowedProblem", 405, "/problems/method-not-allowed"),
+      ("ConflictProblem", 409, "/problems/conflict"),
+      ("PayloadTooLargeProblem", 413, "/problems/payload-too-large"),
+      ("RateLimitedProblem", 429, "/problems/rate-limit-exceeded"),
+      ("DatabaseUnavailableProblem", 503, "/problems/database-unavailable"),
+      ("ShuttingDownProblem", 503, "/problems/shutting-down"),
+      ("OverloadedProblem", 503, "/problems/overloaded"),
+      ("InternalErrorProblem", 500, "/problems/internal-error"),
+      ("DeadlineExceededProblem", 504, "/problems/deadline-exceeded"),
+    ];
+
+    let document = serde_json::to_value(openapi())?;
+    let responses = document
+      .pointer("/components/responses")
+      .and_then(serde_json::Value::as_object)
+      .context("the reusable problem responses are not published")?;
+    assert_eq!(responses.len(), RESPONSES.len(), "the response inventory changed");
+
+    for (name, status, kind) in RESPONSES {
+      let response = responses.get(name).with_context(|| format!("missing response {name}"))?;
+      assert_eq!(
+        response.pointer("/content/application~1problem+json/schema/$ref"),
+        Some(&json!("#/components/schemas/ProblemDetails")),
+        "{name} must use the shared problem schema"
+      );
+      assert!(
+        response.pointer("/headers/X-Request-Id").is_some(),
+        "{name} must publish the correlation header"
+      );
+      assert_eq!(
+        response.pointer("/content/application~1problem+json/example/status"),
+        Some(&json!(status)),
+        "{name} publishes the wrong status"
+      );
+      assert_eq!(
+        response.pointer("/content/application~1problem+json/example/type"),
+        Some(&json!(kind)),
+        "{name} publishes the wrong problem type"
+      );
+    }
+
+    assert!(
+      responses["RateLimitedProblem"].pointer("/headers/Retry-After").is_some(),
+      "the rate-limit response must publish its retry timing"
+    );
+    assert!(
+      responses["MethodNotAllowedProblem"].pointer("/headers/Allow").is_some(),
+      "the method refusal must publish the methods the resource allows"
+    );
+    Ok(())
+  }
+
   /// A perimeter problem names the request it actually refused.
   ///
   /// The path here is deliberately not a route: the perimeter answers before
@@ -1126,12 +1444,15 @@ mod tests {
   /// The path is caller-controlled, so an unbounded copy would let a caller
   /// choose the size of the document this service emits. `AGENTS.md` requires a
   /// ceiling on anything untrusted that reaches a response.
+  ///
+  /// An oversized path is replaced by a sentinel rather than truncated: cutting
+  /// mid percent-escape would publish an `instance` that is not the valid URI
+  /// reference RFC 9457 requires. The parse below is what pins that.
   #[tokio::test]
-  async fn a_reflected_request_path_is_bounded() -> Result<()> {
+  async fn an_oversized_reflected_request_path_uses_a_valid_bounded_sentinel() -> Result<()> {
     const LIMIT: usize = 1024;
-    const MAX_INSTANCE_CHARS: usize = 255;
 
-    let long_path = format!("/{}", "a".repeat(4096));
+    let long_path = format!("/{}%E2%82%AC", "a".repeat(252));
     let state =
       Perimeter { body_bytes: LIMIT, ..Perimeter::default() }.state(Arc::new(NeverConsulted));
 
@@ -1148,11 +1469,8 @@ mod tests {
       .and_then(serde_json::Value::as_str)
       .context("the problem names no instance")?;
 
-    assert_eq!(
-      instance.chars().count(),
-      MAX_INSTANCE_CHARS,
-      "an oversized path must be truncated, not echoed whole"
-    );
+    assert_eq!(instance, "/request-path-too-long");
+    let _: axum::http::Uri = instance.parse()?;
     Ok(())
   }
 
@@ -1188,6 +1506,46 @@ mod tests {
       schema.pointer("/properties/instance/type"),
       Some(&json!("string")),
       "instance must not be published as nullable: {schema}"
+    );
+    Ok(())
+  }
+
+  /// `required_scope` is absent from every problem but the `403`, and is never
+  /// `null` when it is present: `skip_serializing_if` omits the field rather
+  /// than emitting one.
+  ///
+  /// The spelling is read against `database/seeds/004_authentication_seed_data.sql`,
+  /// which owns the scope vocabulary, rather than against `RequiredScope` --
+  /// a list re-derived from the enum would agree with a wrong enum.
+  #[test]
+  fn openapi_publishes_the_scope_vocabulary_as_an_optional_never_null_member() -> Result<()> {
+    const SCOPES: [&str; 5] =
+      ["CATALOG_READ", "MILITARY_READ", "CURATION_READ", "CURATION_WRITE", "ADMIN"];
+
+    let document = serde_json::to_value(openapi())?;
+    let schema = document
+      .pointer("/components/schemas/ProblemDetails")
+      .context("ProblemDetails is not published")?;
+
+    let required = schema
+      .pointer("/required")
+      .and_then(serde_json::Value::as_array)
+      .context("ProblemDetails publishes no required list")?;
+    assert!(
+      !required.contains(&json!("required_scope")),
+      "required_scope is omitted when absent, so it must not be required: {required:?}"
+    );
+    let member =
+      schema.pointer("/properties/required_scope").context("required_scope is not published")?;
+    assert_eq!(
+      member.pointer("/$ref"),
+      Some(&json!("#/components/schemas/RequiredScope")),
+      "required_scope must reference the closed vocabulary rather than a nullable union: {member}"
+    );
+    assert_eq!(
+      document.pointer("/components/schemas/RequiredScope/enum"),
+      Some(&json!(SCOPES)),
+      "authorization must publish the closed scope vocabulary"
     );
     Ok(())
   }

@@ -17,7 +17,7 @@ use axum::{
 };
 use tokio::sync::watch;
 
-use crate::problem::ProblemDetails;
+use crate::problem::ApiProblem;
 
 #[derive(Clone, Copy, Debug, Default, Eq, Ord, PartialEq, PartialOrd)]
 enum Phase {
@@ -119,7 +119,7 @@ impl Drop for InFlightGuard {
 /// handler answers, not when the body reaches the client -- the two coincide
 /// while every route answers in memory.
 ///
-/// Cancellation answers with [`ProblemDetails::shutdown_cancelled`], which
+/// Cancellation answers with [`ApiProblem::shutdown_cancelled`], which
 /// shares `/ready`'s shutdown type but not its `detail`.
 pub async fn track_in_flight(
   State(shutdown): State<ShutdownState>,
@@ -133,7 +133,7 @@ pub async fn track_in_flight(
 
   tokio::select! {
     response = next.run(request) => response,
-    () = shutdown.cancelled() => ProblemDetails::shutdown_cancelled(&instance).into_response(),
+    () = shutdown.cancelled() => ApiProblem::shutdown_cancelled(&instance).into_response(),
   }
 }
 

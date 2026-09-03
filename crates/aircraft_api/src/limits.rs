@@ -33,7 +33,7 @@ use futures::StreamExt as _;
 use tokio::sync::Semaphore;
 use tower_http::cors::{AllowOrigin, CorsLayer};
 
-use crate::problem::ProblemDetails;
+use crate::problem::ApiProblem;
 
 /// An origin the perimeter cannot safely use in its explicit CORS allow-list.
 #[derive(Debug, thiserror::Error)]
@@ -131,7 +131,7 @@ impl PerimeterLimits {
     next: Next,
   ) -> Response {
     if request.method() == Method::OPTIONS && Self::declares_more_than(&request, max_bytes) {
-      return ProblemDetails::payload_too_large(request.uri().path()).into_response();
+      return ApiProblem::payload_too_large(request.uri().path()).into_response();
     }
 
     next.run(request).await
@@ -150,7 +150,7 @@ impl PerimeterLimits {
     next: Next,
   ) -> Response {
     if Self::declares_more_than(&request, max_bytes) {
-      return ProblemDetails::payload_too_large(request.uri().path()).into_response();
+      return ApiProblem::payload_too_large(request.uri().path()).into_response();
     }
 
     let (parts, body) = request.into_parts();
@@ -161,10 +161,10 @@ impl PerimeterLimits {
 
     while let Some(chunk) = stream.next().await {
       let Ok(chunk) = chunk else {
-        return ProblemDetails::malformed_input(&instance).into_response();
+        return ApiProblem::malformed_input(&instance).into_response();
       };
       if buffered.len().checked_add(chunk.len()).is_none_or(|length| length > max_bytes) {
-        return ProblemDetails::payload_too_large(&instance).into_response();
+        return ApiProblem::payload_too_large(&instance).into_response();
       }
       buffered.extend_from_slice(&chunk);
     }
@@ -207,7 +207,7 @@ impl PerimeterLimits {
     next: Next,
   ) -> Response {
     let Ok(_permit) = permits.try_acquire_owned() else {
-      return ProblemDetails::overloaded(request.uri().path()).into_response();
+      return ApiProblem::overloaded(request.uri().path()).into_response();
     };
 
     next.run(request).await
@@ -231,6 +231,6 @@ impl PerimeterLimits {
 
     tokio::time::timeout(deadline, next.run(request))
       .await
-      .unwrap_or_else(|_elapsed| ProblemDetails::deadline_exceeded(&instance).into_response())
+      .unwrap_or_else(|_elapsed| ApiProblem::deadline_exceeded(&instance).into_response())
   }
 }

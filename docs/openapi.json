@@ -389,6 +389,10 @@
             "type": "string",
             "description": "The specific occurrence this problem describes.\n\nRequired, because `/ready` has published one since it shipped and\n`oasdiff` fails the build on `response-property-became-optional`. A route\nnames itself with a borrowed constant, a perimeter refusal owns the path\nit refused, and `Cow` is what lets one required field be both."
           },
+          "required_scope": {
+            "$ref": "#/components/schemas/RequiredScope",
+            "description": "The scope required by the refused operation. Present only on an\nauthorization problem, and absent rather than null everywhere else."
+          },
           "status": {
             "type": "integer",
             "format": "int32",
@@ -414,6 +418,17 @@
           }
         }
       },
+      "RequiredScope": {
+        "type": "string",
+        "description": "The scope the caller's credential is missing.",
+        "enum": [
+          "CATALOG_READ",
+          "MILITARY_READ",
+          "CURATION_READ",
+          "CURATION_WRITE",
+          "ADMIN"
+        ]
+      },
       "VersionResponse": {
         "type": "object",
         "required": [
@@ -426,6 +441,371 @@
           },
           "version": {
             "type": "string"
+          }
+        }
+      }
+    },
+    "responses": {
+      "AuthenticationRequiredProblem": {
+        "description": "Authentication is required",
+        "headers": {
+          "X-Request-Id": {
+            "schema": {
+              "type": "string"
+            },
+            "description": "The correlation identifier for this request, echoed from the client or generated here."
+          }
+        },
+        "content": {
+          "application/problem+json": {
+            "schema": {
+              "$ref": "#/components/schemas/ProblemDetails"
+            },
+            "example": {
+              "detail": "Authentication is required to access this resource.",
+              "instance": "/example",
+              "status": 401,
+              "title": "Unauthorized",
+              "type": "/problems/authentication-required"
+            }
+          }
+        }
+      },
+      "ConflictProblem": {
+        "description": "The request conflicts with current resource state",
+        "headers": {
+          "X-Request-Id": {
+            "schema": {
+              "type": "string"
+            },
+            "description": "The correlation identifier for this request, echoed from the client or generated here."
+          }
+        },
+        "content": {
+          "application/problem+json": {
+            "schema": {
+              "$ref": "#/components/schemas/ProblemDetails"
+            },
+            "example": {
+              "detail": "The request conflicts with the current resource state.",
+              "instance": "/example",
+              "status": 409,
+              "title": "Conflict",
+              "type": "/problems/conflict"
+            }
+          }
+        }
+      },
+      "DatabaseUnavailableProblem": {
+        "description": "The database is unavailable",
+        "headers": {
+          "X-Request-Id": {
+            "schema": {
+              "type": "string"
+            },
+            "description": "The correlation identifier for this request, echoed from the client or generated here."
+          }
+        },
+        "content": {
+          "application/problem+json": {
+            "schema": {
+              "$ref": "#/components/schemas/ProblemDetails"
+            },
+            "example": {
+              "detail": "The service cannot reach its database.",
+              "instance": "/example",
+              "status": 503,
+              "title": "Service Unavailable",
+              "type": "/problems/database-unavailable"
+            }
+          }
+        }
+      },
+      "DeadlineExceededProblem": {
+        "description": "The request deadline expired",
+        "headers": {
+          "X-Request-Id": {
+            "schema": {
+              "type": "string"
+            },
+            "description": "The correlation identifier for this request, echoed from the client or generated here."
+          }
+        },
+        "content": {
+          "application/problem+json": {
+            "schema": {
+              "$ref": "#/components/schemas/ProblemDetails"
+            },
+            "example": {
+              "detail": "The service did not produce a response within its deadline.",
+              "instance": "/example",
+              "status": 504,
+              "title": "Gateway Timeout",
+              "type": "/problems/deadline-exceeded"
+            }
+          }
+        }
+      },
+      "InsufficientScopeProblem": {
+        "description": "The credential lacks the required scope",
+        "headers": {
+          "X-Request-Id": {
+            "schema": {
+              "type": "string"
+            },
+            "description": "The correlation identifier for this request, echoed from the client or generated here."
+          }
+        },
+        "content": {
+          "application/problem+json": {
+            "schema": {
+              "$ref": "#/components/schemas/ProblemDetails"
+            },
+            "example": {
+              "detail": "The authenticated principal lacks the required scope.",
+              "instance": "/example",
+              "required_scope": "CATALOG_READ",
+              "status": 403,
+              "title": "Forbidden",
+              "type": "/problems/insufficient-scope"
+            }
+          }
+        }
+      },
+      "InternalErrorProblem": {
+        "description": "The service encountered an unexpected error",
+        "headers": {
+          "X-Request-Id": {
+            "schema": {
+              "type": "string"
+            },
+            "description": "The correlation identifier for this request, echoed from the client or generated here."
+          }
+        },
+        "content": {
+          "application/problem+json": {
+            "schema": {
+              "$ref": "#/components/schemas/ProblemDetails"
+            },
+            "example": {
+              "detail": "The service encountered an unexpected error.",
+              "instance": "/example",
+              "status": 500,
+              "title": "Internal Server Error",
+              "type": "/problems/internal-error"
+            }
+          }
+        }
+      },
+      "MalformedInputProblem": {
+        "description": "The request body could not be read",
+        "headers": {
+          "X-Request-Id": {
+            "schema": {
+              "type": "string"
+            },
+            "description": "The correlation identifier for this request, echoed from the client or generated here."
+          }
+        },
+        "content": {
+          "application/problem+json": {
+            "schema": {
+              "$ref": "#/components/schemas/ProblemDetails"
+            },
+            "example": {
+              "detail": "The request body could not be read.",
+              "instance": "/example",
+              "status": 400,
+              "title": "Bad Request",
+              "type": "/problems/malformed-input"
+            }
+          }
+        }
+      },
+      "MethodNotAllowedProblem": {
+        "description": "The request method is not allowed",
+        "headers": {
+          "Allow": {
+            "schema": {
+              "type": "string"
+            },
+            "description": "Methods supported by the requested resource."
+          },
+          "X-Request-Id": {
+            "schema": {
+              "type": "string"
+            },
+            "description": "The correlation identifier for this request, echoed from the client or generated here."
+          }
+        },
+        "content": {
+          "application/problem+json": {
+            "schema": {
+              "$ref": "#/components/schemas/ProblemDetails"
+            },
+            "example": {
+              "detail": "The request method is not allowed for this resource.",
+              "instance": "/example",
+              "status": 405,
+              "title": "Method Not Allowed",
+              "type": "/problems/method-not-allowed"
+            }
+          }
+        }
+      },
+      "NotFoundProblem": {
+        "description": "The requested resource was not found",
+        "headers": {
+          "X-Request-Id": {
+            "schema": {
+              "type": "string"
+            },
+            "description": "The correlation identifier for this request, echoed from the client or generated here."
+          }
+        },
+        "content": {
+          "application/problem+json": {
+            "schema": {
+              "$ref": "#/components/schemas/ProblemDetails"
+            },
+            "example": {
+              "detail": "The requested resource was not found.",
+              "instance": "/example",
+              "status": 404,
+              "title": "Not Found",
+              "type": "/problems/not-found"
+            }
+          }
+        }
+      },
+      "OverloadedProblem": {
+        "description": "The service is at capacity",
+        "headers": {
+          "X-Request-Id": {
+            "schema": {
+              "type": "string"
+            },
+            "description": "The correlation identifier for this request, echoed from the client or generated here."
+          }
+        },
+        "content": {
+          "application/problem+json": {
+            "schema": {
+              "$ref": "#/components/schemas/ProblemDetails"
+            },
+            "example": {
+              "detail": "The service is at capacity and refused this request rather than queueing it.",
+              "instance": "/example",
+              "status": 503,
+              "title": "Service Unavailable",
+              "type": "/problems/overloaded"
+            }
+          }
+        }
+      },
+      "PayloadTooLargeProblem": {
+        "description": "The request body is too large",
+        "headers": {
+          "X-Request-Id": {
+            "schema": {
+              "type": "string"
+            },
+            "description": "The correlation identifier for this request, echoed from the client or generated here."
+          }
+        },
+        "content": {
+          "application/problem+json": {
+            "schema": {
+              "$ref": "#/components/schemas/ProblemDetails"
+            },
+            "example": {
+              "detail": "The request body is larger than this service accepts.",
+              "instance": "/example",
+              "status": 413,
+              "title": "Payload Too Large",
+              "type": "/problems/payload-too-large"
+            }
+          }
+        }
+      },
+      "RateLimitedProblem": {
+        "description": "The request rate limit was exceeded",
+        "headers": {
+          "Retry-After": {
+            "schema": {
+              "type": "string"
+            },
+            "description": "Seconds until the caller should retry."
+          },
+          "X-Request-Id": {
+            "schema": {
+              "type": "string"
+            },
+            "description": "The correlation identifier for this request, echoed from the client or generated here."
+          }
+        },
+        "content": {
+          "application/problem+json": {
+            "schema": {
+              "$ref": "#/components/schemas/ProblemDetails"
+            },
+            "example": {
+              "detail": "The request rate limit has been exceeded.",
+              "instance": "/example",
+              "status": 429,
+              "title": "Too Many Requests",
+              "type": "/problems/rate-limit-exceeded"
+            }
+          }
+        }
+      },
+      "ShuttingDownProblem": {
+        "description": "The service is shutting down",
+        "headers": {
+          "X-Request-Id": {
+            "schema": {
+              "type": "string"
+            },
+            "description": "The correlation identifier for this request, echoed from the client or generated here."
+          }
+        },
+        "content": {
+          "application/problem+json": {
+            "schema": {
+              "$ref": "#/components/schemas/ProblemDetails"
+            },
+            "example": {
+              "detail": "The service is shutting down and is not accepting new work.",
+              "instance": "/example",
+              "status": 503,
+              "title": "Service Unavailable",
+              "type": "/problems/shutting-down"
+            }
+          }
+        }
+      },
+      "ValidationFailedProblem": {
+        "description": "The request violates the API contract",
+        "headers": {
+          "X-Request-Id": {
+            "schema": {
+              "type": "string"
+            },
+            "description": "The correlation identifier for this request, echoed from the client or generated here."
+          }
+        },
+        "content": {
+          "application/problem+json": {
+            "schema": {
+              "$ref": "#/components/schemas/ProblemDetails"
+            },
+            "example": {
+              "detail": "The request violates the API contract.",
+              "instance": "/example",
+              "status": 400,
+              "title": "Validation Failed",
+              "type": "/problems/validation-failed"
+            }
           }
         }
       }
