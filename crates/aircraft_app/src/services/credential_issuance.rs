@@ -31,12 +31,12 @@ use super::ingestion::{PersistenceError, hex_digest};
 
 /// Token format version. A different layout gets a different prefix so a
 /// verifier can reject an unknown one before touching the database.
-const TOKEN_PREFIX: &str = "ak1";
+pub(crate) const TOKEN_PREFIX: &str = "ak1";
 const KEY_ID_BYTES: usize = 16;
 /// The whole of AC1: 32 bytes is 256 bits of secret material.
-const SECRET_BYTES: usize = 32;
+pub(crate) const SECRET_BYTES: usize = 32;
 /// `TOKEN_PREFIX` + `_` + hyphenated UUID + `_` + hex secret.
-const TOKEN_CHARS: usize = TOKEN_PREFIX.len() + 1 + 36 + 1 + SECRET_BYTES * 2;
+pub(crate) const TOKEN_CHARS: usize = TOKEN_PREFIX.len() + 1 + 36 + 1 + SECRET_BYTES * 2;
 
 /// Mirrors `chk_apc_label` in migration 025.
 ///
@@ -161,10 +161,21 @@ impl PartialEq for CredentialVerifier {
 impl Eq for CredentialVerifier {}
 
 impl CredentialVerifier {
-  /// Wraps a digest computed elsewhere, such as over a presented token.
+  /// Wraps a digest computed elsewhere.
   #[must_use]
   pub const fn from_digest(digest: [u8; 32]) -> Self {
     Self(digest)
+  }
+
+  /// SHA-256 over the exact UTF-8 bytes of a complete clear token.
+  ///
+  /// The one hash computation for both sides of a credential: issuance stores
+  /// its result, and `authentication` hashes a presented token with it. A
+  /// verifier that hashed the secret segment alone would never match a stored
+  /// digest, so the two cannot be allowed to drift.
+  #[must_use]
+  pub fn of_token(token: &str) -> Self {
+    Self(Sha256::digest(token.as_bytes()).into())
   }
 
   /// The 64 lowercase hexadecimal characters `chk_apc_secret_digest` admits.
@@ -331,7 +342,7 @@ impl CredentialMaterial {
     token.push('_');
     token.push_str(&Zeroizing::new(hex_digest(secret)));
 
-    let verifier = CredentialVerifier(Sha256::digest(token.as_bytes()).into());
+    let verifier = CredentialVerifier::of_token(&token);
     Self { key_id, clear: ClearCredential(SecretString::from(token)), verifier }
   }
 }
@@ -347,15 +358,20 @@ fn classify(error: PersistenceError, principal_id: i64) -> CredentialIssuanceErr
     PersistenceError::Database { code, .. } if code == UNIQUE_VIOLATION => {
       CredentialIssuanceError::DuplicateCredential
     }
+    other => CredentialIssuanceError::Persistence(redact_persistence_error(other)),
+  }
+}
+
+/// [`redact_digest_runs`] applied to whichever message a persistence failure
+/// carries, for the two services that accept one from a port.
+pub(crate) fn redact_persistence_error(error: PersistenceError) -> PersistenceError {
+  match error {
     PersistenceError::Database { code, message } => {
-      CredentialIssuanceError::Persistence(PersistenceError::Database {
-        code,
-        message: redact_digest_runs(&message),
-      })
+      PersistenceError::Database { code, message: redact_digest_runs(&message) }
     }
-    PersistenceError::Invariant(message) => CredentialIssuanceError::Persistence(
-      PersistenceError::Invariant(redact_digest_runs(&message)),
-    ),
+    PersistenceError::Invariant(message) => {
+      PersistenceError::Invariant(redact_digest_runs(&message))
+    }
   }
 }
 
