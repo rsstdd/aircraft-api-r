@@ -1,5 +1,6 @@
 #![deny(clippy::as_conversions, clippy::indexing_slicing)]
 
+pub mod authentication;
 mod correlation;
 mod limits;
 pub mod problem;

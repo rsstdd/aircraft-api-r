@@ -6,11 +6,14 @@
 -- Public needs no scope. Rate tiers are operational and remain unseeded.
 -- DO NOTHING makes this safe for the independently repeatable seed workflow.
 --
--- The `code` values below are mirrored by `RequiredScope` in
+-- The `code` values below are mirrored twice: by `RequiredScope` in
 -- `crates/aircraft_api/src/problem.rs`, which publishes them as the closed
--- enum an authorization problem's `required_scope` member carries. Adding or
--- renaming a code here without changing that enum publishes a scope the API
--- cannot name.
+-- enum an authorization problem's `required_scope` member carries, and by
+-- `Scope` in `crates/aircraft_app/src/services/authentication.rs`, which is
+-- what a verified principal's grants are read into and which fails closed on
+-- a code it does not know. Adding or renaming a code here without changing
+-- both enums publishes a scope the API cannot name, or a grant verification
+-- refuses to read.
 -- =============================================================================
 
 BEGIN;

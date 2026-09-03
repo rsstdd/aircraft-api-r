@@ -12,7 +12,7 @@ use std::time::{Duration, Instant};
 
 use aircraft_app::ingestion::PersistenceError;
 use aircraft_db::pool::connect;
-use aircraft_testsupport::{TestResult, run_psql, start_postgres};
+use aircraft_testsupport::{TestResult, install_schema, run_psql, start_postgres};
 use sqlx_core::{
   error::{DatabaseError, Error as SqlxError},
   query::query,
@@ -184,7 +184,10 @@ async fn the_runtime_role_cannot_create_schemas_extensions_tables_or_roles() -> 
     "CREATE ROLE escalation",
     "CREATE TEMP TABLE escalation (id INT)",
   ];
-  let (container, _ready) = start_postgres(MAX_CONNECTIONS, Duration::from_secs(2)).await?;
+  let (container, ready) = start_postgres(MAX_CONNECTIONS, Duration::from_secs(2)).await?;
+  // The grant file reads tables migration 025 creates, so it runs after the
+  // install, as `just db-grant-app-role` does after `just db-bootstrap`.
+  install_schema(&ready).await?;
   run_psql(
     &container,
     CREATE_APP_ROLE_SQL,
@@ -231,7 +234,8 @@ async fn the_runtime_role_cannot_create_schemas_extensions_tables_or_roles() -> 
 /// without it, this would still pass if the guard simply refused to proceed.
 #[tokio::test]
 async fn a_directly_granted_temporary_privilege_does_not_survive_provisioning() -> TestResult {
-  let (container, _ready) = start_postgres(MAX_CONNECTIONS, Duration::from_secs(2)).await?;
+  let (container, ready) = start_postgres(MAX_CONNECTIONS, Duration::from_secs(2)).await?;
+  install_schema(&ready).await?;
   run_psql(
     &container,
     CREATE_APP_ROLE_SQL,
