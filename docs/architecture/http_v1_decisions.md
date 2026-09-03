@@ -76,6 +76,47 @@ remain future work.
   constraint names, credentials, credential digests, authorization headers, host
   paths, or unsanitized dependency errors.
 
+A response is *API-originated* when it is produced inside this service's
+correlation layer: every response the router, its middleware, its extractors, or
+its route and method fallbacks emit. A failure the HTTP implementation answers
+before the router sees a request, such as a malformed request line rejected by
+the server library, is outside that boundary and outside this contract.
+
+The stable problem types are:
+
+| Failure | Status | Type |
+|---|---:|---|
+| Malformed input | 400 | `/problems/malformed-input` |
+| Validation | 400 | `/problems/validation-failed` |
+| Authentication | 401 | `/problems/authentication-required` |
+| Authorization | 403 | `/problems/insufficient-scope` |
+| Not found | 404 | `/problems/not-found` |
+| Method not allowed | 405 | `/problems/method-not-allowed` |
+| Conflict | 409 | `/problems/conflict` |
+| Payload too large | 413 | `/problems/payload-too-large` |
+| Rate limit | 429 | `/problems/rate-limit-exceeded` |
+| Internal | 500 | `/problems/internal-error` |
+| Database unavailable | 503 | `/problems/database-unavailable` |
+| Shutting down | 503 | `/problems/shutting-down` |
+| Overloaded | 503 | `/problems/overloaded` |
+| Deadline exceeded | 504 | `/problems/deadline-exceeded` |
+
+This table is enforced by `ProblemKind::contract` in
+`crates/aircraft_api/src/problem.rs`, which names this section in turn, and is
+pinned against it by `each_problem_serializes_to_its_published_document`. A row
+added or changed here without that function changing publishes a type the
+service never emits.
+
+`405` is not one of the failure classes enumerated above. It is in the table
+because a router that declares a path and not a method emits it whether or not
+this contract names it, and an API-originated response with no problem document
+would contradict the first rule in this section.
+
+Authorization problems carry the allowlisted `required_scope` extension, whose
+codes are the ones seeded into `aircraft_auth.scopes`. Rate-limit problems carry
+retry timing in `Retry-After`; request correlation remains in `X-Request-Id`
+rather than being duplicated in the JSON body.
+
 ### Authentication and route policies
 
 - Protected operations use an opaque API credential in the HTTP

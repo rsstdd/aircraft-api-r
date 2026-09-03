@@ -8,7 +8,7 @@ use utoipa::ToSchema;
 
 use crate::{
   ApiState,
-  problem::{PerimeterResponses, ProblemDetails},
+  problem::{ApiProblem, PerimeterResponses, ProblemDetails},
 };
 
 #[derive(Debug, Serialize, ToSchema)]
@@ -57,7 +57,7 @@ pub async fn ready(State(state): State<ApiState>) -> Response {
   // connection it is about to drop only delays the answer a load balancer is
   // waiting for.
   if state.shutdown.is_draining() {
-    return ProblemDetails::shutting_down().into_response();
+    return ApiProblem::shutting_down("/ready").into_response();
   }
 
   match state.readiness.check().await {
@@ -67,7 +67,7 @@ pub async fn ready(State(state): State<ApiState>) -> Response {
       // failing probe with its cause reads it here; the client gets a document
       // that cannot carry a diagnostic.
       tracing::warn!(code = error.code(), "readiness probe failed");
-      ProblemDetails::database_unavailable().into_response()
+      ApiProblem::database_unavailable("/ready").into_response()
     }
   }
 }

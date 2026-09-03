@@ -5,6 +5,12 @@
 -- Closed protected-policy vocabulary from the accepted HTTP v1 decision.
 -- Public needs no scope. Rate tiers are operational and remain unseeded.
 -- DO NOTHING makes this safe for the independently repeatable seed workflow.
+--
+-- The `code` values below are mirrored by `RequiredScope` in
+-- `crates/aircraft_api/src/problem.rs`, which publishes them as the closed
+-- enum an authorization problem's `required_scope` member carries. Adding or
+-- renaming a code here without changing that enum publishes a scope the API
+-- cannot name.
 -- =============================================================================
 
 BEGIN;
