@@ -133,7 +133,14 @@ rather than being duplicated in the JSON body.
   `Public`, `CatalogRead`, `MilitaryRead`, `CurationRead`, `CurationWrite`, or
   `Admin`. Policy omission must be unavailable at the registration boundary.
   Enforcement and generated OpenAPI security requirements consume the same
-  policy metadata.
+  policy metadata. That boundary is `aircraft_api::routes::Routes`, whose
+  `route` takes a `RoutePolicy` and which is the only value
+  `router_with_routes` accepts, and the sealed `ApplicationRouter` it returns,
+  to which no route can be added. The inventory it records is read against
+  this list by
+  `every_served_route_is_registered_once_and_the_operational_routes_are_public`
+  and against the generated document by
+  `openapi_and_router_share_the_same_route_policy_inventory`.
 - Health, readiness, version, and OpenAPI are `Public`. Ordinary catalog reads
   use `CatalogRead`; military data uses `MilitaryRead`; pending evidence uses
   `CurationRead`; curation decisions use `CurationWrite`; credential and other

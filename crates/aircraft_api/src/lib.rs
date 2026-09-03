@@ -7,18 +7,26 @@ pub mod problem;
 pub mod routes;
 pub mod shutdown;
 
-use std::sync::Arc;
+use std::{
+  convert::Infallible,
+  future::{Ready, ready},
+  sync::Arc,
+  task::{Context, Poll},
+};
 
 use aircraft_app::readiness::ReadinessProbe;
 use axum::{
   Router,
-  extract::{DefaultBodyLimit, OriginalUri},
-  routing::get,
+  extract::{DefaultBodyLimit, OriginalUri, Request},
+  routing::future::RouteFuture,
+  serve::{IncomingStream, Listener},
 };
+use tower::Service;
 use utoipa::OpenApi;
 
 pub use crate::limits::{InvalidOrigin, PerimeterLimits};
 use crate::problem::ApiProblem;
+use crate::routes::{RouteMethod, RoutePolicy, Routes};
 use crate::shutdown::ShutdownState;
 
 /// What the router needs from its composition root.
@@ -136,8 +144,8 @@ struct ApiDoc;
 /// Both fallbacks are registered on the same router as the routes, so an
 /// unmatched path and an unsupported method are answered by the same problem
 /// contract every other refusal uses, under the same layers.
-pub fn router(state: ApiState) -> Router {
-  router_with_routes(state, Router::new())
+pub fn router(state: ApiState) -> ApplicationRouter {
+  router_with_routes(state, Routes::new())
 }
 
 /// The router, with `additional_routes` merged in before the fallbacks.
@@ -146,38 +154,116 @@ pub fn router(state: ApiState) -> Router {
 /// given problem and drive it through the real layer stack. Rebuilding that
 /// stack in a test module instead would let the two drift, and the ordering
 /// this function documents is exactly what a drifting copy would stop proving.
-pub fn router_with_routes(state: ApiState, additional_routes: Router<ApiState>) -> Router {
+///
+/// It takes [`Routes`] and not a `Router`, and returns an
+/// [`ApplicationRouter`] and not a `Router`, and those two types are the whole
+/// of the route-policy rule: a handler reaches this router only through
+/// [`Routes::route`], which will not register one without a [`RoutePolicy`],
+/// and nothing can be added once it has. A bare `Router`, however it was
+/// built, does not type-check here:
+///
+/// ```compile_fail,E0308
+/// use aircraft_api::{ApiState, ApplicationRouter, router_with_routes};
+/// use axum::{Router, routing::get};
+///
+/// fn mount(state: ApiState) -> ApplicationRouter {
+///   let unpoliced = Router::<ApiState>::new().route("/v1/aircraft", get(|| async { "" }));
+///   router_with_routes(state, unpoliced)
+/// }
+/// ```
+pub fn router_with_routes(state: ApiState, additional_routes: Routes) -> ApplicationRouter {
   let shutdown = state.shutdown.clone();
   let limits = state.limits.clone();
 
-  Router::new()
-    .route("/health", get(routes::health::health))
-    .route("/ready", get(routes::ready::ready))
-    .route("/version", get(routes::version::version))
-    .merge(additional_routes)
-    .fallback(not_found)
-    .method_not_allowed_fallback(method_not_allowed)
-    .layer(DefaultBodyLimit::disable())
-    .layer(axum::middleware::from_fn_with_state(
-      limits.body_bytes(),
-      PerimeterLimits::refuse_oversized_body,
-    ))
-    .layer(axum::middleware::from_fn_with_state(
-      limits.timeout(),
-      PerimeterLimits::enforce_deadline,
-    ))
-    .layer(axum::middleware::from_fn_with_state(shutdown, shutdown::track_in_flight))
-    .layer(axum::middleware::from_fn_with_state(
-      limits.permits(),
-      PerimeterLimits::shed_when_saturated,
-    ))
-    .layer(limits.cors_layer())
-    .layer(axum::middleware::from_fn_with_state(
-      limits.body_bytes(),
-      PerimeterLimits::refuse_oversized_preflight,
-    ))
-    .layer(axum::middleware::from_fn(correlation::correlate))
-    .with_state(state)
+  ApplicationRouter(
+    declared_routes()
+      .merge(additional_routes)
+      .into_router()
+      .fallback(not_found)
+      .method_not_allowed_fallback(method_not_allowed)
+      .layer(DefaultBodyLimit::disable())
+      .layer(axum::middleware::from_fn_with_state(
+        limits.body_bytes(),
+        PerimeterLimits::refuse_oversized_body,
+      ))
+      .layer(axum::middleware::from_fn_with_state(
+        limits.timeout(),
+        PerimeterLimits::enforce_deadline,
+      ))
+      .layer(axum::middleware::from_fn_with_state(shutdown, shutdown::track_in_flight))
+      .layer(axum::middleware::from_fn_with_state(
+        limits.permits(),
+        PerimeterLimits::shed_when_saturated,
+      ))
+      .layer(limits.cors_layer())
+      .layer(axum::middleware::from_fn_with_state(
+        limits.body_bytes(),
+        PerimeterLimits::refuse_oversized_preflight,
+      ))
+      .layer(axum::middleware::from_fn(correlation::correlate))
+      .with_state(state),
+  )
+}
+
+/// The assembled router: what [`Routes`] registered, behind the fallbacks and
+/// the perimeter, ready to serve.
+///
+/// It is a service and nothing more. `Router`'s builder methods are not
+/// reachable through it, so the rule [`router_with_routes`] enforces on the
+/// way in cannot be undone on the way out: a handler added after assembly
+/// would carry no policy, and there is no way to add one.
+///
+/// ```compile_fail,E0599
+/// use aircraft_api::{ApiState, router};
+/// use axum::routing::get;
+///
+/// fn mount(state: ApiState) {
+///   let _ = router(state).route("/v1/aircraft", get(|| async { "" }));
+/// }
+/// ```
+#[derive(Clone, Debug)]
+#[must_use]
+pub struct ApplicationRouter(Router);
+
+impl Service<Request> for ApplicationRouter {
+  type Response = axum::response::Response;
+  type Error = Infallible;
+  type Future = RouteFuture<Infallible>;
+
+  fn poll_ready(&mut self, cx: &mut Context<'_>) -> Poll<Result<(), Self::Error>> {
+    <Router as Service<Request>>::poll_ready(&mut self.0, cx)
+  }
+
+  fn call(&mut self, request: Request) -> Self::Future {
+    <Router as Service<Request>>::call(&mut self.0, request)
+  }
+}
+
+/// What `axum::serve` asks of a router: one service per accepted connection,
+/// answered the way `Router` answers it, with a clone of itself.
+impl<L: Listener> Service<IncomingStream<'_, L>> for ApplicationRouter {
+  type Response = Self;
+  type Error = Infallible;
+  type Future = Ready<Result<Self, Infallible>>;
+
+  fn poll_ready(&mut self, _: &mut Context<'_>) -> Poll<Result<(), Self::Error>> {
+    Poll::Ready(Ok(()))
+  }
+
+  fn call(&mut self, _: IncomingStream<'_, L>) -> Self::Future {
+    ready(Ok(self.clone()))
+  }
+}
+
+/// The routes this crate serves, each under the policy
+/// `docs/architecture/http_v1_decisions.md` assigns it. The inventory is read
+/// back by the tests below against that decision and against the generated
+/// `OpenAPI` document.
+fn declared_routes() -> Routes {
+  Routes::new()
+    .route(RouteMethod::Get, "/health", RoutePolicy::Public, routes::health::health)
+    .route(RouteMethod::Get, "/ready", RoutePolicy::Public, routes::ready::ready)
+    .route(RouteMethod::Get, "/version", RoutePolicy::Public, routes::version::version)
 }
 
 /// `OriginalUri` rather than `Uri`: a fallback runs with the router's own
@@ -217,8 +303,7 @@ mod tests {
   use async_trait::async_trait;
   use axum::{
     body::{Body, HttpBody as _, to_bytes},
-    http::{HeaderValue, Request, StatusCode, header},
-    routing::post,
+    http::{HeaderValue, Method, Request, StatusCode, header},
   };
   use serde::Deserialize;
   use serde_json::json;
@@ -226,7 +311,10 @@ mod tests {
   use tower::ServiceExt;
 
   use super::*;
-  use crate::problem::{ApiJson, ApiQuery, RequiredScope};
+  use crate::{
+    problem::{ApiJson, ApiQuery, RequiredScope},
+    routes::RegisteredRoute,
+  };
 
   struct AlwaysReady;
 
@@ -365,26 +453,26 @@ mod tests {
     StatusCode::NO_CONTENT
   }
 
-  fn router_with_test_routes() -> Router {
-    let routes = Router::new()
-      .route("/__test/json", post(accept_json))
-      .route("/__test/query", get(accept_query))
-      .route(
-        "/__test/authentication",
-        get(|| async { ApiProblem::authentication_required("/__test/authentication") }),
-      )
-      .route(
-        "/__test/authorization",
-        get(|| async {
-          ApiProblem::insufficient_scope("/__test/authorization", RequiredScope::CurationWrite)
-        }),
-      )
-      .route("/__test/not-found", get(|| async { ApiProblem::not_found("/__test/not-found") }))
-      .route("/__test/conflict", get(|| async { ApiProblem::conflict("/__test/conflict") }))
-      .route(
-        "/__test/rate-limit",
-        get(|| async { ApiProblem::rate_limited("/__test/rate-limit", 37) }),
-      );
+  fn router_with_test_routes() -> ApplicationRouter {
+    use RouteMethod::{Get, Post};
+    use RoutePolicy::Public;
+
+    let routes = Routes::new()
+      .route(Post, "/__test/json", Public, accept_json)
+      .route(Get, "/__test/query", Public, accept_query)
+      .route(Get, "/__test/authentication", Public, || async {
+        ApiProblem::authentication_required("/__test/authentication")
+      })
+      .route(Get, "/__test/authorization", Public, || async {
+        ApiProblem::insufficient_scope("/__test/authorization", RequiredScope::CurationWrite)
+      })
+      .route(Get, "/__test/not-found", Public, || async {
+        ApiProblem::not_found("/__test/not-found")
+      })
+      .route(Get, "/__test/conflict", Public, || async { ApiProblem::conflict("/__test/conflict") })
+      .route(Get, "/__test/rate-limit", Public, || async {
+        ApiProblem::rate_limited("/__test/rate-limit", 37)
+      });
 
     router_with_routes(state(Arc::new(AlwaysReady)), routes)
   }
@@ -769,8 +857,9 @@ mod tests {
 
   #[tokio::test]
   async fn a_route_local_json_size_limit_returns_a_payload_too_large_problem() -> Result<()> {
-    let routes =
-      Router::new().route("/__test/json", post(accept_json)).layer(DefaultBodyLimit::max(8));
+    let routes = Routes::new()
+      .route(RouteMethod::Post, "/__test/json", RoutePolicy::Public, accept_json)
+      .layer(DefaultBodyLimit::max(8));
     let app = router_with_routes(state(Arc::new(AlwaysReady)), routes);
     let response = app
       .oneshot(
@@ -788,14 +877,16 @@ mod tests {
     let body = format!(r#"{{"count":1,"padding":"{}"}}"#, "x".repeat(2_097_152));
     let state =
       Perimeter { body_bytes: body.len(), ..Perimeter::default() }.state(Arc::new(AlwaysReady));
-    let response =
-      router_with_routes(state, Router::new().route("/__test/json", post(accept_json)))
-        .oneshot(
-          Request::post("/__test/json")
-            .header(header::CONTENT_TYPE, "application/json")
-            .body(Body::from(body))?,
-        )
-        .await?;
+    let response = router_with_routes(
+      state,
+      Routes::new().route(RouteMethod::Post, "/__test/json", RoutePolicy::Public, accept_json),
+    )
+    .oneshot(
+      Request::post("/__test/json")
+        .header(header::CONTENT_TYPE, "application/json")
+        .body(Body::from(body))?,
+    )
+    .await?;
 
     assert_eq!(response.status(), StatusCode::NO_CONTENT);
     Ok(())
@@ -1344,6 +1435,174 @@ mod tests {
         let pointer = format!("/paths/{path}/get/responses/{status}");
         assert!(document.pointer(&pointer).is_some(), "missing {pointer}: {document}");
       }
+    }
+    Ok(())
+  }
+
+  /// The inventory `docs/architecture/http_v1_decisions.md` requires: the
+  /// operational routes, each `Public`, and nothing else. A route added to
+  /// `declared_routes` without a row here is a decision the tests reading
+  /// this table refuse to make by default.
+  const DECLARED: [(RouteMethod, &str, RoutePolicy); 3] = [
+    (RouteMethod::Get, "/health", RoutePolicy::Public),
+    (RouteMethod::Get, "/ready", RoutePolicy::Public),
+    (RouteMethod::Get, "/version", RoutePolicy::Public),
+  ];
+
+  #[test]
+  fn every_served_route_is_registered_once_and_the_operational_routes_are_public() {
+    let expected = DECLARED.map(|(method, path, policy)| RegisteredRoute {
+      method,
+      path: path.to_owned(),
+      policy,
+    });
+
+    assert_eq!(declared_routes().inventory(), expected);
+  }
+
+  /// The generated document and the router describe the same operations:
+  /// every published operation is exactly one registration, every registration
+  /// is published, and the joined record carries the policy the decision
+  /// assigns that operation. That join, by method and path, is how the
+  /// document consumes the router's policy metadata; the security requirement
+  /// it will publish for a scoped operation is issue #31's, and is not asserted
+  /// here.
+  ///
+  /// The final count is the anti-vacuity guard: every assertion sits inside the
+  /// loop over published operations.
+  #[test]
+  fn openapi_and_router_share_the_same_route_policy_inventory() -> Result<()> {
+    /// The Path Item members that are operations, from the `OpenAPI` 3.1
+    /// specification, less `options`, which the perimeter answers before the
+    /// router. Any other member is neither an operation nor one this document
+    /// is expected to carry.
+    fn operation(key: &str) -> Result<RouteMethod> {
+      Ok(match key {
+        "delete" => RouteMethod::Delete,
+        "get" => RouteMethod::Get,
+        "head" => RouteMethod::Head,
+        "patch" => RouteMethod::Patch,
+        "post" => RouteMethod::Post,
+        "put" => RouteMethod::Put,
+        "trace" => RouteMethod::Trace,
+        other => anyhow::bail!("{other} is not an OpenAPI operation"),
+      })
+    }
+
+    let declared = declared_routes();
+    let document = serde_json::to_value(openapi())?;
+    let paths =
+      document.pointer("/paths").and_then(serde_json::Value::as_object).context("no paths")?;
+    let mut published = Vec::new();
+
+    for (path, item) in paths {
+      let members = item.as_object().with_context(|| format!("{path} is not an object"))?;
+      for key in members.keys() {
+        let method = operation(key)?;
+        let registrations = declared
+          .inventory()
+          .iter()
+          .filter(|route| route.method == method && route.path == *path)
+          .collect::<Vec<_>>();
+        let [registered] = registrations.as_slice() else {
+          anyhow::bail!("{key} {path} is published and registered {} times", registrations.len());
+        };
+        let (_, _, policy) = DECLARED
+          .iter()
+          .find(|(expected_method, expected_path, _)| {
+            *expected_method == method && expected_path == path
+          })
+          .with_context(|| format!("{key} {path} is published but the decision has no row"))?;
+
+        assert_eq!(registered.policy, *policy, "{key} {path}");
+        published.push((method, path.clone()));
+      }
+    }
+
+    for route in declared.inventory() {
+      assert!(
+        published.contains(&(route.method, route.path.clone())),
+        "{route:?} is served but not published"
+      );
+    }
+    assert_eq!(published.len(), DECLARED.len(), "the join is vacuous");
+    Ok(())
+  }
+
+  /// A nested registration is inventoried at the path `axum` serves it at,
+  /// which is not the concatenation: an inner `/` lands on the prefix itself,
+  /// and a prefix ending in `/` does not double the separator. Each recorded
+  /// path is then requested through the real router, so the inventory is
+  /// checked against what is answered, not against the rule it mirrors.
+  #[tokio::test]
+  async fn nested_registrations_are_inventoried_at_the_paths_axum_serves() -> Result<()> {
+    const SERVED: [&str; 3] = ["/__test/api", "/__test/api/users", "/__test/trailing/root"];
+    async fn ok() -> StatusCode {
+      StatusCode::NO_CONTENT
+    }
+
+    let routes = Routes::new()
+      .nest(
+        "/__test/api",
+        Routes::new().route(RouteMethod::Get, "/", RoutePolicy::Public, ok).route(
+          RouteMethod::Get,
+          "/users",
+          RoutePolicy::Public,
+          ok,
+        ),
+      )
+      .nest(
+        "/__test/trailing/",
+        Routes::new().route(RouteMethod::Get, "/root", RoutePolicy::Public, ok),
+      );
+    let recorded = routes.inventory().iter().map(|route| route.path.clone()).collect::<Vec<_>>();
+    assert_eq!(recorded, SERVED);
+
+    let app = router_with_routes(state(Arc::new(AlwaysReady)), routes);
+    for path in SERVED {
+      let response = app.clone().oneshot(Request::get(path).body(Body::empty())?).await?;
+      assert_eq!(response.status(), StatusCode::NO_CONTENT, "{path}");
+    }
+    Ok(())
+  }
+
+  /// Each method is served by the handler registered under it and no other:
+  /// one registration per method at one path, each answering with its own
+  /// name in a header, because a `HEAD` response carries no body.
+  #[tokio::test]
+  async fn every_route_method_is_served_by_the_handler_registered_under_it() -> Result<()> {
+    const PATH: &str = "/__test/methods";
+    const SERVED_BY: &str = "x-served-by";
+    const METHODS: [(RouteMethod, Method); 7] = [
+      (RouteMethod::Delete, Method::DELETE),
+      (RouteMethod::Get, Method::GET),
+      (RouteMethod::Head, Method::HEAD),
+      (RouteMethod::Patch, Method::PATCH),
+      (RouteMethod::Post, Method::POST),
+      (RouteMethod::Put, Method::PUT),
+      (RouteMethod::Trace, Method::TRACE),
+    ];
+
+    let mut routes = Routes::new();
+    for (method, _) in METHODS {
+      routes = routes.route(method, PATH, RoutePolicy::Public, move || async move {
+        [(SERVED_BY, format!("{method:?}"))]
+      });
+    }
+    let app = router_with_routes(state(Arc::new(AlwaysReady)), routes);
+
+    for (method, http_method) in METHODS {
+      let response = app
+        .clone()
+        .oneshot(Request::builder().method(http_method).uri(PATH).body(Body::empty())?)
+        .await?;
+
+      assert_eq!(response.status(), StatusCode::OK, "{method:?}");
+      assert_eq!(
+        response.headers().get(SERVED_BY).map(HeaderValue::as_bytes),
+        Some(format!("{method:?}").as_bytes()),
+        "{method:?}"
+      );
     }
     Ok(())
   }
