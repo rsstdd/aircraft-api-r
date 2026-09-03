@@ -47,6 +47,10 @@ async-trait.workspace = true
 aircraft_db.workspace = true
 aircraft_testsupport.workspace = true
 sqlx-core.workspace = true
+# `tests/authentication.rs` issues real credentials into the disposable
+# database and presents them through the router.
+secrecy.workspace = true
+sqlx-postgres.workspace = true
 # `tests/request_tracing.rs` reads the per-request event back through a JSON
 # subscriber it installs on its own futures; nothing here installs one globally.
 tracing-subscriber.workspace = true

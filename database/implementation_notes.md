@@ -186,9 +186,17 @@ an `ak1_<key_id>_<64 hex>` token from two operating-system random reads, 16
 bytes for the identifier and 32 for the secret, and
 `aircraft_db::SqlxCredentialStore` writes its SHA-256 digest with one bound
 `INSERT` inside a transaction that commits only after the returned row has
-decoded. Nothing composes it yet: verification middleware, route policy, scope
-enforcement, rate limiting, and any administrative route are later stories, and
-no application role has been granted access to these tables.
+decoded. Verification is implemented as a library too:
+`aircraft_app::authentication` parses a presented token, and
+`aircraft_db::SqlxCredentialLookup` resolves its key with one bound `SELECT`
+that joins the principal and aggregates the grants, so revocation,
+disablement, tier, and scopes come from one statement snapshot;
+`aircraft_api::authentication::require_authentication` is the Axum layer that
+maps every rejected state to the one `401` problem. `database/roles/app_grants.sql`
+grants the runtime role exactly the columns that statement reads. Nothing
+composes the layer onto a served route yet: route policy, scope enforcement,
+rate limiting, and any administrative route are later stories, and the three
+served routes remain public.
 
 `api_credentials` stores only a UUID key identifier, a 64-character lowercase
 SHA-256 digest, ownership, timestamps, and a bounded non-secret label. Its exact
