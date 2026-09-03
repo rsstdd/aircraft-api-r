@@ -74,6 +74,10 @@ fn record_from_row(row: &PgRow) -> Result<CredentialRecord, PersistenceError> {
   })
 }
 
+fn credential_database_error(error: SqlxError) -> PersistenceError {
+  redacted_database_error("credential insert", error)
+}
+
 /// The shared mapper's SQLSTATE code and bounded message, prefixed with the
 /// operation and with any digest-length hexadecimal run replaced. `detail()`
 /// and `constraint()` are never read: a unique or check violation's detail
@@ -82,12 +86,15 @@ fn record_from_row(row: &PgRow) -> Result<CredentialRecord, PersistenceError> {
 /// Redaction runs on the driver's full text and the bound is applied after:
 /// a digest cut at the bound would be shorter than the run redaction looks
 /// for, and would survive.
+///
+/// Shared with `authentication_repository`, the other adapter whose rows
+/// carry a digest.
 #[allow(clippy::needless_pass_by_value)]
-fn credential_database_error(error: SqlxError) -> PersistenceError {
+pub(super) fn redacted_database_error(operation: &str, error: SqlxError) -> PersistenceError {
   let redacted = redact_digest_runs(&error.to_string());
   PersistenceError::Database {
     code: database_code(&error),
-    message: format!("credential insert: {}", sanitize_database_message(&redacted)),
+    message: format!("{operation}: {}", sanitize_database_message(&redacted)),
   }
 }
 
