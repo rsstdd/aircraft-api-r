@@ -317,8 +317,10 @@ configuration loads rather than at the first connection. No rejection quotes the
 value, because it carries a password.
 
 The URL must name the restricted runtime role, not the schema owner. Create it
-with `just db-create-app-role` and `just db-grant-app-role`, which run
-`database/roles/create_app_role.sql` and `database/roles/app_grants.sql`. Every
+with `just db-create-app-role` and, after `just db-bootstrap` has installed the
+schema, `just db-grant-app-role`; they run `database/roles/create_app_role.sql`
+and `database/roles/app_grants.sql`, and the grants name tables migration 025
+creates. Every
 pooled connection also runs with an empty `search_path`, so the server's SQL
 must be schema-qualified; an unqualified name does not resolve.
 

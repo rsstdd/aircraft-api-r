@@ -3,6 +3,6 @@ pub mod readiness;
 pub mod repositories;
 
 pub use repositories::{
-  credential_repository::SqlxCredentialStore, curation_repository::SqlxCurationStore,
-  ingestion_repository::SqlxIngestionStore,
+  authentication_repository::SqlxCredentialLookup, credential_repository::SqlxCredentialStore,
+  curation_repository::SqlxCurationStore, ingestion_repository::SqlxIngestionStore,
 };

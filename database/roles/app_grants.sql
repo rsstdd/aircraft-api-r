@@ -1,11 +1,18 @@
 -- Grants for the restricted server runtime role created by create_app_role.sql.
 --
--- One CONNECT grant and two revokes, and nothing else. `aircraft-server` builds
--- a pool and answers SELECT 1; it issues no application query yet, so it needs
--- no schema USAGE and no table SELECT. Read grants belong to the story that
--- adds the first route reading a table, where each one can be justified by a
--- query that exists. An unearned grant is harder to remove later than to add
--- now.
+-- One CONNECT grant, two revokes, and the column-level reads that one
+-- statement needs: the credential verification lookup, `LOOKUP_CREDENTIAL` in
+-- crates/aircraft_db/src/repositories/authentication_repository.rs, which
+-- names this file in turn. Each grant below is justified by a column that
+-- statement reads and by nothing else; `label`, `name`, the timestamps it
+-- does not read, every write, and every sequence stay ungranted. A column
+-- added to the statement without a grant here fails with 42501, which
+-- `the_runtime_role_executes_only_the_verification_projection` in
+-- crates/aircraft_db/tests/authentication.rs asserts from both sides. An
+-- unearned grant is harder to remove later than to add now.
+--
+-- The schema must already be installed: GRANT on a table that does not exist
+-- fails, which is the right answer for a grant run out of order.
 --
 -- CONNECT is granted to PUBLIC by default, so this statement is close to a
 -- no-op on a fresh database. It is written out anyway: the grant surface of
@@ -59,3 +66,15 @@ GRANT CONNECT ON DATABASE :"DBNAME" TO :"app_role";
 -- PUBLIC grant, and only a revoke takes it back.
 REVOKE TEMPORARY ON DATABASE :"DBNAME" FROM PUBLIC;
 REVOKE TEMPORARY ON DATABASE :"DBNAME" FROM :"app_role";
+
+-- The verification projection, column by column. USAGE on the schema is what
+-- lets the role name these tables at all; nothing under aircraft_ref is
+-- granted, because reading a column of the lookup_code domain and casting it
+-- to text needs no privilege on the domain or its schema.
+GRANT USAGE ON SCHEMA aircraft_auth TO :"app_role";
+GRANT SELECT (key_id, principal_id, secret_digest, revoked_at)
+    ON aircraft_auth.api_credentials TO :"app_role";
+GRANT SELECT (id, rate_limit_tier_code, disabled_at)
+    ON aircraft_auth.principals TO :"app_role";
+GRANT SELECT (principal_id, scope_code)
+    ON aircraft_auth.principal_scope_grants TO :"app_role";
