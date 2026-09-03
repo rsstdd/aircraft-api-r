@@ -21,12 +21,20 @@ use std::{
   time::Duration,
 };
 
-use aircraft_api::{ApiState, PerimeterLimits, shutdown::ShutdownState};
+use aircraft_api::{
+  ApiState, PerimeterLimits, problem::ApiProblem, router_with_routes, shutdown::ShutdownState,
+};
 use aircraft_app::{ingestion::PersistenceError, readiness::ReadinessProbe};
 use anyhow::{Context, Result};
 use async_trait::async_trait;
-use axum::{body::Body, http::Request, response::Response};
-use serde_json::Value;
+use axum::{
+  Router,
+  body::{Body, to_bytes},
+  http::{Request, StatusCode, header},
+  response::{IntoResponse, Response},
+  routing::get,
+};
+use serde_json::{Value, json};
 use tower::ServiceExt as _;
 use tracing::instrument::WithSubscriber as _;
 use tracing_subscriber::fmt::MakeWriter;
@@ -122,6 +130,10 @@ impl Traced {
 /// `with_current_span` records the span a nested event was emitted inside,
 /// which is what lets a handler's warning be tied back to its request.
 async fn trace(state: ApiState, request: Request<Body>) -> Result<Traced> {
+  trace_router(aircraft_api::router(state), request).await
+}
+
+async fn trace_router(app: Router, request: Request<Body>) -> Result<Traced> {
   let logs = CapturedLogs::default();
   let subscriber = tracing_subscriber::fmt()
     .json()
@@ -131,10 +143,7 @@ async fn trace(state: ApiState, request: Request<Body>) -> Result<Traced> {
     .with_writer(logs.clone())
     .finish();
 
-  let response = aircraft_api::router(state)
-    .oneshot(request)
-    .with_subscriber(tracing::Dispatch::new(subscriber))
-    .await?;
+  let response = app.oneshot(request).with_subscriber(tracing::Dispatch::new(subscriber)).await?;
 
   let raw = logs.contents();
   let events = raw
@@ -146,6 +155,77 @@ async fn trace(state: ApiState, request: Request<Body>) -> Result<Traced> {
     .collect::<Result<Vec<Value>>>()?;
 
   Ok(Traced { response, raw, events })
+}
+
+const UNKNOWN_ERROR_PATH: &str = "/__test/internal";
+const UNKNOWN_ERROR_SENTINEL: &str = "SELECT secret_digest FROM aircraft_auth.api_credentials; \
+  uq_apc_secret_digest; postgres://curator:hunter2@db.internal:5432/aircraft; \
+  /srv/private/aircraft.json";
+
+struct UnknownHandlerError(anyhow::Error);
+
+impl IntoResponse for UnknownHandlerError {
+  fn into_response(self) -> Response {
+    let _source = self.0;
+    tracing::error!(
+      class = "unclassified_application_error",
+      code = "INTERNAL_ERROR",
+      "request failed"
+    );
+    ApiProblem::internal(UNKNOWN_ERROR_PATH).into_response()
+  }
+}
+
+async fn fail_with_unknown_error() -> Result<StatusCode, UnknownHandlerError> {
+  Err(UnknownHandlerError(anyhow::anyhow!(UNKNOWN_ERROR_SENTINEL)))
+}
+
+#[tokio::test]
+async fn an_unknown_error_returns_a_generic_correlated_500() -> Result<()> {
+  const REQUEST_ID: &str = "internal-error-test";
+
+  let routes = Router::new().route(UNKNOWN_ERROR_PATH, get(fail_with_unknown_error));
+  let traced = trace_router(
+    router_with_routes(state(Arc::new(AlwaysReady)), routes),
+    Request::get(UNKNOWN_ERROR_PATH).header("x-request-id", REQUEST_ID).body(Body::empty())?,
+  )
+  .await?;
+
+  assert_eq!(traced.response.status(), StatusCode::INTERNAL_SERVER_ERROR);
+  assert_eq!(traced.request_id()?, REQUEST_ID);
+  assert_eq!(
+    traced.response.headers().get(header::CONTENT_TYPE),
+    Some(&"application/problem+json".parse()?)
+  );
+
+  let diagnostic = traced.event("request failed")?;
+  assert_eq!(diagnostic.get("class"), Some(&json!("unclassified_application_error")));
+  assert_eq!(diagnostic.get("code"), Some(&json!("INTERNAL_ERROR")));
+  assert_eq!(diagnostic.pointer("/span/request_id"), Some(&json!(REQUEST_ID)));
+  for sentinel in
+    ["SELECT secret_digest", "uq_apc_secret_digest", "hunter2", "db.internal", "/srv/private"]
+  {
+    assert!(!traced.raw.contains(sentinel), "the internal source reached the trace");
+  }
+
+  let body = to_bytes(traced.response.into_body(), 4096).await?;
+  let document: Value = serde_json::from_slice(&body)?;
+  assert_eq!(
+    document,
+    json!({
+      "type": "/problems/internal-error",
+      "title": "Internal Server Error",
+      "status": 500,
+      "detail": "The service encountered an unexpected error.",
+      "instance": UNKNOWN_ERROR_PATH,
+    })
+  );
+  for sentinel in
+    ["SELECT secret_digest", "uq_apc_secret_digest", "hunter2", "db.internal", "/srv/private"]
+  {
+    assert!(!body.windows(sentinel.len()).any(|window| window == sentinel.as_bytes()));
+  }
+  Ok(())
 }
 
 fn state(readiness: Arc<dyn ReadinessProbe>) -> ApiState {

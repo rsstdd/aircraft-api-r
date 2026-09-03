@@ -42,6 +42,11 @@ uuid.workspace = true
 [dev-dependencies]
 # The readiness port is implemented by fakes in the router tests.
 async-trait.workspace = true
+# Real database failures are driven through the API boundary without adding a
+# production dependency on the persistence adapter.
+aircraft_db.workspace = true
+aircraft_testsupport.workspace = true
+sqlx-core.workspace = true
 # `tests/request_tracing.rs` reads the per-request event back through a JSON
 # subscriber it installs on its own futures; nothing here installs one globally.
 tracing-subscriber.workspace = true
