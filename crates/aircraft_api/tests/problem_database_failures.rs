@@ -4,7 +4,10 @@
 use std::{sync::Arc, time::Duration};
 
 use aircraft_api::{
-  ApiState, PerimeterLimits, problem::ApiProblem, router, router_with_routes,
+  ApiState, PerimeterLimits,
+  problem::ApiProblem,
+  router, router_with_routes,
+  routes::{RouteMethod, RoutePolicy, Routes},
   shutdown::ShutdownState,
 };
 use aircraft_app::{
@@ -16,10 +19,8 @@ use aircraft_db::{SqlxCredentialStore, readiness::PoolReadiness};
 use aircraft_testsupport::{TestResult, install_schema, start_postgres};
 use async_trait::async_trait;
 use axum::{
-  Router,
   body::{Body, to_bytes},
   http::{Request, StatusCode, header},
-  routing::post,
 };
 use serde_json::{Value, json};
 use sqlx_core::{query::query, query_scalar::query_scalar};
@@ -142,20 +143,17 @@ async fn a_real_unique_violation_maps_to_a_correlated_redacted_conflict_problem(
   );
 
   let source = Arc::new(error);
-  let routes = Router::new().route(
-    PATH,
-    post(move || {
-      let source = Arc::clone(&source);
-      async move {
-        match source.as_ref() {
-          PersistenceError::Database { code, .. } if code == "DATABASE_23505" => {
-            ApiProblem::conflict(PATH)
-          }
-          _ => ApiProblem::internal(PATH),
+  let routes = Routes::new().route(RouteMethod::Post, PATH, RoutePolicy::Public, move || {
+    let source = Arc::clone(&source);
+    async move {
+      match source.as_ref() {
+        PersistenceError::Database { code, .. } if code == "DATABASE_23505" => {
+          ApiProblem::conflict(PATH)
         }
+        _ => ApiProblem::internal(PATH),
       }
-    }),
-  );
+    }
+  });
   let response = router_with_routes(state(Arc::new(AlwaysReady)), routes)
     .oneshot(Request::post(PATH).header("x-request-id", REQUEST_ID).body(Body::empty())?)
     .await?;
