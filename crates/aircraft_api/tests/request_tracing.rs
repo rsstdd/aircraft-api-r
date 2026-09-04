@@ -22,8 +22,12 @@ use std::{
 };
 
 use aircraft_api::{
-  ApiState, PerimeterLimits, authentication::require_authentication, problem::ApiProblem,
-  router_with_routes, shutdown::ShutdownState,
+  ApiState, ApplicationRouter, PerimeterLimits,
+  authentication::require_authentication,
+  problem::ApiProblem,
+  router_with_routes,
+  routes::{RouteMethod, RoutePolicy, Routes},
+  shutdown::ShutdownState,
 };
 use aircraft_app::{
   authentication::{
@@ -36,11 +40,10 @@ use aircraft_app::{
 use anyhow::{Context, Result};
 use async_trait::async_trait;
 use axum::{
-  Extension, Router,
+  Extension,
   body::{Body, to_bytes},
   http::{Request, StatusCode, header},
   response::{IntoResponse, Response},
-  routing::get,
 };
 use serde_json::{Value, json};
 use tower::ServiceExt as _;
@@ -142,7 +145,7 @@ async fn trace(state: ApiState, request: Request<Body>) -> Result<Traced> {
   trace_router(aircraft_api::router(state), request).await
 }
 
-async fn trace_router(app: Router, request: Request<Body>) -> Result<Traced> {
+async fn trace_router(app: ApplicationRouter, request: Request<Body>) -> Result<Traced> {
   let logs = CapturedLogs::default();
   let subscriber = tracing_subscriber::fmt()
     .json()
@@ -193,7 +196,12 @@ async fn fail_with_unknown_error() -> Result<StatusCode, UnknownHandlerError> {
 async fn an_unknown_error_returns_a_generic_correlated_500() -> Result<()> {
   const REQUEST_ID: &str = "internal-error-test";
 
-  let routes = Router::new().route(UNKNOWN_ERROR_PATH, get(fail_with_unknown_error));
+  let routes = Routes::new().route(
+    RouteMethod::Get,
+    UNKNOWN_ERROR_PATH,
+    RoutePolicy::Public,
+    fail_with_unknown_error,
+  );
   let traced = trace_router(
     router_with_routes(state(Arc::new(AlwaysReady)), routes),
     Request::get(UNKNOWN_ERROR_PATH).header("x-request-id", REQUEST_ID).body(Body::empty())?,
@@ -398,13 +406,15 @@ impl CredentialLookup for Lookup {
   }
 }
 
-fn protected_router(lookup: Lookup) -> Router {
-  let routes = Router::new()
+fn protected_router(lookup: Lookup) -> ApplicationRouter {
+  let routes = Routes::new()
     .route(
+      RouteMethod::Get,
       PROTECTED,
-      get(|Extension(principal): Extension<AuthenticatedPrincipal>| async move {
+      RoutePolicy::CatalogRead,
+      |Extension(principal): Extension<AuthenticatedPrincipal>| async move {
         principal.principal_id().to_string()
-      }),
+      },
     )
     .route_layer(axum::middleware::from_fn_with_state(
       Arc::new(AuthenticationService::new(Arc::new(lookup))),

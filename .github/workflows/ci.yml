@@ -98,6 +98,9 @@ jobs:
       # docker CLI, which ubuntu-latest runners provide; no service container is
       # needed here.
       - run: cargo nextest run --workspace --locked
+      # nextest does not execute doctests; the `compile_fail` doctests that
+      # prove a route cannot be mounted without a policy run here.
+      - run: cargo test --workspace --doc --locked
 
   snapshots:
     name: Ingestion golden snapshots
