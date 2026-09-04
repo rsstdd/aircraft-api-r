@@ -19,6 +19,9 @@ workspace = true
 
 [dependencies]
 aircraft_api.workspace = true
+# The composition root builds the authentication service the router enforces
+# scoped routes with, over the credential lookup `aircraft_db` implements.
+aircraft_app.workspace = true
 aircraft_config.workspace = true
 aircraft_db.workspace = true
 aircraft_observability.workspace = true
@@ -34,9 +37,10 @@ tracing.workspace = true
 # binary need a disposable PostgreSQL to point it at.
 aircraft_testsupport.workspace = true
 
-# The drain gates call `serve` in process, so they implement the readiness port
-# with a probe they control rather than starting a container, and read back the
-# warning the expired window emits.
-aircraft_app.workspace = true
+# The drain gates call `serve` in process, so they implement the readiness and
+# credential-lookup ports with fakes they control rather than starting a
+# container, and read back the warning the expired window emits. `uuid` is the
+# lookup port's key type.
 async-trait.workspace = true
 tracing-subscriber.workspace = true
+uuid.workspace = true

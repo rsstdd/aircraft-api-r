@@ -449,6 +449,12 @@
       "AuthenticationRequiredProblem": {
         "description": "Authentication is required",
         "headers": {
+          "WWW-Authenticate": {
+            "schema": {
+              "type": "string"
+            },
+            "description": "The `Bearer` challenge, with no parameters."
+          },
           "X-Request-Id": {
             "schema": {
               "type": "string"
@@ -559,7 +565,17 @@
         "content": {
           "application/problem+json": {
             "schema": {
-              "$ref": "#/components/schemas/ProblemDetails"
+              "allOf": [
+                {
+                  "$ref": "#/components/schemas/ProblemDetails"
+                },
+                {
+                  "type": "object",
+                  "required": [
+                    "required_scope"
+                  ]
+                }
+              ]
             },
             "example": {
               "detail": "The authenticated principal lacks the required scope.",
@@ -808,6 +824,13 @@
             }
           }
         }
+      }
+    },
+    "securitySchemes": {
+      "apiCredential": {
+        "type": "http",
+        "scheme": "bearer",
+        "description": "An issued `ak1` API credential, presented as the bearer token."
       }
     }
   },

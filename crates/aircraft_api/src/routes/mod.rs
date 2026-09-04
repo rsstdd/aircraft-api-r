@@ -9,31 +9,34 @@
 //! route policies", which names this module in turn; a seventh policy is a
 //! change to that decision, not to this file.
 //!
-//! Registration records what it was given: one [`RouteMethod`], one served
-//! path, and one policy per entry. That inventory is what lets a test read the
-//! router against the generated `OpenAPI` document operation by operation
-//! (issue #30), and [`RoutePolicy::required_scope`] is the application scope
-//! enforcement (issue #31) will compare a principal against. Nothing here
-//! enforces a policy yet: `/health`, `/ready`, and `/version` are `Public`, and
-//! the first protected route arrives with its enforcement.
+//! Registration is enforcement. [`Routes::route`] wraps the handler in
+//! `Policed`, which for a scoped policy authenticates the request, compares
+//! the principal's grants with [`RoutePolicy::required_scope`], and only then
+//! calls the handler; `Public` calls it directly. Registration also records
+//! what it was given: one [`RouteMethod`], one served path, and one policy per
+//! entry. That inventory is what `crate::openapi` publishes each scoped
+//! operation's security requirement from, and what the tests read against the
+//! generated `OpenAPI` document operation by operation. `/health`, `/ready`,
+//! and `/version` are `Public`; no protected route is served yet.
 
 pub mod health;
 pub mod ready;
 pub mod version;
 
-use std::convert::Infallible;
+use std::{convert::Infallible, future::Future, pin::Pin};
 
 use aircraft_app::authentication::Scope;
 use axum::{
   Router,
-  extract::Request,
+  extract::{OriginalUri, Request},
   handler::Handler,
-  response::IntoResponse,
+  response::{IntoResponse, Response},
   routing::{MethodFilter, Route, on},
 };
 use tower::{Layer, Service};
+use utoipa::openapi::path::{Operation, PathItem};
 
-use crate::ApiState;
+use crate::{ApiState, authentication, problem::ApiProblem};
 
 /// Who may call a route.
 ///
@@ -102,6 +105,20 @@ impl RouteMethod {
       Self::Trace => MethodFilter::TRACE,
     }
   }
+
+  /// The Path Item member the generated document publishes this method's
+  /// operation under.
+  pub(crate) const fn operation_mut(self, item: &mut PathItem) -> &mut Option<Operation> {
+    match self {
+      Self::Delete => &mut item.delete,
+      Self::Get => &mut item.get,
+      Self::Head => &mut item.head,
+      Self::Patch => &mut item.patch,
+      Self::Post => &mut item.post,
+      Self::Put => &mut item.put,
+      Self::Trace => &mut item.trace,
+    }
+  }
 }
 
 /// One registration, as [`Routes::route`] recorded it.
@@ -134,7 +151,8 @@ impl Routes {
     Self::default()
   }
 
-  /// Registers `handler` for `method` at `path` under `policy`.
+  /// Registers `handler` for `method` at `path` under `policy`, which is
+  /// enforced in front of it from then on.
   ///
   /// Two registrations at one path with different methods share the path, as
   /// `Router::route` merges them, so a read and a write on one resource can
@@ -154,7 +172,7 @@ impl Routes {
     H: Handler<T, ApiState>,
     T: 'static,
   {
-    self.router = self.router.route(path, on(method.filter(), handler));
+    self.router = self.router.route(path, on(method.filter(), Policed { policy, handler }));
     self.inventory.push(RegisteredRoute { method, path: path.to_owned(), policy });
     self
   }
@@ -212,11 +230,8 @@ impl Routes {
 
   /// Every registration, in registration order.
   ///
-  /// Crate-visible so the `OpenAPI` generator and enforcement can read it
-  /// without the record becoming public API. Until issue #31 adds those
-  /// production readers the inventory tests are its only callers, which is
-  /// what the allowance below covers; remove it with the first production read.
-  #[allow(dead_code)]
+  /// Crate-visible so the `OpenAPI` generator can read it without the record
+  /// becoming public API.
   #[must_use]
   pub(crate) fn inventory(&self) -> &[RegisteredRoute] {
     &self.inventory
@@ -225,6 +240,61 @@ impl Routes {
   pub(crate) fn into_router(self) -> Router<ApiState> {
     self.router
   }
+}
+
+/// A handler behind the policy it was registered under.
+///
+/// The check is the handler, not a layer around it: [`Handler::call`] receives
+/// the router state, which is where the authentication service lives, and it
+/// is what axum invokes for a synthesized `HEAD` on a `GET` registration and
+/// for a route under any `nest` prefix, so nothing about how the router was
+/// assembled can route around it. The cost is placement inside every perimeter
+/// layer, which `crate::authentication` accounts for.
+#[derive(Clone)]
+struct Policed<H> {
+  policy: RoutePolicy,
+  handler: H,
+}
+
+impl<H, T> Handler<T, ApiState> for Policed<H>
+where
+  H: Handler<T, ApiState>,
+  T: 'static,
+{
+  type Future = Pin<Box<dyn Future<Output = Response> + Send>>;
+
+  fn call(self, mut request: Request, state: ApiState) -> Self::Future {
+    Box::pin(async move {
+      let Some(required) = self.policy.required_scope() else {
+        return self.handler.call(request, state).await;
+      };
+      let instance = instance_of(&request);
+      let principal =
+        match authentication::authenticate(&state.authentication, &mut request, &instance).await {
+          Ok(principal) => principal,
+          Err(problem) => return problem.into_response(),
+        };
+      // The effective scopes are the principal's grants: migration 025 stores
+      // `principal_scope_grants` per principal and nothing per credential, so
+      // this comparison is the one place a narrower credential would change.
+      if !principal.scopes().contains(&required) {
+        return ApiProblem::insufficient_scope(&instance, required.into()).into_response();
+      }
+      request.extensions_mut().insert(principal);
+      self.handler.call(request, state).await
+    })
+  }
+}
+
+/// The path a refusal names: `OriginalUri` rather than `uri()`, as the
+/// fallbacks do, because a nested router sees its prefix stripped and the path
+/// must be the one the caller sent. The fallback is for a service driven
+/// outside a `Router`.
+fn instance_of(request: &Request) -> String {
+  request
+    .extensions()
+    .get::<OriginalUri>()
+    .map_or_else(|| request.uri().path().to_owned(), |original| original.0.path().to_owned())
 }
 
 /// The path `axum` serves an `inner` route at once nested under `prefix`.
