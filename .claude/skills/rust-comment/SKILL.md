@@ -75,14 +75,15 @@ caller argument can reach it, or return a typed error instead. Test modules opt 
 (`#![allow(clippy::expect_used)]` in a `#[cfg(test)] mod tests`) and that is the only accepted
 place for it.
 
-**Doctests do not run in this repository.** `just test` is `cargo nextest run --workspace
---locked`, and nextest does not execute doctests; `.github/workflows/ci.yml` has no `--doc` step;
-there are currently zero doctests in the tree. An `# Examples` block you add is *unverified prose
-that looks verified*. If you add one, run `cargo test --workspace --doc` yourself and say you did
-— and never claim it passed otherwise. Prefer pointing at a real test by name over inventing an
-example nothing compiles.
+**Doctests run, but only as a second step.** nextest does not execute them, so `just test` and
+`.github/workflows/ci.yml` follow it with `cargo test --workspace --doc --locked`. The route-policy
+proofs in `aircraft_api` are `compile_fail` doctests -- a bare `Router` cannot enter
+`router_with_routes`, and no route can be added to the `ApplicationRouter` it returns -- claims no
+runtime test can make. An `# Examples` block is still prose until that step has run: run
+`cargo test --workspace --doc --locked` yourself and say you did, and prefer pointing at a real
+test by name over inventing an example.
 
-**Rustdoc warnings are a merge blocker even though doctests are not.** `just docs-check` runs
+**Rustdoc warnings are a merge blocker in their own right.** `just docs-check` runs
 `RUSTDOCFLAGS="-D warnings" cargo doc --workspace --all-features --no-deps --locked`, and it is
 part of `just lint` and of CI's `rustdoc` job. A broken intra-doc link or malformed section fails
 the build.

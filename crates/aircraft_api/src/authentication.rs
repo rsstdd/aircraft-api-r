@@ -144,18 +144,21 @@ mod tests {
   use anyhow::Result;
   use async_trait::async_trait;
   use axum::{
-    Extension, Json, Router,
+    Extension, Json,
     body::{Body, to_bytes},
     http::{HeaderMap, HeaderValue, Request, StatusCode, header},
     response::Response,
-    routing::get,
   };
   use serde_json::{Value, json};
   use tower::ServiceExt as _;
   use uuid::Uuid;
 
   use super::require_authentication;
-  use crate::{ApiState, PerimeterLimits, router_with_routes, shutdown::ShutdownState};
+  use crate::{
+    ApiState, ApplicationRouter, PerimeterLimits, router_with_routes,
+    routes::{RouteMethod, RoutePolicy, Routes},
+    shutdown::ShutdownState,
+  };
 
   /// The published vector from `aircraft_app::credential_issuance`'s tests.
   const TOKEN: &str = "ak1_00010203-0405-4607-8809-0a0b0c0d0e0f_\
@@ -223,7 +226,7 @@ mod tests {
   /// A protected route inside the real perimeter, beside a public one, with
   /// the handler counting its calls and reporting exactly what it received.
   struct Protected {
-    router: Router,
+    router: ApplicationRouter,
     lookup: Arc<FakeLookup>,
     handler_calls: Arc<AtomicUsize>,
   }
@@ -245,13 +248,13 @@ mod tests {
         }))
       }
     };
-    let routes = Router::new()
-      .route(PROTECTED, get(whoami))
+    let routes = Routes::new()
+      .route(RouteMethod::Get, PROTECTED, RoutePolicy::CatalogRead, whoami)
       .route_layer(axum::middleware::from_fn_with_state(
         Arc::new(AuthenticationService::new(lookup.clone())),
         require_authentication,
       ))
-      .route(PUBLIC, get(|| async { StatusCode::NO_CONTENT }));
+      .route(RouteMethod::Get, PUBLIC, RoutePolicy::Public, || async { StatusCode::NO_CONTENT });
 
     Protected { router: router_with_routes(state(), routes), lookup, handler_calls }
   }
@@ -427,13 +430,13 @@ mod tests {
   async fn a_nested_protected_route_names_the_path_the_caller_sent() -> Result<()> {
     const NESTED: &str = "/__test/nested/protected";
     let lookup = Arc::new(FakeLookup { outcome: Mutex::new(Ok(None)), calls: AtomicUsize::new(0) });
-    let inner = Router::new().route("/protected", get(|| async { StatusCode::OK })).route_layer(
-      axum::middleware::from_fn_with_state(
+    let inner = Routes::new()
+      .route(RouteMethod::Get, "/protected", RoutePolicy::CatalogRead, || async { StatusCode::OK })
+      .route_layer(axum::middleware::from_fn_with_state(
         Arc::new(AuthenticationService::new(lookup)),
         require_authentication,
-      ),
-    );
-    let router = router_with_routes(state(), Router::new().nest("/__test/nested", inner));
+      ));
+    let router = router_with_routes(state(), Routes::new().nest("/__test/nested", inner));
 
     let response = router.oneshot(request(NESTED, &[])?).await?;
 

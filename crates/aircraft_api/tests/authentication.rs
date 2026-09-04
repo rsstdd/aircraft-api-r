@@ -21,7 +21,10 @@ use std::{
 };
 
 use aircraft_api::{
-  ApiState, PerimeterLimits, authentication::require_authentication, router_with_routes,
+  ApiState, ApplicationRouter, PerimeterLimits,
+  authentication::require_authentication,
+  router_with_routes,
+  routes::{RouteMethod, RoutePolicy, Routes},
   shutdown::ShutdownState,
 };
 use aircraft_app::{
@@ -36,10 +39,9 @@ use aircraft_db::{SqlxCredentialLookup, SqlxCredentialStore};
 use aircraft_testsupport::{TestResult, install_schema, start_postgres};
 use async_trait::async_trait;
 use axum::{
-  Extension, Json, Router,
+  Extension, Json,
   body::{Body, to_bytes},
   http::{HeaderValue, Request, StatusCode, header},
-  routing::get,
 };
 use secrecy::ExposeSecret as _;
 use serde_json::{Value, json};
@@ -89,21 +91,23 @@ fn state() -> ApiState {
   }
 }
 
-fn protected_router(pool: &PgPool) -> (Router, Arc<Counting>) {
+fn protected_router(pool: &PgPool) -> (ApplicationRouter, Arc<Counting>) {
   let lookup = Arc::new(Counting {
     inner: SqlxCredentialLookup::from_pool(pool.clone()),
     calls: AtomicUsize::new(0),
   });
-  let routes = Router::new()
+  let routes = Routes::new()
     .route(
+      RouteMethod::Get,
       PROTECTED,
-      get(|Extension(principal): Extension<AuthenticatedPrincipal>| async move {
+      RoutePolicy::CatalogRead,
+      |Extension(principal): Extension<AuthenticatedPrincipal>| async move {
         Json(json!({
           "principal_id": principal.principal_id(),
           "scopes": principal.scopes().iter().map(|scope| scope.code()).collect::<Vec<_>>(),
           "tier": principal.tier(),
         }))
-      }),
+      },
     )
     .route_layer(axum::middleware::from_fn_with_state(
       Arc::new(AuthenticationService::new(lookup.clone())),
