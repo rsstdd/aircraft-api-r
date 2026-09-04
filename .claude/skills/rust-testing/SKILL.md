@@ -47,8 +47,11 @@ a test, helper, or dependency should exist at all.
 5. **`apps/ingest/tests/gates.rs`.** User-visible CLI behavior, driven through the real binary via
    `env!("CARGO_BIN_EXE_aircraft-ingest")` — exit codes, human and JSON output, redaction.
    `AGENTS.md` requires CLI behavior to be exercised this way when possible.
-6. **Not a doctest.** `just test` is `cargo nextest run`, which does not execute doctests, and CI
-   has no `--doc` step. A doctest here is unrun prose. See `rust-comment`.
+6. **A doctest only for what no other test can say.** `just test` and CI run
+   `cargo test --workspace --doc --locked` after nextest, so a doctest does execute -- but the
+   ones in `aircraft_api` are `compile_fail` blocks proving a route cannot be mounted without a
+   policy, on the way into `router_with_routes` and on the way out of the `ApplicationRouter` it
+   returns, which no runtime test can show. See `rust-comment`.
 
 ## Binding in this workspace
 

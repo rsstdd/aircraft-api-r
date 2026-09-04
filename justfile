@@ -71,8 +71,11 @@ snapshots *args:
         done
     fi
 
+# nextest does not execute doctests, and the route-policy rule is proven by
+# `compile_fail` doctests in `aircraft_api`.
 test:
     cargo nextest run --workspace --locked
+    cargo test --workspace --doc --locked
 
 fmt:
     cargo fmt --all
