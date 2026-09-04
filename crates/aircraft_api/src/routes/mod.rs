@@ -212,11 +212,11 @@ impl Routes {
 
   /// Every registration, in registration order.
   ///
-  /// Test-only for now: the inventory tests are its only readers, and the
-  /// gate keeps that true rather than leaving a `pub(crate)` method the
-  /// non-test build reports as dead. Enforcement and the published security
-  /// requirements (issue #31) are the production readers that lift it.
-  #[cfg(test)]
+  /// Crate-visible so the `OpenAPI` generator and enforcement can read it
+  /// without the record becoming public API. Until issue #31 adds those
+  /// production readers the inventory tests are its only callers, which is
+  /// what the allowance below covers; remove it with the first production read.
+  #[allow(dead_code)]
   #[must_use]
   pub(crate) fn inventory(&self) -> &[RegisteredRoute] {
     &self.inventory
