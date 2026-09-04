@@ -14,7 +14,7 @@ use std::{
   task::{Context, Poll},
 };
 
-use aircraft_app::readiness::ReadinessProbe;
+use aircraft_app::{authentication::AuthenticationService, readiness::ReadinessProbe};
 use axum::{
   Router,
   extract::{DefaultBodyLimit, OriginalUri, Request},
@@ -22,11 +22,17 @@ use axum::{
   serve::{IncomingStream, Listener},
 };
 use tower::Service;
-use utoipa::OpenApi;
+use utoipa::{
+  OpenApi,
+  openapi::{
+    Ref, RefOr,
+    security::{HttpAuthScheme, HttpBuilder, SecurityRequirement, SecurityScheme},
+  },
+};
 
 pub use crate::limits::{InvalidOrigin, PerimeterLimits};
 use crate::problem::ApiProblem;
-use crate::routes::{RouteMethod, RoutePolicy, Routes};
+use crate::routes::{RegisteredRoute, RouteMethod, RoutePolicy, Routes};
 use crate::shutdown::ShutdownState;
 
 /// What the router needs from its composition root.
@@ -34,7 +40,10 @@ use crate::shutdown::ShutdownState;
 /// The readiness probe arrives as a port rather than a pool because
 /// `cargo run -p xtask -- boundaries` refuses `aircraft_db` and `SQLx` here;
 /// the build identity arrives as data because this crate has no business
-/// knowing which binary embedded it.
+/// knowing which binary embedded it. The authentication service arrives built,
+/// over whichever credential lookup the composition root chose, for the same
+/// reason; every route registered under a scoped policy resolves its bearer
+/// credential through it, and a `Public` route never touches it.
 ///
 /// The shutdown state is shared with the composition root rather than owned
 /// here: the router reads it to refuse new work, and `aircraft_server::serve`
@@ -46,6 +55,7 @@ use crate::shutdown::ShutdownState;
 #[derive(Clone)]
 pub struct ApiState {
   pub readiness: Arc<dyn ReadinessProbe>,
+  pub authentication: Arc<AuthenticationService>,
   pub version: &'static str,
   pub build_commit: Option<&'static str>,
   pub shutdown: ShutdownState,
@@ -59,6 +69,7 @@ impl std::fmt::Debug for ApiState {
   fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
     formatter
       .debug_struct("ApiState")
+      .field("authentication", &self.authentication)
       .field("version", &self.version)
       .field("build_commit", &self.build_commit)
       .field("draining", &self.shutdown.is_draining())
@@ -281,9 +292,61 @@ async fn method_not_allowed(OriginalUri(uri): OriginalUri) -> ApiProblem {
   ApiProblem::method_not_allowed(uri.path())
 }
 
+/// The name the document gives the bearer scheme; every scoped operation's
+/// security requirement refers to it.
+const API_CREDENTIAL_SCHEME: &str = "apiCredential";
+
+/// The generated document: `ApiDoc`'s declarations, with each scoped route's
+/// policy published from the same inventory the router enforces.
 #[must_use]
 pub fn openapi() -> utoipa::openapi::OpenApi {
-  ApiDoc::openapi()
+  let mut document = ApiDoc::openapi();
+  publish_route_policies(&mut document, declared_routes().inventory());
+  document
+}
+
+/// Declares the bearer scheme and, for every scoped registration, writes its
+/// security requirement and the `401` and `403` it can answer onto the
+/// published operation.
+///
+/// This is the only writer of an operation's `security`. A `security(...)`
+/// attribute on a `#[utoipa::path]` would be a second declaration the router
+/// never reads, and `no_operation_declares_security_outside_the_route_inventory`
+/// refuses one. The scope code is the requirement's role name, which the
+/// `OpenAPI` 3.1 Security Requirement Object permits for a non-OAuth scheme: a
+/// client reads it, and nothing exchanges it. A registration with no published
+/// operation is left to `openapi_and_router_share_the_same_route_policy_inventory`.
+fn publish_route_policies(document: &mut utoipa::openapi::OpenApi, inventory: &[RegisteredRoute]) {
+  document.components.get_or_insert_default().add_security_scheme(
+    API_CREDENTIAL_SCHEME,
+    SecurityScheme::Http(
+      HttpBuilder::new()
+        .scheme(HttpAuthScheme::Bearer)
+        .description(Some("An issued `ak1` API credential, presented as the bearer token."))
+        .build(),
+    ),
+  );
+  for route in inventory {
+    let Some(scope) = route.policy.required_scope() else { continue };
+    let Some(operation) = document
+      .paths
+      .paths
+      .get_mut(&route.path)
+      .and_then(|item| route.method.operation_mut(item).as_mut())
+    else {
+      continue;
+    };
+    operation.security =
+      Some(vec![SecurityRequirement::new(API_CREDENTIAL_SCHEME, [scope.code()])]);
+    for (status, response) in
+      [("401", "AuthenticationRequiredProblem"), ("403", "InsufficientScopeProblem")]
+    {
+      operation
+        .responses
+        .responses
+        .insert(status.to_owned(), RefOr::Ref(Ref::from_response_name(response)));
+    }
+  }
 }
 
 #[cfg(test)]
@@ -302,7 +365,10 @@ mod tests {
     time::Duration,
   };
 
-  use aircraft_app::ingestion::PersistenceError;
+  use aircraft_app::{
+    authentication::{CredentialLookup, CredentialLookupRecord},
+    ingestion::PersistenceError,
+  };
   use anyhow::{Context, Result};
   use async_trait::async_trait;
   use axum::{
@@ -313,14 +379,30 @@ mod tests {
   use serde_json::json;
   use tokio::sync::{Notify, mpsc};
   use tower::ServiceExt;
+  use utoipa::openapi::{
+    OpenApiBuilder,
+    path::{HttpMethod, OperationBuilder, PathItem, PathsBuilder},
+  };
+  use uuid::Uuid;
 
   use super::*;
-  use crate::{
-    problem::{ApiJson, ApiQuery, RequiredScope},
-    routes::RegisteredRoute,
-  };
+  use crate::problem::{ApiJson, ApiQuery, RequiredScope};
 
   struct AlwaysReady;
+
+  /// Panics if consulted. Every route in this file is `Public`, so a lookup
+  /// here means a policy check ran where none should.
+  struct NeverLooksUp;
+
+  #[async_trait]
+  impl CredentialLookup for NeverLooksUp {
+    async fn resolve(
+      &self,
+      _key_id: Uuid,
+    ) -> Result<Option<CredentialLookupRecord>, PersistenceError> {
+      panic!("no route in this file may consult the credential lookup");
+    }
+  }
 
   #[async_trait]
   impl ReadinessProbe for AlwaysReady {
@@ -419,6 +501,7 @@ mod tests {
     fn state(self, readiness: Arc<dyn ReadinessProbe>) -> ApiState {
       ApiState {
         readiness,
+        authentication: Arc::new(AuthenticationService::new(Arc::new(NeverLooksUp))),
         version: "9.9.9-test",
         build_commit: None,
         shutdown: ShutdownState::new(),
@@ -1464,13 +1547,123 @@ mod tests {
     assert_eq!(declared_routes().inventory(), expected);
   }
 
+  /// The security a policy publishes, as `docs/architecture/http_v1_decisions.md`
+  /// and the seeded scope codes have it: nothing for `Public`, and one
+  /// requirement on the bearer scheme naming the scope for every other policy.
+  /// Literals rather than `required_scope()`, and exhaustive, so a seventh
+  /// policy stops the tests reading this from compiling.
+  fn published_security(policy: RoutePolicy) -> Option<serde_json::Value> {
+    let code = match policy {
+      RoutePolicy::Public => return None,
+      RoutePolicy::CatalogRead => "CATALOG_READ",
+      RoutePolicy::MilitaryRead => "MILITARY_READ",
+      RoutePolicy::CurationRead => "CURATION_READ",
+      RoutePolicy::CurationWrite => "CURATION_WRITE",
+      RoutePolicy::Admin => "ADMIN",
+    };
+    Some(json!([{ "apiCredential": [code] }]))
+  }
+
+  const POLICIES: [RoutePolicy; 6] = [
+    RoutePolicy::Public,
+    RoutePolicy::CatalogRead,
+    RoutePolicy::MilitaryRead,
+    RoutePolicy::CurationRead,
+    RoutePolicy::CurationWrite,
+    RoutePolicy::Admin,
+  ];
+
+  /// Asserts what a published operation says about its policy: the security
+  /// requirement, and the `401` and `403` only a scoped operation can answer.
+  fn assert_published_policy(operation: &serde_json::Value, policy: RoutePolicy, at: &str) {
+    let security = published_security(policy);
+    assert_eq!(operation.get("security"), security.as_ref(), "{at}: security");
+    for status in ["401", "403"] {
+      assert_eq!(
+        operation.pointer(&format!("/responses/{status}")).is_some(),
+        security.is_some(),
+        "{at}: {status} is published only for a scoped operation"
+      );
+    }
+  }
+
+  /// The stamping itself, over a document with one operation per policy,
+  /// because the production inventory has no scoped route yet and the join
+  /// below would otherwise never exercise the scoped branch.
+  #[test]
+  fn publish_route_policies_marks_every_scoped_operation_and_leaves_public_ones_alone() -> Result<()>
+  {
+    let mut paths = PathsBuilder::new();
+    let mut inventory = Vec::new();
+    for policy in POLICIES {
+      let path = format!("/__test/{policy:?}");
+      paths = paths.path(&path, PathItem::new(HttpMethod::Get, OperationBuilder::new()));
+      inventory.push(RegisteredRoute { method: RouteMethod::Get, path, policy });
+    }
+    let mut document = OpenApiBuilder::new().paths(paths).build();
+
+    publish_route_policies(&mut document, &inventory);
+
+    let document = serde_json::to_value(document)?;
+    for policy in POLICIES {
+      let at = format!("get /__test/{policy:?}");
+      let operation = document
+        .pointer(&format!("/paths/~1__test~1{policy:?}/get"))
+        .with_context(|| format!("{at} vanished"))?;
+      assert_published_policy(operation, policy, &at);
+    }
+    assert_eq!(
+      document.pointer("/components/securitySchemes/apiCredential/scheme"),
+      Some(&json!("bearer"))
+    );
+    Ok(())
+  }
+
+  #[test]
+  fn openapi_publishes_the_api_credential_security_scheme() -> Result<()> {
+    let document = serde_json::to_value(openapi())?;
+
+    let scheme = document
+      .pointer("/components/securitySchemes/apiCredential")
+      .context("the bearer scheme is not published")?;
+    assert_eq!(scheme.get("type"), Some(&json!("http")));
+    assert_eq!(scheme.get("scheme"), Some(&json!("bearer")));
+    assert!(scheme.get("bearerFormat").is_none(), "the token is opaque, not a JWT");
+    assert!(document.get("security").is_none(), "the operational routes are Public");
+    Ok(())
+  }
+
+  /// The inventory is the only source of a security requirement: the document
+  /// before stamping carries none, so a `security(...)` attribute on a
+  /// `#[utoipa::path]` fails here rather than being silently overwritten. The
+  /// count is the anti-vacuity guard.
+  #[test]
+  fn no_operation_declares_security_outside_the_route_inventory() -> Result<()> {
+    let document = serde_json::to_value(ApiDoc::openapi())?;
+    let paths =
+      document.pointer("/paths").and_then(serde_json::Value::as_object).context("no paths")?;
+
+    let mut operations = 0;
+    for (path, item) in paths {
+      let members = item.as_object().with_context(|| format!("{path} is not an object"))?;
+      for (member, operation) in members.iter().filter(|(_, member)| member.is_object()) {
+        assert!(
+          operation.get("security").is_none(),
+          "{member} {path} declares security outside the inventory"
+        );
+        operations += 1;
+      }
+    }
+    assert_eq!(operations, DECLARED.len(), "the scan is vacuous");
+    Ok(())
+  }
+
   /// The generated document and the router describe the same operations:
   /// every published operation is exactly one registration, every registration
   /// is published, and the joined record carries the policy the decision
-  /// assigns that operation. That join, by method and path, is how the
-  /// document consumes the router's policy metadata; the security requirement
-  /// it will publish for a scoped operation is issue #31's, and is not asserted
-  /// here.
+  /// assigns that operation, published as that policy's security requirement.
+  /// That join, by method and path, is how the document consumes the router's
+  /// policy metadata.
   ///
   /// The final count is the anti-vacuity guard: every assertion sits inside the
   /// loop over published operations.
@@ -1522,6 +1715,8 @@ mod tests {
           .with_context(|| format!("{key} {path} is published but the decision has no row"))?;
 
         assert_eq!(registered.policy, *policy, "{key} {path}");
+        let operation = members.get(key).context("the member was just listed")?;
+        assert_published_policy(operation, *policy, &format!("{key} {path}"));
         published.push((method, path.clone()));
       }
     }
@@ -1642,8 +1837,11 @@ mod tests {
 
     for (name, status, kind) in RESPONSES {
       let response = responses.get(name).with_context(|| format!("missing response {name}"))?;
+      let schema = response
+        .pointer("/content/application~1problem+json/schema")
+        .with_context(|| format!("{name} publishes no schema"))?;
       assert_eq!(
-        response.pointer("/content/application~1problem+json/schema/$ref"),
+        schema.get("$ref").or_else(|| schema.pointer("/allOf/0/$ref")),
         Some(&json!("#/components/schemas/ProblemDetails")),
         "{name} must use the shared problem schema"
       );
@@ -1670,6 +1868,16 @@ mod tests {
     assert!(
       responses["MethodNotAllowedProblem"].pointer("/headers/Allow").is_some(),
       "the method refusal must publish the methods the resource allows"
+    );
+    assert!(
+      responses["AuthenticationRequiredProblem"].pointer("/headers/WWW-Authenticate").is_some(),
+      "the authentication refusal must publish its challenge"
+    );
+    assert_eq!(
+      responses["InsufficientScopeProblem"]
+        .pointer("/content/application~1problem+json/schema/allOf/1/required"),
+      Some(&json!(["required_scope"])),
+      "the scope refusal must require the scope it names"
     );
     Ok(())
   }

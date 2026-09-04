@@ -18,7 +18,9 @@ simply because they were parsed successfully.
 > boots and serves them over HTTP, builds a verified database pool, correlates
 > and traces every request, enforces perimeter limits and CORS, and drains
 > in-flight requests on SIGINT or SIGTERM.
-> Search, comparison, and authentication are not implemented end to end. The
+> Bearer authentication and route-policy enforcement are implemented at the
+> router and wired into `apps/server`, but no protected business route is
+> served yet. Search and comparison are not implemented end to end. The
 > Rust ingestion path passed all six deployment gates, including the
 > SQL-versus-Rust parity run that justified retiring the legacy loader; that gate is now a golden-snapshot
 > regression check. Run them with `just test` and `just snapshots`. Ingested measurements stay pending until a
@@ -446,14 +448,15 @@ evidence.
   queries.
 - Use `tracing` in application paths rather than `println!` or `dbg!`.
 - Unsafe Rust is forbidden by the workspace lint configuration.
-- Authentication, authorization, request limits, and production HTTP middleware
+- Rate limiting, protected business routes, and the remaining HTTP middleware
   are not complete and must not be inferred from the legacy server files.
 
 ## Not implemented yet
 
 - A buildable Axum server composition root
 - Aircraft CRUD, search, comparison, and mission-scoring HTTP flows
-- Production authentication and authorization
+- Protected business routes; bearer authentication and route-scope enforcement
+  exist, and only the public operational routes are served
 - Complete request limits, timeouts, rate limits, and transport middleware
 - SQLx compile-time query metadata and a meaningful offline-query gate
 - End-to-end production deployment qualification

@@ -9,6 +9,7 @@
 
 use std::{borrow::Cow, collections::BTreeMap};
 
+use aircraft_app::authentication::Scope;
 use axum::{
   Json as AxumJson,
   extract::{
@@ -22,8 +23,9 @@ use serde::{Serialize, de::DeserializeOwned};
 use utoipa::{
   IntoResponses, ToResponse, ToSchema,
   openapi::{
-    HeaderBuilder, Ref, RefOr, ResponseBuilder, ResponsesBuilder, content::ContentBuilder,
-    schema::ObjectBuilder,
+    HeaderBuilder, Ref, RefOr, ResponseBuilder, ResponsesBuilder,
+    content::ContentBuilder,
+    schema::{AllOfBuilder, ObjectBuilder, Schema},
   },
 };
 
@@ -31,6 +33,11 @@ use utoipa::{
 /// distinguishes problems from ordinary payloads keys on this, not on the
 /// status code.
 const PROBLEM_MEDIA_TYPE: &str = "application/problem+json";
+
+/// RFC 6750 section 3: the scheme, and nothing that could vary by credential
+/// state. Added to every `401` by [`ApiProblem::into_response`], so no path
+/// that answers one can leave the challenge off.
+const BEARER_CHALLENGE: HeaderValue = HeaderValue::from_static("Bearer");
 
 // A closed enum rather than a string because these spellings mirror the five
 // `code` values seeded into `aircraft_auth.scopes` by
@@ -47,6 +54,23 @@ pub enum RequiredScope {
   CurationRead,
   CurationWrite,
   Admin,
+}
+
+/// The application vocabulary a principal holds, mapped to the transport one
+/// at the point of refusal, so the two types stay separate representations.
+/// No wildcard arm: a sixth `Scope` does not compile until it has a published
+/// spelling, pinned by
+/// `every_application_scope_maps_to_the_scope_the_problem_publishes`.
+impl From<Scope> for RequiredScope {
+  fn from(scope: Scope) -> Self {
+    match scope {
+      Scope::CatalogRead => Self::CatalogRead,
+      Scope::MilitaryRead => Self::MilitaryRead,
+      Scope::CurationRead => Self::CurationRead,
+      Scope::CurationWrite => Self::CurationWrite,
+      Scope::Admin => Self::Admin,
+    }
+  }
 }
 
 #[derive(Debug, Serialize, ToSchema)]
@@ -387,8 +411,17 @@ impl IntoResponse for ApiProblem {
   fn into_response(self) -> Response {
     let kind = self.kind;
     let mut response = self.details().into_response();
-    if let ProblemKind::RateLimited { retry_after_seconds } = kind {
-      response.headers_mut().insert(header::RETRY_AFTER, HeaderValue::from(retry_after_seconds));
+    match kind {
+      // RFC 9110 section 15.5.2 requires the challenge on every `401`. Only the
+      // `401`: a `403` has judged the credential and accepted it, and a
+      // challenge there would tell the caller to present another one.
+      ProblemKind::AuthenticationRequired => {
+        response.headers_mut().insert(header::WWW_AUTHENTICATE, BEARER_CHALLENGE);
+      }
+      ProblemKind::RateLimited { retry_after_seconds } => {
+        response.headers_mut().insert(header::RETRY_AFTER, HeaderValue::from(retry_after_seconds));
+      }
+      _ => {}
     }
     response
   }
@@ -498,14 +531,23 @@ fn problem_openapi_response(
   description: &str,
   example: Option<serde_json::Value>,
 ) -> utoipa::openapi::Response {
+  problem_openapi_response_with_schema(
+    description,
+    Ref::from_schema_name("ProblemDetails"),
+    example,
+  )
+}
+
+fn problem_openapi_response_with_schema(
+  description: &str,
+  schema: impl Into<RefOr<Schema>>,
+  example: Option<serde_json::Value>,
+) -> utoipa::openapi::Response {
   ResponseBuilder::new()
     .description(description)
     .content(
       PROBLEM_MEDIA_TYPE,
-      ContentBuilder::new()
-        .schema(Some(Ref::from_schema_name("ProblemDetails")))
-        .example(example)
-        .build(),
+      ContentBuilder::new().schema(Some(schema)).example(example).build(),
     )
     .header("X-Request-Id", string_header(REQUEST_ID_DESCRIPTION))
     .build()
@@ -541,16 +583,6 @@ problem_response!(
   "The request violates the API contract",
   ProblemKind::ValidationFailed
 );
-problem_response!(
-  AuthenticationRequiredProblem,
-  "Authentication is required",
-  ProblemKind::AuthenticationRequired
-);
-problem_response!(
-  InsufficientScopeProblem,
-  "The credential lacks the required scope",
-  ProblemKind::InsufficientScope { required_scope: RequiredScope::CatalogRead }
-);
 problem_response!(NotFoundProblem, "The requested resource was not found", ProblemKind::NotFound);
 problem_response!(
   ConflictProblem,
@@ -579,6 +611,50 @@ problem_response!(
   "The request deadline expired",
   ProblemKind::DeadlineExceeded
 );
+
+pub(crate) struct AuthenticationRequiredProblem;
+
+impl<'response> ToResponse<'response> for AuthenticationRequiredProblem {
+  fn response() -> (&'response str, RefOr<utoipa::openapi::Response>) {
+    let example = serde_json::to_value(
+      ApiProblem::new(ProblemKind::AuthenticationRequired, "/example").details(),
+    )
+    .ok();
+    let mut response = problem_openapi_response("Authentication is required", example);
+    response.headers.insert(
+      "WWW-Authenticate".to_owned(),
+      string_header("The `Bearer` challenge, with no parameters."),
+    );
+    ("AuthenticationRequiredProblem", response.into())
+  }
+}
+
+/// Narrows the shared schema rather than reusing it: `required_scope` is
+/// optional on `ProblemDetails` because every other problem omits it, and this
+/// one never does, so a generated client reads it as present.
+pub(crate) struct InsufficientScopeProblem;
+
+impl<'response> ToResponse<'response> for InsufficientScopeProblem {
+  fn response() -> (&'response str, RefOr<utoipa::openapi::Response>) {
+    let example = serde_json::to_value(
+      ApiProblem::new(
+        ProblemKind::InsufficientScope { required_scope: RequiredScope::CatalogRead },
+        "/example",
+      )
+      .details(),
+    )
+    .ok();
+    let schema = AllOfBuilder::new()
+      .item(Ref::from_schema_name("ProblemDetails"))
+      .item(ObjectBuilder::new().required("required_scope"));
+    let response = problem_openapi_response_with_schema(
+      "The credential lacks the required scope",
+      schema,
+      example,
+    );
+    ("InsufficientScopeProblem", response.into())
+  }
+}
 
 pub(crate) struct MethodNotAllowedProblem;
 
@@ -620,6 +696,7 @@ mod tests {
   // A failing assertion is the point of a test.
   #![allow(clippy::expect_used)]
 
+  use aircraft_app::authentication::Scope;
   use axum::{http::header, response::IntoResponse as _};
   use serde_json::json;
 
@@ -820,6 +897,46 @@ mod tests {
     let response = ApiProblem::rate_limited("/catalog", 37).into_response();
 
     assert_eq!(response.headers().get(header::RETRY_AFTER), Some(&"37".parse().expect("valid")));
+  }
+
+  /// The challenge is the renderer's, so no path that answers a `401` can
+  /// leave it off; the `403` half is the anti-vacuity guard, because a
+  /// renderer that challenged on every problem would pass the first assertion.
+  #[test]
+  fn only_authentication_problems_carry_the_bare_bearer_challenge() {
+    let unauthenticated = ApiProblem::authentication_required("/catalog").into_response();
+    let forbidden =
+      ApiProblem::insufficient_scope("/catalog", RequiredScope::Admin).into_response();
+
+    assert_eq!(
+      unauthenticated.headers().get(header::WWW_AUTHENTICATE),
+      Some(&"Bearer".parse().expect("valid"))
+    );
+    assert!(
+      forbidden.headers().get(header::WWW_AUTHENTICATE).is_none(),
+      "a 403 has judged the credential and must not challenge"
+    );
+  }
+
+  /// One row per application scope, read against the seed literals through
+  /// [`published_scope`] and the wire form, not through either enum's own
+  /// spelling. Two arms swapped in the mapping fail here.
+  #[test]
+  fn every_application_scope_maps_to_the_scope_the_problem_publishes() {
+    const SCOPES: [(Scope, &str); 5] = [
+      (Scope::CatalogRead, "CATALOG_READ"),
+      (Scope::MilitaryRead, "MILITARY_READ"),
+      (Scope::CurationRead, "CURATION_READ"),
+      (Scope::CurationWrite, "CURATION_WRITE"),
+      (Scope::Admin, "ADMIN"),
+    ];
+
+    for (scope, code) in SCOPES {
+      let published = RequiredScope::from(scope);
+
+      assert_eq!(published_scope(published), code, "{scope:?}");
+      assert_eq!(serde_json::to_value(published).expect("serializes"), json!(code), "{scope:?}");
+    }
   }
 
   #[test]

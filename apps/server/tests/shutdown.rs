@@ -1,5 +1,6 @@
-// A failing assertion is the point of a test, so panicking accessors are fine.
-#![allow(clippy::expect_used, clippy::unwrap_used)]
+// A failing assertion is the point of a test, so panicking accessors are fine,
+// and the lookup below fails by panicking on a call that must never happen.
+#![allow(clippy::expect_used, clippy::unwrap_used, clippy::panic)]
 
 //! Drain gates for [`aircraft_server::serve`].
 //!
@@ -19,7 +20,11 @@ use std::{
 };
 
 use aircraft_api::{ApiState, PerimeterLimits, shutdown::ShutdownState};
-use aircraft_app::{ingestion::PersistenceError, readiness::ReadinessProbe};
+use aircraft_app::{
+  authentication::{AuthenticationService, CredentialLookup, CredentialLookupRecord},
+  ingestion::PersistenceError,
+  readiness::ReadinessProbe,
+};
 use anyhow::{Context, Result, anyhow};
 use async_trait::async_trait;
 use tokio::{
@@ -30,6 +35,7 @@ use tokio::{
 };
 use tracing::instrument::WithSubscriber as _;
 use tracing_subscriber::fmt::MakeWriter;
+use uuid::Uuid;
 
 /// Bounds every wait in this file. Nothing here should take milliseconds, so
 /// the value only decides how long a broken `serve` hangs before it is reported
@@ -52,6 +58,19 @@ impl ReadinessProbe for BlockingProbe {
     let _ = self.entered.send(()).await;
     self.release.notified().await;
     Ok(())
+  }
+}
+
+/// Panics if consulted: the router serves only `Public` routes here.
+struct NeverLooksUp;
+
+#[async_trait]
+impl CredentialLookup for NeverLooksUp {
+  async fn resolve(
+    &self,
+    _key_id: Uuid,
+  ) -> Result<Option<CredentialLookupRecord>, PersistenceError> {
+    panic!("no route here may consult the credential lookup");
   }
 }
 
@@ -120,6 +139,7 @@ async fn start(grace: Duration, dispatch: tracing::Dispatch) -> Result<Harness> 
   let shutdown = ShutdownState::new();
   let state = ApiState {
     readiness: Arc::new(BlockingProbe { entered: entered_tx, release: Arc::clone(&release) }),
+    authentication: Arc::new(AuthenticationService::new(Arc::new(NeverLooksUp))),
     version: "9.9.9-test",
     build_commit: None,
     shutdown: shutdown.clone(),

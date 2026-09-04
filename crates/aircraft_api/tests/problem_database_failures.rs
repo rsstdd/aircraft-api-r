@@ -1,5 +1,6 @@
-// A failing assertion is the point of a test, so panicking accessors are fine.
-#![allow(clippy::expect_used)]
+// A failing assertion is the point of a test, so panicking accessors are fine,
+// and the lookup below fails by panicking on a call that must never happen.
+#![allow(clippy::expect_used, clippy::panic)]
 
 use std::{sync::Arc, time::Duration};
 
@@ -11,6 +12,7 @@ use aircraft_api::{
   shutdown::ShutdownState,
 };
 use aircraft_app::{
+  authentication::{AuthenticationService, CredentialLookup, CredentialLookupRecord},
   credential_issuance::{CredentialStore, CredentialVerifier, NewCredential},
   ingestion::PersistenceError,
   readiness::ReadinessProbe,
@@ -38,9 +40,23 @@ impl ReadinessProbe for AlwaysReady {
   }
 }
 
+/// Panics if consulted: every route here is `Public`.
+struct NeverLooksUp;
+
+#[async_trait]
+impl CredentialLookup for NeverLooksUp {
+  async fn resolve(
+    &self,
+    _key_id: Uuid,
+  ) -> Result<Option<CredentialLookupRecord>, PersistenceError> {
+    panic!("no route here may consult the credential lookup");
+  }
+}
+
 fn state(readiness: Arc<dyn ReadinessProbe>) -> ApiState {
   ApiState {
     readiness,
+    authentication: Arc::new(AuthenticationService::new(Arc::new(NeverLooksUp))),
     version: "9.9.9-test",
     build_commit: None,
     shutdown: ShutdownState::new(),

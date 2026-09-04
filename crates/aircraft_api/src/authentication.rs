@@ -1,21 +1,23 @@
 //! Bearer authentication at the HTTP boundary.
 //!
-//! [`require_authentication`] turns the `Authorization` header into an
-//! application [`CredentialCandidate`], asks [`AuthenticationService`] for the
-//! principal, and either attaches
-//! [`AuthenticatedPrincipal`](aircraft_app::authentication::AuthenticatedPrincipal)
-//! to the request extensions or answers with the shared problem contract. A
-//! handler reads the principal with axum's `Extension<AuthenticatedPrincipal>`.
+//! `authenticate` turns the `Authorization` header into an application
+//! [`CredentialCandidate`], asks [`AuthenticationService`] for the principal,
+//! and returns either the [`AuthenticatedPrincipal`] or the problem that
+//! refuses the request. Its one caller is the registration
+//! wrapper in `crate::routes`, which runs it for every route registered under a
+//! scoped policy and, once the scope is checked, attaches the principal to the
+//! request extensions; a handler reads it with axum's
+//! `Extension<AuthenticatedPrincipal>`.
 //!
 //! Every credential rejection -- header missing, repeated, not `Bearer`, token
 //! malformed, key unknown, secret wrong, credential revoked, principal
 //! disabled -- is the one `401` document with a fixed `WWW-Authenticate:
-//! Bearer` challenge. The challenge carries no `realm`, `error`, or
-//! `error_description`, because any parameter would tell the states apart. A
-//! missing or malformed header is refused here, before the service and its
-//! lookup: neither state depends on anything stored, so there is no
-//! credential state for the difference in cost to reveal, and answering it
-//! from the pool would let a credential-less request compete with real
+//! Bearer` challenge, which the problem renderer adds. The challenge carries no
+//! `realm`, `error`, or `error_description`, because any parameter would tell
+//! the states apart. A missing or malformed header is refused here, before the
+//! service and its lookup: neither state depends on anything stored, so there
+//! is no credential state for the difference in cost to reveal, and answering
+//! it from the pool would let a credential-less request compete with real
 //! traffic for a bounded connection. Every well-formed token costs the one
 //! lookup the service makes.
 //!
@@ -23,83 +25,69 @@
 //! before the handler runs, so no later layer, extractor, or handler can
 //! record it by accident.
 //!
-//! Placement, for the composition that applies this layer (issue #31): inside
+//! Placement follows from the wrapper being the handler: it runs inside
 //! `correlate`, so a `401` carries a request ID and a completion event; inside
 //! `CorsLayer`, so a preflight never authenticates and a cross-origin `401`
 //! keeps its allow-origin header; inside `shed_when_saturated` and
 //! `track_in_flight`, so the lookup is in-flight work that shutdown cancels;
-//! and inside `enforce_deadline`, so the lookup is bounded by the request
-//! deadline as well as the pool. A `route_layer` on a protected router also
-//! lands inside `refuse_oversized_body`, so an unauthenticated caller still
-//! causes one bounded body read; a composition that can place it outside that
-//! layer should. Nothing in this crate applies it yet: `/health`, `/ready`, and
-//! `/version` are `Public` and stay unauthenticated.
-
-use std::sync::Arc;
+//! inside `enforce_deadline`, so the lookup is bounded by the request deadline
+//! as well as the pool; and inside `refuse_oversized_body`, so an
+//! unauthenticated caller still costs one body read, bounded by that layer's
+//! limit and by the semaphore's count of concurrent buffers. Refusing before
+//! that read would need enforcement outside the handler, keyed by the matched
+//! route; that is a perimeter change, not a registration one.
 
 use aircraft_app::{
-  authentication::{AuthenticationError, AuthenticationService, CredentialCandidate},
+  authentication::{
+    AuthenticatedPrincipal, AuthenticationError, AuthenticationService, CredentialCandidate,
+  },
   ingestion::PersistenceError,
 };
 use axum::{
-  extract::{OriginalUri, Request, State},
-  http::{HeaderMap, HeaderValue, header},
-  middleware::Next,
-  response::{IntoResponse as _, Response},
+  extract::Request,
+  http::{HeaderMap, header},
 };
 
 use crate::problem::ApiProblem;
 
-/// RFC 6750 section 3: the scheme, and nothing that could vary by state.
-const CHALLENGE: HeaderValue = HeaderValue::from_static("Bearer");
-
-/// Refuses a request without an accepted credential, or attaches its
-/// principal and calls inward.
-pub async fn require_authentication(
-  State(service): State<Arc<AuthenticationService>>,
-  mut request: Request,
-  next: Next,
-) -> Response {
+/// Resolves the request's credential to its principal, or refuses for it.
+///
+/// `instance` is the path the refusal names, computed by the caller because
+/// the `403` it may answer next names the same one.
+///
+/// # Errors
+///
+/// The `401` problem for every rejected credential state, including a missing
+/// or malformed header. When the lookup itself failed, the database
+/// unavailable `503`, or the internal `500` for stored state the schema
+/// forbids; neither carries a challenge, because no credential was judged and
+/// a challenge would tell the caller to try another one.
+pub(crate) async fn authenticate(
+  service: &AuthenticationService,
+  request: &mut Request,
+  instance: &str,
+) -> Result<AuthenticatedPrincipal, ApiProblem> {
   let candidate =
     bearer_token(request.headers()).and_then(|token| CredentialCandidate::parse(token).ok());
   request.headers_mut().remove(header::AUTHORIZATION);
-  // `OriginalUri` rather than `uri()`, as the fallbacks do: a nested router
-  // sees its prefix stripped, and the path a refusal names must be the one
-  // the caller sent. The fallback is for a service driven outside a `Router`.
-  let instance = request
-    .extensions()
-    .get::<OriginalUri>()
-    .map_or_else(|| request.uri().path().to_owned(), |original| original.0.path().to_owned());
 
   let Some(candidate) = candidate else {
-    return unauthenticated(&instance);
+    return Err(ApiProblem::authentication_required(instance));
   };
   match service.authenticate(candidate).await {
-    Ok(principal) => {
-      request.extensions_mut().insert(principal);
-      next.run(request).await
-    }
-    Err(AuthenticationError::Rejected) => unauthenticated(&instance),
+    Ok(principal) => Ok(principal),
+    Err(AuthenticationError::Rejected) => Err(ApiProblem::authentication_required(instance)),
     Err(AuthenticationError::Unavailable(error)) => {
       // The class is logged and not served, as `/ready` does for its probe.
-      // No `WWW-Authenticate` here: the credential was not judged, and a
-      // challenge would tell the caller to try another one.
       tracing::warn!(code = error.code(), "credential lookup failed");
-      match error {
-        PersistenceError::Database { .. } => ApiProblem::database_unavailable(&instance),
+      Err(match error {
+        PersistenceError::Database { .. } => ApiProblem::database_unavailable(instance),
         // A row the schema forbids is this service's defect, not the
         // database's absence.
-        PersistenceError::Invariant(_) => ApiProblem::internal(&instance),
-      }
-      .into_response()
+        PersistenceError::Invariant(_) => ApiProblem::internal(instance),
+      })
     }
   }
-}
-
-fn unauthenticated(instance: &str) -> Response {
-  let mut response = ApiProblem::authentication_required(instance).into_response();
-  response.headers_mut().insert(header::WWW_AUTHENTICATE, CHALLENGE);
-  response
 }
 
 /// The token from exactly one `Authorization: Bearer <token>` field.
@@ -153,7 +141,6 @@ mod tests {
   use tower::ServiceExt as _;
   use uuid::Uuid;
 
-  use super::require_authentication;
   use crate::{
     ApiState, ApplicationRouter, PerimeterLimits, router_with_routes,
     routes::{RouteMethod, RoutePolicy, Routes},
@@ -176,9 +163,10 @@ mod tests {
     }
   }
 
-  fn state() -> ApiState {
+  fn state(lookup: Arc<dyn CredentialLookup>) -> ApiState {
     ApiState {
       readiness: Arc::new(AlwaysReady),
+      authentication: Arc::new(AuthenticationService::new(lookup)),
       version: "9.9.9-test",
       build_commit: None,
       shutdown: ShutdownState::new(),
@@ -223,8 +211,14 @@ mod tests {
     }
   }
 
-  /// A protected route inside the real perimeter, beside a public one, with
-  /// the handler counting its calls and reporting exactly what it received.
+  fn record_with(scopes: Vec<Scope>) -> CredentialLookupRecord {
+    CredentialLookupRecord { scopes, ..live_record() }
+  }
+
+  /// A route under a policy inside the real perimeter, beside a public one,
+  /// with the handler counting its calls and reporting exactly what it
+  /// received. No layer is applied by hand: the registration is the
+  /// enforcement, which is what every test here is about.
   struct Protected {
     router: ApplicationRouter,
     lookup: Arc<FakeLookup>,
@@ -232,31 +226,42 @@ mod tests {
   }
 
   fn protected(outcome: Result<Option<CredentialLookupRecord>, PersistenceError>) -> Protected {
+    protected_under(RoutePolicy::CatalogRead, PROTECTED, outcome)
+  }
+
+  fn protected_under(
+    policy: RoutePolicy,
+    path: &str,
+    outcome: Result<Option<CredentialLookupRecord>, PersistenceError>,
+  ) -> Protected {
     let lookup = Arc::new(FakeLookup { outcome: Mutex::new(outcome), calls: AtomicUsize::new(0) });
     let handler_calls = Arc::new(AtomicUsize::new(0));
     let calls = Arc::clone(&handler_calls);
-    let whoami = move |Extension(principal): Extension<AuthenticatedPrincipal>,
-                       headers: HeaderMap| {
+    // The principal is optional so the same handler can sit under `Public`,
+    // where none is attached; a scoped test reads it back and so proves it was.
+    let whoami = move |principal: Option<Extension<AuthenticatedPrincipal>>, headers: HeaderMap| {
       let calls = Arc::clone(&calls);
       async move {
         calls.fetch_add(1, Ordering::SeqCst);
+        let principal = principal.map(|Extension(principal)| principal);
         Json(json!({
-          "principal_id": principal.principal_id(),
-          "scopes": principal.scopes().iter().map(|scope| scope.code()).collect::<Vec<_>>(),
-          "tier": principal.tier(),
+          "principal_id": principal.as_ref().map(AuthenticatedPrincipal::principal_id),
+          "scopes": principal
+            .as_ref()
+            .map(|principal| principal.scopes().iter().map(|scope| scope.code()).collect::<Vec<_>>()),
+          "tier": principal.as_ref().map(AuthenticatedPrincipal::tier),
           "authorization_present": headers.contains_key(header::AUTHORIZATION),
         }))
       }
     };
-    let routes = Routes::new()
-      .route(RouteMethod::Get, PROTECTED, RoutePolicy::CatalogRead, whoami)
-      .route_layer(axum::middleware::from_fn_with_state(
-        Arc::new(AuthenticationService::new(lookup.clone())),
-        require_authentication,
-      ))
-      .route(RouteMethod::Get, PUBLIC, RoutePolicy::Public, || async { StatusCode::NO_CONTENT });
+    let routes = Routes::new().route(RouteMethod::Get, path, policy, whoami).route(
+      RouteMethod::Get,
+      PUBLIC,
+      RoutePolicy::Public,
+      || async { StatusCode::NO_CONTENT },
+    );
 
-    Protected { router: router_with_routes(state(), routes), lookup, handler_calls }
+    Protected { router: router_with_routes(state(lookup.clone()), routes), lookup, handler_calls }
   }
 
   fn request(path: &str, authorization: &[&str]) -> Result<Request<Body>> {
@@ -430,13 +435,11 @@ mod tests {
   async fn a_nested_protected_route_names_the_path_the_caller_sent() -> Result<()> {
     const NESTED: &str = "/__test/nested/protected";
     let lookup = Arc::new(FakeLookup { outcome: Mutex::new(Ok(None)), calls: AtomicUsize::new(0) });
-    let inner = Routes::new()
-      .route(RouteMethod::Get, "/protected", RoutePolicy::CatalogRead, || async { StatusCode::OK })
-      .route_layer(axum::middleware::from_fn_with_state(
-        Arc::new(AuthenticationService::new(lookup)),
-        require_authentication,
-      ));
-    let router = router_with_routes(state(), Routes::new().nest("/__test/nested", inner));
+    let inner =
+      Routes::new().route(RouteMethod::Get, "/protected", RoutePolicy::CatalogRead, || async {
+        StatusCode::OK
+      });
+    let router = router_with_routes(state(lookup), Routes::new().nest("/__test/nested", inner));
 
     let response = router.oneshot(request(NESTED, &[])?).await?;
 
@@ -445,15 +448,188 @@ mod tests {
     Ok(())
   }
 
-  /// The layer is scoped to the routes it is applied to, not the router.
+  /// Enforcement is per registration, not per router: the public route beside
+  /// the protected one is answered with no credential and no lookup.
   #[tokio::test]
-  async fn a_route_outside_the_layer_needs_no_credential() -> Result<()> {
+  async fn a_public_registration_needs_no_credential_and_makes_no_lookup() -> Result<()> {
     let protected = protected(Ok(None));
 
     let response = protected.router.oneshot(request(PUBLIC, &[])?).await?;
 
     assert_eq!(response.status(), StatusCode::NO_CONTENT);
     assert_eq!(protected.lookup.calls.load(Ordering::SeqCst), 0, "no lookup for a public route");
+    Ok(())
+  }
+
+  /// Acceptance criterion 1 of issue #31: a registration under a scoped
+  /// policy, and nothing else, is what protects the handler. No layer is
+  /// applied by hand anywhere in this module, so a router that only enforces
+  /// what a caller composed answers `200` and fails this.
+  #[tokio::test]
+  async fn a_scoped_registration_refuses_an_unauthenticated_request() -> Result<()> {
+    let protected = protected(Ok(Some(live_record())));
+
+    let response = protected.router.oneshot(request(PROTECTED, &[])?).await?;
+
+    assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
+    assert_eq!(response.headers().get(header::WWW_AUTHENTICATE), Some(&"Bearer".parse()?));
+    assert_eq!(
+      body_of(response).await?.pointer("/type"),
+      Some(&json!("/problems/authentication-required"))
+    );
+    assert_eq!(protected.lookup.calls.load(Ordering::SeqCst), 0, "no header, so no lookup");
+    assert_eq!(
+      protected.handler_calls.load(Ordering::SeqCst),
+      0,
+      "the handler ran unauthenticated"
+    );
+    Ok(())
+  }
+
+  /// Acceptance criteria 1 to 3 of issue #31 for every policy class. Each
+  /// scoped policy is driven three ways: no credential is the `401`; a
+  /// principal holding every scope but the required one is the `403` naming
+  /// that scope, after one lookup and before the handler; a principal holding
+  /// exactly the required scope reaches the handler after one lookup, which
+  /// reads that principal back. `Public` reaches its handler with no
+  /// credential and no lookup.
+  ///
+  /// The required scope is the table in `docs/architecture/http_v1_decisions.md`,
+  /// matched exhaustively, so a seventh policy stops this compiling rather
+  /// than going untested. The "every scope but the required one" row is what
+  /// separates "holds the scope" from "holds a scope".
+  #[tokio::test]
+  async fn every_policy_class_answers_401_403_and_authorized_through_the_router() -> Result<()> {
+    const POLICIES: [RoutePolicy; 6] = [
+      RoutePolicy::Public,
+      RoutePolicy::CatalogRead,
+      RoutePolicy::MilitaryRead,
+      RoutePolicy::CurationRead,
+      RoutePolicy::CurationWrite,
+      RoutePolicy::Admin,
+    ];
+    const ALL_SCOPES: [Scope; 5] = [
+      Scope::CatalogRead,
+      Scope::MilitaryRead,
+      Scope::CurationRead,
+      Scope::CurationWrite,
+      Scope::Admin,
+    ];
+    const fn decided_scope(policy: RoutePolicy) -> Option<Scope> {
+      match policy {
+        RoutePolicy::Public => None,
+        RoutePolicy::CatalogRead => Some(Scope::CatalogRead),
+        RoutePolicy::MilitaryRead => Some(Scope::MilitaryRead),
+        RoutePolicy::CurationRead => Some(Scope::CurationRead),
+        RoutePolicy::CurationWrite => Some(Scope::CurationWrite),
+        RoutePolicy::Admin => Some(Scope::Admin),
+      }
+    }
+    let bearer = format!("Bearer {TOKEN}");
+
+    for policy in POLICIES {
+      let path = format!("/__test/{policy:?}");
+      let Some(required) = decided_scope(policy) else {
+        let public = protected_under(policy, &path, Ok(Some(live_record())));
+
+        let response = public.router.oneshot(request(&path, &[])?).await?;
+
+        assert_eq!(response.status(), StatusCode::OK, "{policy:?}");
+        assert_eq!(public.lookup.calls.load(Ordering::SeqCst), 0, "{policy:?}: lookups");
+        assert_eq!(public.handler_calls.load(Ordering::SeqCst), 1, "{policy:?}: handler");
+        continue;
+      };
+
+      let unauthenticated =
+        protected_under(policy, &path, Ok(Some(record_with(ALL_SCOPES.to_vec()))));
+      let response = unauthenticated.router.oneshot(request(&path, &[])?).await?;
+      assert_eq!(response.status(), StatusCode::UNAUTHORIZED, "{policy:?}: no credential");
+      assert_eq!(unauthenticated.lookup.calls.load(Ordering::SeqCst), 0, "{policy:?}: lookups");
+      assert_eq!(unauthenticated.handler_calls.load(Ordering::SeqCst), 0, "{policy:?}: handler");
+
+      let others = ALL_SCOPES.into_iter().filter(|scope| *scope != required).collect();
+      let forbidden = protected_under(policy, &path, Ok(Some(record_with(others))));
+      let response = forbidden.router.oneshot(request(&path, &[&bearer])?).await?;
+      assert_eq!(response.status(), StatusCode::FORBIDDEN, "{policy:?}: every other scope");
+      assert!(response.headers().get(header::WWW_AUTHENTICATE).is_none(), "{policy:?}: challenged");
+      let document = body_of(response).await?;
+      assert_eq!(
+        document.pointer("/type"),
+        Some(&json!("/problems/insufficient-scope")),
+        "{policy:?}"
+      );
+      assert_eq!(document.pointer("/required_scope"), Some(&json!(required.code())), "{policy:?}");
+      assert_eq!(forbidden.lookup.calls.load(Ordering::SeqCst), 1, "{policy:?}: lookups");
+      assert_eq!(forbidden.handler_calls.load(Ordering::SeqCst), 0, "{policy:?}: handler");
+
+      let authorized = protected_under(policy, &path, Ok(Some(record_with(vec![required]))));
+      let response = authorized.router.oneshot(request(&path, &[&bearer])?).await?;
+      assert_eq!(response.status(), StatusCode::OK, "{policy:?}: exactly the scope");
+      let document = body_of(response).await?;
+      assert_eq!(document.pointer("/scopes"), Some(&json!([required.code()])), "{policy:?}");
+      assert_eq!(authorized.lookup.calls.load(Ordering::SeqCst), 1, "{policy:?}: lookups");
+      assert_eq!(authorized.handler_calls.load(Ordering::SeqCst), 1, "{policy:?}: handler");
+    }
+    Ok(())
+  }
+
+  /// axum answers a `HEAD` with the `GET` handler when no `HEAD` is registered
+  /// (`method_routing.rs`: `call!(req, HEAD, get)`), so the `GET`'s wrapper
+  /// is what must run for it.
+  #[tokio::test]
+  async fn a_head_request_to_a_scoped_get_route_is_refused_without_a_credential() -> Result<()> {
+    let protected = protected(Ok(Some(live_record())));
+
+    let response = protected.router.oneshot(Request::head(PROTECTED).body(Body::empty())?).await?;
+
+    assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
+    assert_eq!(protected.handler_calls.load(Ordering::SeqCst), 0, "the handler ran for HEAD");
+    Ok(())
+  }
+
+  /// The `403` in full, on a nested route: the caller's path, the problem
+  /// media type, the caller's request ID, no challenge, and a handler that
+  /// never ran.
+  #[tokio::test]
+  async fn an_insufficient_scope_refusal_is_the_403_document_with_no_challenge() -> Result<()> {
+    const NESTED: &str = "/__test/nested/decisions";
+    let lookup = Arc::new(FakeLookup {
+      outcome: Mutex::new(Ok(Some(record_with(vec![Scope::CurationRead])))),
+      calls: AtomicUsize::new(0),
+    });
+    let handler_calls = Arc::new(AtomicUsize::new(0));
+    let calls = Arc::clone(&handler_calls);
+    let inner =
+      Routes::new().route(RouteMethod::Post, "/decisions", RoutePolicy::CurationWrite, move || {
+        let calls = Arc::clone(&calls);
+        async move {
+          calls.fetch_add(1, Ordering::SeqCst);
+          StatusCode::OK
+        }
+      });
+    let router =
+      router_with_routes(state(lookup.clone()), Routes::new().nest("/__test/nested", inner));
+
+    let response = router
+      .oneshot(
+        Request::post(NESTED)
+          .header("x-request-id", REQUEST_ID)
+          .header(header::AUTHORIZATION, format!("Bearer {TOKEN}"))
+          .body(Body::empty())?,
+      )
+      .await?;
+
+    let (status, [content_type, challenge, request_id], body) = signature(response).await?;
+    assert_eq!(status, StatusCode::FORBIDDEN);
+    assert_eq!(content_type.as_ref(), Some(&"application/problem+json".parse()?));
+    assert!(challenge.is_none(), "a 403 has judged the credential and must not challenge");
+    assert_eq!(request_id.as_ref(), Some(&REQUEST_ID.parse()?), "correlated");
+    let document: Value = serde_json::from_slice(&body)?;
+    assert_eq!(document.pointer("/type"), Some(&json!("/problems/insufficient-scope")));
+    assert_eq!(document.pointer("/instance"), Some(&json!(NESTED)), "the caller's path");
+    assert_eq!(document.pointer("/required_scope"), Some(&json!("CURATION_WRITE")));
+    assert_eq!(lookup.calls.load(Ordering::SeqCst), 1, "one lookup");
+    assert_eq!(handler_calls.load(Ordering::SeqCst), 0, "the handler ran");
     Ok(())
   }
 }

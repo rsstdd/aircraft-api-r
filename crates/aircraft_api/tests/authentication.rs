@@ -21,9 +21,7 @@ use std::{
 };
 
 use aircraft_api::{
-  ApiState, ApplicationRouter, PerimeterLimits,
-  authentication::require_authentication,
-  router_with_routes,
+  ApiState, ApplicationRouter, PerimeterLimits, router_with_routes,
   routes::{RouteMethod, RoutePolicy, Routes},
   shutdown::ShutdownState,
 };
@@ -80,9 +78,10 @@ impl CredentialLookup for Counting {
   }
 }
 
-fn state() -> ApiState {
+fn state(lookup: Arc<dyn CredentialLookup>) -> ApiState {
   ApiState {
     readiness: Arc::new(AlwaysReady),
+    authentication: Arc::new(AuthenticationService::new(lookup)),
     version: "9.9.9-test",
     build_commit: None,
     shutdown: ShutdownState::new(),
@@ -91,29 +90,26 @@ fn state() -> ApiState {
   }
 }
 
+/// A `CatalogRead` route over the real adapter. Nothing is layered on by
+/// hand: the registration is what protects it.
 fn protected_router(pool: &PgPool) -> (ApplicationRouter, Arc<Counting>) {
   let lookup = Arc::new(Counting {
     inner: SqlxCredentialLookup::from_pool(pool.clone()),
     calls: AtomicUsize::new(0),
   });
-  let routes = Routes::new()
-    .route(
-      RouteMethod::Get,
-      PROTECTED,
-      RoutePolicy::CatalogRead,
-      |Extension(principal): Extension<AuthenticatedPrincipal>| async move {
-        Json(json!({
-          "principal_id": principal.principal_id(),
-          "scopes": principal.scopes().iter().map(|scope| scope.code()).collect::<Vec<_>>(),
-          "tier": principal.tier(),
-        }))
-      },
-    )
-    .route_layer(axum::middleware::from_fn_with_state(
-      Arc::new(AuthenticationService::new(lookup.clone())),
-      require_authentication,
-    ));
-  (router_with_routes(state(), routes), lookup)
+  let routes = Routes::new().route(
+    RouteMethod::Get,
+    PROTECTED,
+    RoutePolicy::CatalogRead,
+    |Extension(principal): Extension<AuthenticatedPrincipal>| async move {
+      Json(json!({
+        "principal_id": principal.principal_id(),
+        "scopes": principal.scopes().iter().map(|scope| scope.code()).collect::<Vec<_>>(),
+        "tier": principal.tier(),
+      }))
+    },
+  );
+  (router_with_routes(state(lookup.clone()), routes), lookup)
 }
 
 async fn principal(pool: &PgPool, name: &str) -> TestResult<i64> {
@@ -217,16 +213,15 @@ async fn a_real_issued_credential_resolves_its_principal_grants_and_tier_in_one_
 /// Acceptance criterion 2 over real rows. Each rejected state has its own
 /// credential and principal, so no case depends on another's mutation, and
 /// every rejection's signature is compared to the first one's under the same
-/// request ID. A zero-grant principal is the accepted row of the same table,
-/// because the shape that distinguishes it -- an empty list rather than a
-/// missing row -- is a database fact too.
+/// request ID. A live credential of a principal with no grants is not a row
+/// here: it is accepted, and refused afterwards for its scope, which
+/// `an_authenticated_principal_without_the_route_scope_is_forbidden` covers.
 #[tokio::test]
 async fn every_real_rejected_state_answers_the_same_401_after_one_lookup() -> TestResult {
   let (_container, pool) = start_postgres(2, Duration::from_secs(2)).await?;
   install_schema(&pool).await?;
 
-  let ungranted = principal(&pool, "ungranted").await?;
-  let live = issue(&pool, ungranted).await?;
+  let live = issue(&pool, principal(&pool, "live").await?).await?;
 
   let altered = issue(&pool, principal(&pool, "altered").await?).await?;
   let mut wrong_secret = altered.clear.expose_secret().to_owned();
@@ -252,17 +247,16 @@ async fn every_real_rejected_state_answers_the_same_401_after_one_lookup() -> Te
     1,
   );
 
-  let cases: [(&str, &str, bool); 5] = [
-    ("live credential, no grants", live.clear.expose_secret(), true),
-    ("unknown key", &unknown, false),
-    ("altered secret", &wrong_secret, false),
-    ("revoked credential", revoked.clear.expose_secret(), false),
-    ("disabled principal", disabled.clear.expose_secret(), false),
+  let cases: [(&str, &str); 4] = [
+    ("unknown key", &unknown),
+    ("altered secret", &wrong_secret),
+    ("revoked credential", revoked.clear.expose_secret()),
+    ("disabled principal", disabled.clear.expose_secret()),
   ];
   let issued = [&live, &altered, &revoked, &disabled];
 
   let mut baseline: Option<Signature> = None;
-  for (case, token, accepted) in cases {
+  for (case, token) in cases {
     let (router, lookup) = protected_router(&pool);
 
     let response = router.oneshot(bearer(token)?).await?;
@@ -278,13 +272,6 @@ async fn every_real_rejected_state_answers_the_same_401_after_one_lookup() -> Te
           .await?;
       assert_absent(&body, &stored, "a stored digest");
     }
-    if accepted {
-      assert_eq!(status, StatusCode::OK, "{case}");
-      let document: Value = serde_json::from_slice(&body)?;
-      assert_eq!(document.pointer("/principal_id"), Some(&json!(ungranted)), "{case}");
-      assert_eq!(document.pointer("/scopes"), Some(&json!([])), "{case}: no grants is empty");
-      continue;
-    }
     match &baseline {
       None => {
         assert_eq!(status, StatusCode::UNAUTHORIZED, "{case}");
@@ -298,5 +285,44 @@ async fn every_real_rejected_state_answers_the_same_401_after_one_lookup() -> Te
       Some(first) => assert_eq!(&(status, headers, body), first, "{case}: signature differs"),
     }
   }
+  Ok(())
+}
+
+/// Acceptance criterion 2 of issue #31 over real rows: the grants the
+/// unchanged adapter reads are what refuse a principal. One with no
+/// `principal_scope_grants` row presents a live credential and is refused for
+/// the route's scope rather than for the credential -- the `403` names
+/// `CATALOG_READ`, carries no challenge, and discloses neither the token nor
+/// its stored digest -- after the same single statement.
+#[tokio::test]
+async fn an_authenticated_principal_without_the_route_scope_is_forbidden() -> TestResult {
+  let (_container, pool) = start_postgres(2, Duration::from_secs(2)).await?;
+  install_schema(&pool).await?;
+  let ungranted = issue(&pool, principal(&pool, "ungranted").await?).await?;
+  let (router, lookup) = protected_router(&pool);
+
+  let response = router.oneshot(bearer(ungranted.clear.expose_secret())?).await?;
+
+  assert_eq!(lookup.calls.load(Ordering::SeqCst), 1, "exactly one statement");
+  let (status, headers, body) = signature(response).await?;
+  assert_eq!(status, StatusCode::FORBIDDEN);
+  assert_eq!(
+    headers[0].as_ref().map(HeaderValue::as_bytes),
+    Some(&b"application/problem+json"[..]),
+    "media type"
+  );
+  assert!(headers[1].is_none(), "a 403 has judged the credential and must not challenge");
+  assert_eq!(headers[2].as_ref().map(HeaderValue::as_bytes), Some(REQUEST_ID.as_bytes()));
+  assert_absent(&body, ungranted.clear.expose_secret(), "the clear token");
+  let stored: String =
+    query_scalar("SELECT secret_digest FROM aircraft_auth.api_credentials WHERE key_id = $1")
+      .bind(ungranted.record.key_id)
+      .fetch_one(&pool)
+      .await?;
+  assert_absent(&body, &stored, "the stored digest");
+  let document: Value = serde_json::from_slice(&body)?;
+  assert_eq!(document.pointer("/type"), Some(&json!("/problems/insufficient-scope")));
+  assert_eq!(document.pointer("/instance"), Some(&json!(PROTECTED)));
+  assert_eq!(document.pointer("/required_scope"), Some(&json!("CATALOG_READ")));
   Ok(())
 }
