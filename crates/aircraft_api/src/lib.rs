@@ -160,7 +160,9 @@ pub fn router(state: ApiState) -> ApplicationRouter {
 /// of the route-policy rule: a handler reaches this router only through
 /// [`Routes::route`], which will not register one without a [`RoutePolicy`],
 /// and nothing can be added once it has. A bare `Router`, however it was
-/// built, does not type-check here:
+/// built, does not type-check here. The pinned `E0308` is checked on nightly
+/// only; stable rustdoc passes any compile error, so the body is kept to the
+/// one expression that would compile if the boundary opened:
 ///
 /// ```compile_fail,E0308
 /// use aircraft_api::{ApiState, ApplicationRouter, router_with_routes};
@@ -211,7 +213,9 @@ pub fn router_with_routes(state: ApiState, additional_routes: Routes) -> Applica
 /// It is a service and nothing more. `Router`'s builder methods are not
 /// reachable through it, so the rule [`router_with_routes`] enforces on the
 /// way in cannot be undone on the way out: a handler added after assembly
-/// would carry no policy, and there is no way to add one.
+/// would carry no policy, and there is no way to add one. As above, the
+/// `E0599` is checked on nightly only, so the body is the one call that would
+/// compile if a `route` method existed:
 ///
 /// ```compile_fail,E0599
 /// use aircraft_api::{ApiState, router};
@@ -1472,12 +1476,14 @@ mod tests {
   /// loop over published operations.
   #[test]
   fn openapi_and_router_share_the_same_route_policy_inventory() -> Result<()> {
-    /// The Path Item members that are operations, from the `OpenAPI` 3.1
-    /// specification, less `options`, which the perimeter answers before the
-    /// router. Any other member is neither an operation nor one this document
-    /// is expected to carry.
-    fn operation(key: &str) -> Result<RouteMethod> {
-      Ok(match key {
+    /// The Path Item members of the `OpenAPI` 3.1 specification: the
+    /// operations this router can serve, and the members that describe the
+    /// path rather than an operation, which the join skips. `options` is an
+    /// operation the perimeter answers before the router, and so belongs to
+    /// neither; anything else is a member this document is not expected to
+    /// carry.
+    fn operation(key: &str) -> Result<Option<RouteMethod>> {
+      Ok(Some(match key {
         "delete" => RouteMethod::Delete,
         "get" => RouteMethod::Get,
         "head" => RouteMethod::Head,
@@ -1485,8 +1491,9 @@ mod tests {
         "post" => RouteMethod::Post,
         "put" => RouteMethod::Put,
         "trace" => RouteMethod::Trace,
+        "$ref" | "summary" | "description" | "servers" | "parameters" => return Ok(None),
         other => anyhow::bail!("{other} is not an OpenAPI operation"),
-      })
+      }))
     }
 
     let declared = declared_routes();
@@ -1498,7 +1505,7 @@ mod tests {
     for (path, item) in paths {
       let members = item.as_object().with_context(|| format!("{path} is not an object"))?;
       for key in members.keys() {
-        let method = operation(key)?;
+        let Some(method) = operation(key)? else { continue };
         let registrations = declared
           .inventory()
           .iter()
