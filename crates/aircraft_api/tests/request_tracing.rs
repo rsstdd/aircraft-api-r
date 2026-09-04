@@ -1,5 +1,6 @@
-// A failing assertion is the point of a test, so panicking accessors are fine.
-#![allow(clippy::expect_used)]
+// A failing assertion is the point of a test, so panicking accessors are fine,
+// and the lookup below fails by panicking on a call that must never happen.
+#![allow(clippy::expect_used, clippy::panic)]
 
 //! Trace-content gates for the correlation layer.
 //!
@@ -23,7 +24,6 @@ use std::{
 
 use aircraft_api::{
   ApiState, ApplicationRouter, PerimeterLimits,
-  authentication::require_authentication,
   problem::ApiProblem,
   router_with_routes,
   routes::{RouteMethod, RoutePolicy, Routes},
@@ -245,9 +245,28 @@ async fn an_unknown_error_returns_a_generic_correlated_500() -> Result<()> {
   Ok(())
 }
 
+/// Panics if consulted: only the protected fixture below authenticates, and
+/// it supplies its own lookup.
+struct NeverLooksUp;
+
+#[async_trait]
+impl CredentialLookup for NeverLooksUp {
+  async fn resolve(
+    &self,
+    _key_id: Uuid,
+  ) -> Result<Option<CredentialLookupRecord>, PersistenceError> {
+    panic!("no route here may consult the credential lookup");
+  }
+}
+
 fn state(readiness: Arc<dyn ReadinessProbe>) -> ApiState {
+  state_with(readiness, Arc::new(NeverLooksUp))
+}
+
+fn state_with(readiness: Arc<dyn ReadinessProbe>, lookup: Arc<dyn CredentialLookup>) -> ApiState {
   ApiState {
     readiness,
+    authentication: Arc::new(AuthenticationService::new(lookup)),
     version: "9.9.9-test",
     build_commit: None,
     shutdown: ShutdownState::new(),
@@ -406,21 +425,18 @@ impl CredentialLookup for Lookup {
   }
 }
 
+/// A `CatalogRead` route whose lookup is the case's. Nothing is layered on by
+/// hand: the registration is what authenticates it.
 fn protected_router(lookup: Lookup) -> ApplicationRouter {
-  let routes = Routes::new()
-    .route(
-      RouteMethod::Get,
-      PROTECTED,
-      RoutePolicy::CatalogRead,
-      |Extension(principal): Extension<AuthenticatedPrincipal>| async move {
-        principal.principal_id().to_string()
-      },
-    )
-    .route_layer(axum::middleware::from_fn_with_state(
-      Arc::new(AuthenticationService::new(Arc::new(lookup))),
-      require_authentication,
-    ));
-  router_with_routes(state(Arc::new(AlwaysReady)), routes)
+  let routes = Routes::new().route(
+    RouteMethod::Get,
+    PROTECTED,
+    RoutePolicy::CatalogRead,
+    |Extension(principal): Extension<AuthenticatedPrincipal>| async move {
+      principal.principal_id().to_string()
+    },
+  );
+  router_with_routes(state_with(Arc::new(AlwaysReady), Arc::new(lookup)), routes)
 }
 
 /// Acceptance criterion 4 for the authentication layer, on every outcome.

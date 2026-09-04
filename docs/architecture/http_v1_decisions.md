@@ -127,8 +127,10 @@ rather than being duplicated in the JSON body.
   lookup and compares the digest in constant time. Credentials and digests never
   enter responses or traces.
 - Missing, malformed, unknown, revoked, or disabled credentials produce the same
-  `401 Unauthorized` contract. An authenticated principal without the required
-  scope receives `403 Forbidden` and the response names that scope.
+  `401 Unauthorized` contract, whose bare `Bearer` challenge the problem
+  renderer adds. An authenticated principal without the required scope
+  receives `403 Forbidden` and the response names that scope in its
+  `required_scope` member, with no challenge.
 - Every route is registered with exactly one closed policy:
   `Public`, `CatalogRead`, `MilitaryRead`, `CurationRead`, `CurationWrite`, or
   `Admin`. Policy omission must be unavailable at the registration boundary.
@@ -136,11 +138,21 @@ rather than being duplicated in the JSON body.
   policy metadata. That boundary is `aircraft_api::routes::Routes`, whose
   `route` takes a `RoutePolicy` and which is the only value
   `router_with_routes` accepts, and the sealed `ApplicationRouter` it returns,
-  to which no route can be added. The inventory it records is read against
-  this list by
+  to which no route can be added. Registration is also enforcement: `route`
+  wraps the handler so that, for a scoped policy, the request is
+  authenticated and the principal's grants compared with the policy's scope
+  before dispatch, with no per-route composition step to forget. The matrix
+  is `every_policy_class_answers_401_403_and_authorized_through_the_router`;
+  the real-grant cases are in `crates/aircraft_api/tests/authentication.rs`.
+  The inventory it records is read against this list by
   `every_served_route_is_registered_once_and_the_operational_routes_are_public`
   and against the generated document by
-  `openapi_and_router_share_the_same_route_policy_inventory`.
+  `openapi_and_router_share_the_same_route_policy_inventory`, and it is what
+  `aircraft_api::openapi` publishes each scoped operation's security
+  requirement from, under the `apiCredential` bearer scheme with the scope
+  code as the requirement's role name. It is the only such source: a
+  `security(...)` path attribute is refused by
+  `no_operation_declares_security_outside_the_route_inventory`.
 - Health, readiness, version, and OpenAPI are `Public`. Ordinary catalog reads
   use `CatalogRead`; military data uses `MilitaryRead`; pending evidence uses
   `CurationRead`; curation decisions use `CurationWrite`; credential and other
