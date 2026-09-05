@@ -30,9 +30,7 @@ multiple-versions = "warn"
 wildcards = "deny"
 allow-wildcard-paths = true
 highlight = "all"
-skip = [
-    { crate = "wit-bindgen", reason = "getrandom currently resolves separate WASI preview 2 and preview 3 support trees" },
-]
+skip = []
 
 [bans.build]
 # Exact versions approved from the current lockfile. Dependency updates must
@@ -44,7 +42,7 @@ allow-build-scripts = [
     "erased-serde@0.4.10",
     "generic-array@0.14.9",
     "getrandom@0.3.4",
-    "getrandom@0.4.2",
+    "getrandom@0.4.3",
     "httparse@1.10.1",
     "iana-time-zone-haiku@0.1.2",
     "icu_normalizer_data@2.1.1",
@@ -83,7 +81,6 @@ allow-build-scripts = [
     "windows_x86_64_msvc@0.48.5",
     "windows_x86_64_msvc@0.52.6",
     "wit-bindgen@0.46.0",
-    "wit-bindgen@0.51.0",
     "zerocopy@0.8.56",
     "zmij@1.0.21",
 ]
