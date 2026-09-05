@@ -134,7 +134,21 @@ jobs:
         with:
           tool: cargo-audit,cargo-deny
       - run: cargo audit
-      - run: cargo deny --locked check
+      # `[bans.build].allow-build-scripts` pins an exact `name@version`, so any
+      # bump of a crate that ships a build script reddens this job with no sign
+      # that the fix is mechanical. Point at the command that reconciles the
+      # list, but only for that diagnostic: an advisory or a license rejection
+      # is a judgment call `deny-pins` cannot make.
+      - name: Check advisories, bans, licenses, and sources
+        run: |
+          set -o pipefail
+          status=0
+          cargo deny --locked check 2>&1 | tee "${RUNNER_TEMP}/deny-check.log" || status=$?
+          # Paired with OFFENDING_CODE in xtask/src/deny_pins.rs.
+          if grep --quiet 'build-script-not-allowed' "${RUNNER_TEMP}/deny-check.log"; then
+            echo "::notice::A build script is pinned at a version the lockfile no longer resolves. Run \`just deny-pins --fix\` (or \`cargo xtask deny-pins --fix\`), review the reported script path and checksum, and commit the deny.toml change."
+          fi
+          exit "${status}"
 
   rustdoc:
     name: Rust documentation
