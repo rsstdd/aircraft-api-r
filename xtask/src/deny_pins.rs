@@ -32,7 +32,10 @@ const LOCKFILE: &str = "Cargo.lock";
 /// indentation of the surrounding table does not matter.
 const LIST_OPENING: &str = "allow-build-scripts = [";
 const LIST_CLOSING: &str = "]";
-/// The `cargo deny` diagnostic this command exists to resolve.
+/// The `cargo deny` diagnostic this command exists to resolve. The
+/// "Advisories and licenses" job in `.github/workflows/ci.yml` matches the
+/// same code in `cargo deny`'s human output to decide whether a failure is
+/// one this command can fix.
 const OFFENDING_CODE: &str = "build-script-not-allowed";
 /// Indentation of one allowlist entry, matching the checked-in file.
 const ENTRY_INDENT: &str = "    ";
