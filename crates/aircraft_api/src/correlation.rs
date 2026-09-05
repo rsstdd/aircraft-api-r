@@ -101,12 +101,13 @@ impl RequestId {
     // fallback below is unreachable; it exists because an unreachable panic on a
     // request path is worse than an uninformative header. It is deliberately not
     // UUID-shaped, so one in a log is a signal rather than a puzzle.
-    const UNRENDERABLE: HeaderValue = HeaderValue::from_static("generated-id-unavailable");
-
     let mut buffer = Uuid::encode_buffer();
     let rendered = Uuid::new_v4().hyphenated().encode_lower(&mut buffer);
 
-    Self(HeaderValue::from_str(rendered).unwrap_or(UNRENDERABLE))
+    Self(
+      HeaderValue::from_str(rendered)
+        .unwrap_or(HeaderValue::from_static("generated-id-unavailable")),
+    )
   }
 
   fn into_header_value(self) -> HeaderValue {

@@ -12,21 +12,22 @@
 //! than the resolved graph. Deferring to the tool that owns the check keeps the
 //! two views from drifting apart.
 //!
+//! Deciding which pin a new offender *replaces* needs one more input. A crate
+//! can be pinned at several versions at once, so the lockfile says which of
+//! those versions still resolves; the ones that no longer do are the entries
+//! the bump superseded.
+//!
 //! This does not decide whether a new build script is acceptable. It reports
 //! the script's path and checksum so a reviewer can judge, and leaves that
 //! judgment in the diff.
 
-use std::{
-  collections::{BTreeMap, BTreeSet},
-  fs,
-  path::Path,
-  process::Command,
-};
+use std::{collections::BTreeSet, fs, path::Path, process::Command};
 
 use anyhow::{Context, Result, bail};
 use serde::Deserialize;
 
 const DENY_MANIFEST: &str = "deny.toml";
+const LOCKFILE: &str = "Cargo.lock";
 /// The line that opens the allowlist. Matched after trimming, so the
 /// indentation of the surrounding table does not matter.
 const LIST_OPENING: &str = "allow-build-scripts = [";
@@ -98,8 +99,15 @@ pub fn check(workspace_root: &Path, options: &Options) -> Result<()> {
     return Ok(());
   }
 
-  let updated = apply(&pinned, &offenders);
-  let report = render(&pinned, &offenders);
+  let lockfile_path = workspace_root.join(LOCKFILE);
+  let resolved = resolved_versions(
+    &fs::read_to_string(&lockfile_path)
+      .with_context(|| format!("failed to read {}", lockfile_path.display()))?,
+  );
+
+  let displaced = displaced(&pinned, &offenders, &resolved);
+  let updated = apply(&pinned, &offenders, &displaced);
+  let report = render(&displaced, &offenders);
 
   if options.fix {
     let rewritten = rewrite(&manifest, &updated)?;
@@ -158,17 +166,66 @@ fn parse_diagnostics(output: &str) -> BTreeSet<Offender> {
     .collect()
 }
 
-/// Produces the corrected pin set: each offender replaces any existing entry
-/// for the same crate, and every unrelated pin is preserved untouched.
-fn apply(pinned: &BTreeSet<String>, offenders: &BTreeSet<Offender>) -> BTreeSet<String> {
-  let superseded: BTreeMap<&str, &Offender> =
-    offenders.iter().map(|offender| (offender.name.as_str(), offender)).collect();
+/// The pins an offender supersedes: an entry for the same crate that the
+/// lockfile no longer resolves.
+///
+/// Matching on the crate name alone is wrong for a crate pinned at several
+/// versions, and the failure is not a stale entry left behind but a live one
+/// deleted. `getrandom` is pinned at both `0.3.4` and `0.4.x`; when a bump made
+/// `0.4.3` an offender, a name-only match dropped the still-resolved `0.3.4`
+/// pin, which made `0.3.4` the next offender, so `--fix` flipped between the
+/// two forever and `cargo deny` failed after every run. The `windows_*` crates
+/// are pinned at two versions each for the same reason.
+fn displaced<'a>(
+  pinned: &'a BTreeSet<String>,
+  offenders: &BTreeSet<Offender>,
+  resolved: &BTreeSet<String>,
+) -> BTreeSet<&'a str> {
+  let offending: BTreeSet<&str> = offenders.iter().map(|offender| offender.name.as_str()).collect();
 
-  let mut updated: BTreeSet<String> = pinned
+  pinned
     .iter()
-    .filter(|pin| pin.split_once('@').is_none_or(|(name, _)| !superseded.contains_key(name)))
-    .cloned()
-    .collect();
+    .filter(|pin| {
+      pin.split_once('@').is_some_and(|(name, _)| offending.contains(name))
+        && !resolved.contains(pin.as_str())
+    })
+    .map(String::as_str)
+    .collect()
+}
+
+/// Every `name@version` the lockfile resolves.
+///
+/// Read as text because the only question asked of it is whether a pin is still
+/// live. An over-inclusive answer keeps a pin that could have gone, which a
+/// reviewer sees in the diff; an under-inclusive one deletes a pin that is
+/// still required, which is the bug this exists to prevent.
+fn resolved_versions(lockfile: &str) -> BTreeSet<String> {
+  let mut resolved = BTreeSet::new();
+  let mut name: Option<&str> = None;
+
+  for line in lockfile.lines() {
+    match (line.strip_prefix("name = "), line.strip_prefix("version = ")) {
+      (Some(package), _) => name = Some(package.trim_matches('"')),
+      (_, Some(version)) => {
+        if let Some(package) = name.take() {
+          resolved.insert(format!("{package}@{}", version.trim_matches('"')));
+        }
+      }
+      _ => {}
+    }
+  }
+  resolved
+}
+
+/// Produces the corrected pin set: every offender is pinned, the entries it
+/// superseded are dropped, and every other pin is preserved untouched.
+fn apply(
+  pinned: &BTreeSet<String>,
+  offenders: &BTreeSet<Offender>,
+  displaced: &BTreeSet<&str>,
+) -> BTreeSet<String> {
+  let mut updated: BTreeSet<String> =
+    pinned.iter().filter(|pin| !displaced.contains(pin.as_str())).cloned().collect();
   updated.extend(offenders.iter().map(Offender::pin));
   updated
 }
@@ -214,11 +271,12 @@ fn rewrite(manifest: &str, updated: &BTreeSet<String>) -> Result<String> {
   Ok(format!("{head}{LIST_OPENING}\n{entries}{closing}{tail}"))
 }
 
-fn render(pinned: &BTreeSet<String>, offenders: &BTreeSet<Offender>) -> String {
+fn render(displaced: &BTreeSet<&str>, offenders: &BTreeSet<Offender>) -> String {
   let mut lines = vec!["build-script pins are out of date:".to_owned()];
   for offender in offenders {
-    let superseded =
-      pinned.iter().find(|pin| pin.split_once('@').is_some_and(|(name, _)| name == offender.name));
+    let superseded = displaced
+      .iter()
+      .find(|pin| pin.split_once('@').is_some_and(|(name, _)| name == offender.name));
     match superseded {
       Some(previous) => lines.push(format!("  {previous} -> {}", offender.pin())),
       None => lines.push(format!("  + {} (not previously pinned)", offender.pin())),
@@ -243,6 +301,31 @@ allow-build-scripts = [
 ]
 executables = \"deny\"
 ";
+
+  /// Resolves the versions MANIFEST pins, except `anyhow@1.0.103`, which the
+  /// bump under test replaced.
+  const LOCK: &str = "\
+[[package]]
+name = \"anyhow\"
+version = \"1.0.104\"
+
+[[package]]
+name = \"getrandom\"
+version = \"0.3.4\"
+
+[[package]]
+name = \"getrandom\"
+version = \"0.4.3\"
+
+[[package]]
+name = \"serde_json\"
+version = \"1.0.150\"
+";
+
+  /// Applies a set of offenders the way `check` does.
+  fn fix(pinned: &BTreeSet<String>, offenders: &BTreeSet<Offender>) -> BTreeSet<String> {
+    apply(pinned, offenders, &displaced(pinned, offenders, &resolved_versions(LOCK)))
+  }
 
   fn diagnostic(name: &str, version: &str) -> String {
     format!(
@@ -351,7 +434,7 @@ executables = \"deny\"
     let pinned = parse_pins(MANIFEST)?;
     let offenders = parse_diagnostics(&diagnostic("anyhow", "1.0.104"));
 
-    let updated = apply(&pinned, &offenders);
+    let updated = fix(&pinned, &offenders);
 
     assert!(updated.contains("anyhow@1.0.104"), "{updated:?}");
     assert!(!updated.contains("anyhow@1.0.103"), "the superseded pin must go: {updated:?}");
@@ -364,7 +447,7 @@ executables = \"deny\"
     let pinned = parse_pins(MANIFEST)?;
     let offenders = parse_diagnostics(&diagnostic("libc", "0.2.186"));
 
-    let updated = apply(&pinned, &offenders);
+    let updated = fix(&pinned, &offenders);
 
     assert!(updated.contains("libc@0.2.186"), "{updated:?}");
     assert_eq!(updated.len(), 3, "nothing else may be dropped: {updated:?}");
@@ -405,11 +488,60 @@ executables = \"deny\"
   fn the_report_names_the_supersession_and_the_checksum() -> Result<()> {
     let pinned = parse_pins(MANIFEST)?;
     let offenders = parse_diagnostics(&diagnostic("anyhow", "1.0.104"));
+    let displaced = displaced(&pinned, &offenders, &resolved_versions(LOCK));
 
-    let report = render(&pinned, &offenders);
+    let report = render(&displaced, &offenders);
 
     assert!(report.contains("anyhow@1.0.103 -> anyhow@1.0.104"), "{report}");
     assert!(report.contains("abc123"), "{report}");
+    Ok(())
+  }
+
+  /// The bug this guard exists for: a crate pinned at two versions lost the pin
+  /// the bump did not touch, and `--fix` then oscillated between the two.
+  #[test]
+  fn a_multi_version_crate_keeps_its_other_pins() -> Result<()> {
+    let pinned = parse_pins(
+      &MANIFEST
+        .replace("    \"anyhow@1.0.103\",", "    \"getrandom@0.3.4\",\n    \"getrandom@0.4.2\","),
+    )?;
+    let offenders = parse_diagnostics(&diagnostic("getrandom", "0.4.3"));
+
+    let updated = fix(&pinned, &offenders);
+
+    assert!(updated.contains("getrandom@0.4.3"), "the offender must be pinned: {updated:?}");
+    assert!(
+      updated.contains("getrandom@0.3.4"),
+      "a pin the lockfile still resolves must survive: {updated:?}"
+    );
+    assert!(!updated.contains("getrandom@0.4.2"), "the superseded pin must go: {updated:?}");
+    Ok(())
+  }
+
+  #[test]
+  fn the_lockfile_yields_every_resolved_name_and_version() {
+    let resolved = resolved_versions(LOCK);
+
+    assert!(resolved.contains("getrandom@0.3.4"), "{resolved:?}");
+    assert!(resolved.contains("getrandom@0.4.3"), "{resolved:?}");
+    assert!(!resolved.contains("getrandom@0.4.2"), "{resolved:?}");
+  }
+
+  /// Without this the report names an arbitrary same-crate pin, which is how
+  /// the oscillation read as a sensible `0.3.4 -> 0.4.3` supersession.
+  #[test]
+  fn the_report_names_the_pin_that_is_actually_dropped() -> Result<()> {
+    let pinned = parse_pins(
+      &MANIFEST
+        .replace("    \"anyhow@1.0.103\",", "    \"getrandom@0.3.4\",\n    \"getrandom@0.4.2\","),
+    )?;
+    let offenders = parse_diagnostics(&diagnostic("getrandom", "0.4.3"));
+    let displaced = displaced(&pinned, &offenders, &resolved_versions(LOCK));
+
+    let report = render(&displaced, &offenders);
+
+    assert!(report.contains("getrandom@0.4.2 -> getrandom@0.4.3"), "{report}");
+    assert!(!report.contains("getrandom@0.3.4 ->"), "{report}");
     Ok(())
   }
 }
