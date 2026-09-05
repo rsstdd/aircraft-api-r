@@ -34,11 +34,6 @@ use utoipa::{
 /// status code.
 const PROBLEM_MEDIA_TYPE: &str = "application/problem+json";
 
-/// RFC 6750 section 3: the scheme, and nothing that could vary by credential
-/// state. Added to every `401` by [`ApiProblem::into_response`], so no path
-/// that answers one can leave the challenge off.
-const BEARER_CHALLENGE: HeaderValue = HeaderValue::from_static("Bearer");
-
 // A closed enum rather than a string because these spellings mirror the five
 // `code` values seeded into `aircraft_auth.scopes` by
 // `database/seeds/004_authentication_seed_data.sql`, which names this type in
@@ -416,7 +411,7 @@ impl IntoResponse for ApiProblem {
       // `401`: a `403` has judged the credential and accepted it, and a
       // challenge there would tell the caller to present another one.
       ProblemKind::AuthenticationRequired => {
-        response.headers_mut().insert(header::WWW_AUTHENTICATE, BEARER_CHALLENGE);
+        response.headers_mut().insert(header::WWW_AUTHENTICATE, HeaderValue::from_static("Bearer"));
       }
       ProblemKind::RateLimited { retry_after_seconds } => {
         response.headers_mut().insert(header::RETRY_AFTER, HeaderValue::from(retry_after_seconds));
