@@ -275,6 +275,44 @@ mod tests {
     assert_eq!(decoded, issued, "every member survives the round trip");
   }
 
+  /// The member names outstanding cursors carry, pinned in both directions.
+  ///
+  /// The round-trip test cannot see a rename: `encode` and `decode` would move
+  /// together and cancel out, leaving every cursor a client already holds
+  /// undecodable while `CURSOR_VERSION` still said `1`. `rust-production`
+  /// treats a format this project defines as a durable contract whose
+  /// spellings a test pins, the way `REPORT_SCHEMA_VERSION` is pinned.
+  ///
+  /// Reading the emitted payload as JSON is the half that catches a rename in
+  /// what this build writes; decoding a hand-written token is the half that
+  /// catches one in what it will still accept.
+  #[test]
+  fn the_version_one_payload_carries_the_members_outstanding_cursors_hold() {
+    let fingerprint = filters("category=SPEED");
+    let issued = position("code_asc", "20", "KNOTS");
+    let expected = json!({
+      "version": 1,
+      "sort": "code_asc",
+      "last_value": "20",
+      "tiebreaker": "KNOTS",
+      "filter": fingerprint.to_hex()
+    });
+
+    let emitted =
+      URL_SAFE_NO_PAD.decode(encode(&issued, fingerprint)).expect("this build emits base64url");
+
+    assert_eq!(
+      serde_json::from_slice::<serde_json::Value>(&emitted).expect("the payload is JSON"),
+      expected,
+      "the emitted payload's members are the wire contract"
+    );
+    assert_eq!(
+      decode(&token_of(&expected), fingerprint),
+      Ok(issued),
+      "a token written with those members still decodes"
+    );
+  }
+
   #[test]
   fn an_unreadable_cursor_is_refused_without_being_echoed() {
     let fingerprint = filters("");

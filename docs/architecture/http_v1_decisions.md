@@ -61,6 +61,16 @@ remain future work.
   filters return `400 Bad Request`. Empty and final pages return a null next
   cursor. Offset pagination and a generic SQL query builder are not part of v1.
 
+The bounds above are `PageLimit::DEFAULT` and `PageLimit::MAX` in
+`crates/aircraft_app/src/pagination.rs`, which names this section in turn, and
+the cursor payload is `CURSOR_VERSION` and `CursorTokenV1` in
+`crates/aircraft_api/src/pagination.rs`. The payload's member names are what
+every outstanding cursor carries, so they are pinned in both directions by
+`the_version_one_payload_carries_the_members_outstanding_cursors_hold`:
+renaming one without moving the version would leave clients holding tokens this
+service could no longer read. Each endpoint still owns its sort allowlist, so
+no shared type carries one.
+
 ### Problem responses
 
 - Every API-originated `4xx` or `5xx` response uses RFC 9457 problem details with
