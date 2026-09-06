@@ -68,6 +68,10 @@ dotenvy = "0.15"
 sqlx-core = { version = "=0.8.6", features = ["_rt-tokio", "_tls-rustls-ring-webpki", "chrono", "uuid", "bigdecimal", "json"] }
 sqlx-postgres = { version = "=0.8.6", features = ["chrono", "uuid", "bigdecimal", "json"] }
 
+# Opaque pagination cursors. Already resolved through `sqlx-core`, so this
+# declares a package the lock already carries rather than adding one.
+base64 = "0.22"
+
 # Secret Hygiene & Memory Defenses
 secrecy = { version = "0.10", features = ["serde"] }
 # Fallible OS CSPRNG for credential secrets; already in the graph through uuid
