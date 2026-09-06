@@ -2020,54 +2020,85 @@ mod tests {
     Ok(())
   }
 
-  /// Every optional measurement member is omitted when absent, so none of them
-  /// may be published as required, and none as a nullable union -- `utoipa`
-  /// renders `Option<T>` as nullable unless `#[schema(nullable = false)]` says
-  /// otherwise, which would describe a `null` this API never emits.
+  /// Every optional measurement member is omitted when absent, so none may be
+  /// published as required, and none as a union with `null` -- `utoipa` renders
+  /// `Option<T>` that way unless `#[schema(nullable = false)]` says otherwise,
+  /// and that would describe a `null` this API never emits.
   ///
-  /// The member lists are read against migrations `006`-`008` and `019`, not
-  /// against the DTO, so a field renamed on one side alone fails here.
+  /// Nullability is read structurally, from the two shapes `utoipa` emits: a
+  /// `oneOf` branch of `type: null` for a `$ref` member, and a type union for a
+  /// scalar. Searching the serialized property for the word `null` would also
+  /// match a description, and `raw_unit_code` is exactly where someone would
+  /// quote migration `007`'s "NULL for dimensionless metrics".
+  ///
+  /// Members come from the published document, so one added to either DTO is
+  /// covered without editing this test. The name lists pin the wire contract
+  /// itself, so a renamed or dropped member fails here rather than silently
+  /// changing what clients receive.
   #[test]
   fn optional_measurement_members_are_published_neither_required_nor_nullable() -> Result<()> {
+    fn declares_null(published: &serde_json::Value) -> bool {
+      let union = published
+        .pointer("/type")
+        .and_then(serde_json::Value::as_array)
+        .is_some_and(|types| types.contains(&json!("null")));
+      let branch =
+        published.pointer("/oneOf").and_then(serde_json::Value::as_array).is_some_and(|branches| {
+          branches.iter().any(|branch| branch.pointer("/type") == Some(&json!("null")))
+        });
+      union || branch
+    }
+
     const MEASUREMENT: [&str; 6] = [
-      "raw_value",
-      "raw_unit_code",
-      "canonical_value",
       "canonical_unit_code",
+      "canonical_value",
       "conditions",
       "is_canonical",
+      "raw_unit_code",
+      "raw_value",
     ];
     const CONDITIONS: [&str; 7] = [
       "altitude_ft",
-      "weight_lbs",
-      "weight_label",
       "isa_deviation_c",
+      "notes",
       "power_setting",
       "surface_type",
-      "notes",
+      "weight_label",
+      "weight_lbs",
     ];
     let document = serde_json::to_value(openapi())?;
+    // `declares_null` reads the two shapes OpenAPI 3.1 uses. The 3.0 dialect
+    // spells the same thing as a `nullable: true` key, which that predicate
+    // does not look for, so a dialect change must fail here rather than quietly
+    // disarming the assertion below.
+    assert_eq!(document.pointer("/openapi"), Some(&json!("3.1.0")), "OpenAPI dialect");
 
-    for (component, members) in [
+    for (component, expected) in [
       ("MeasurementResponse", &MEASUREMENT[..]),
       ("MeasurementConditionsResponse", &CONDITIONS[..]),
     ] {
       let schema = document
         .pointer(&format!("/components/schemas/{component}"))
         .context("component is not published")?;
+      let properties = schema
+        .pointer("/properties")
+        .and_then(serde_json::Value::as_object)
+        .context("component publishes no properties")?;
       let required = schema
         .pointer("/required")
         .and_then(serde_json::Value::as_array)
         .cloned()
         .unwrap_or_default();
-      for member in members {
-        let published = schema
-          .pointer(&format!("/properties/{member}"))
-          .with_context(|| format!("{component}.{member} is not published"))?;
+
+      // `serde_json::Map` is a `BTreeMap` here, so both sides are sorted.
+      let names: Vec<&str> = properties.keys().map(String::as_str).collect();
+      assert_eq!(names, expected, "{component} publishes exactly these members");
+
+      for (member, published) in properties {
         assert!(!required.contains(&json!(member)), "{component}.{member} must not be required");
         assert!(
-          !published.to_string().contains("null"),
-          "{component}.{member} must not be a nullable union: {published}"
+          !declares_null(published),
+          "{component}.{member} must not be published as nullable: {published}"
         );
       }
     }
