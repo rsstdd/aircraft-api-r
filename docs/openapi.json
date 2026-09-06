@@ -361,6 +361,11 @@
   },
   "components": {
     "schemas": {
+      "DecimalStringResponse": {
+        "type": "string",
+        "description": "A `NUMERIC` value on the wire: always a JSON string, never a JSON number.\n\nThe published `pattern` is the grammar and deliberately not the capacity:\n`DecimalString` bounds digits at what `PostgreSQL` can store, but\nrepublishing those five-digit quantifiers as a `maxLength` would put a\nstorage detail in the public contract, which the pull-request `oasdiff`\ngate would then freeze.",
+        "pattern": "^-?[0-9]+(\\.[0-9]+)?$"
+      },
       "HealthResponse": {
         "type": "object",
         "required": [
@@ -371,6 +376,78 @@
             "type": "string"
           }
         }
+      },
+      "MeasurementConditionsResponse": {
+        "type": "object",
+        "description": "The conditions a measurement was taken under. Present only when the source\nsupplied at least one; the domain constructor drops an empty set.",
+        "properties": {
+          "altitude_ft": {
+            "$ref": "#/components/schemas/DecimalStringResponse",
+            "description": "Pressure altitude in feet."
+          },
+          "isa_deviation_c": {
+            "$ref": "#/components/schemas/DecimalStringResponse",
+            "description": "Deviation from ISA in degrees Celsius."
+          },
+          "notes": {
+            "type": "string"
+          },
+          "power_setting": {
+            "$ref": "#/components/schemas/PowerSettingResponse"
+          },
+          "surface_type": {
+            "$ref": "#/components/schemas/SurfaceTypeResponse"
+          },
+          "weight_label": {
+            "type": "string"
+          },
+          "weight_lbs": {
+            "$ref": "#/components/schemas/DecimalStringResponse",
+            "description": "Aircraft weight in pounds."
+          }
+        }
+      },
+      "MeasurementResponse": {
+        "type": "object",
+        "description": "One measured fact.\n\nFields are private and the type is built only through [`From`], so no caller\ncan assemble a response the domain constructor would have refused. Raw and\ncanonical units are independent members because conversion changes the unit:\na raw value in `METERS` has a canonical counterpart in `FT`.",
+        "properties": {
+          "canonical_unit_code": {
+            "$ref": "#/components/schemas/UnitCodeResponse"
+          },
+          "canonical_value": {
+            "$ref": "#/components/schemas/DecimalStringResponse"
+          },
+          "conditions": {
+            "$ref": "#/components/schemas/MeasurementConditionsResponse"
+          },
+          "is_canonical": {
+            "type": "boolean",
+            "description": "Whether this row is the one served through the canonical read model.\nAbsent for a fact table that carries no such column at all; `false` says\nonly that the row is unpublished, never why."
+          },
+          "raw_unit_code": {
+            "$ref": "#/components/schemas/UnitCodeResponse",
+            "description": "Absent when the metric is dimensionless, which is the only reason an\napplicable unit is ever missing."
+          },
+          "raw_value": {
+            "$ref": "#/components/schemas/DecimalStringResponse"
+          }
+        }
+      },
+      "PowerSettingResponse": {
+        "type": "string",
+        "description": "The published spelling of an engine setting.\n\nThe variant names are Rust's; the `rename` values are the literals\n`chk_pm_power_setting` allows in\n`database/migrations/008_performance_metrics_conditions.sql`, which is why\nthree of them are not valid Rust identifiers.",
+        "enum": [
+          "MAX_TAKEOFF",
+          "MAX_CONTINUOUS",
+          "MAX_CLIMB",
+          "75_PCT",
+          "65_PCT",
+          "55_PCT",
+          "BEST_POWER",
+          "BEST_ECONOMY",
+          "LONG_RANGE_CRUISE",
+          "IDLE"
+        ]
       },
       "ProblemDetails": {
         "type": "object",
@@ -428,6 +505,23 @@
           "CURATION_WRITE",
           "ADMIN"
         ]
+      },
+      "SurfaceTypeResponse": {
+        "type": "string",
+        "description": "The published spelling of a runway surface, from `chk_pm_surface_type` in\nthe same migration.",
+        "enum": [
+          "PAVED",
+          "GRASS",
+          "GRAVEL",
+          "SOFT",
+          "WATER",
+          "CARRIER_DECK"
+        ]
+      },
+      "UnitCodeResponse": {
+        "type": "string",
+        "description": "A measurement-unit code on the wire, in the shape\n`aircraft_ref.lookup_code` requires of every seeded code.",
+        "pattern": "^[A-Z][A-Z0-9_]*$"
       },
       "VersionResponse": {
         "type": "object",

@@ -65,6 +65,13 @@ aircraft_auth   ──▶  standalone; depends only on aircraft_ref domains and 
 | `slug_text` | `TEXT` | `~ '^[a-z0-9]+(-[a-z0-9]+)*$'` | URL-routing identifiers |
 | `lookup_code` | `TEXT` | `~ '^[A-Z][A-Z0-9_]*$'` | Lookup table primary keys |
 
+`aircraft_domain::measurement::UnitCode` mirrors the `lookup_code` shape rule in
+Rust, and `aircraft_domain::measurement::{PowerSetting, SurfaceType}` mirror the
+`chk_pm_power_setting` and `chk_pm_surface_type` allowlists in migration `008`.
+Each names its migration in turn; this paragraph is the return half, because an
+applied migration is immutable once hashed in `database/migrations.lock.json`
+and cannot carry a pointer added later.
+
 ### `aircraft_ref.measurement_units`
 
 | Column | Type | Null | Default | Constraint / FK | Description |

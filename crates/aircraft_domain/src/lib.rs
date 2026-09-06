@@ -6,3 +6,4 @@
 )]
 
 pub mod ingestion;
+pub mod measurement;
