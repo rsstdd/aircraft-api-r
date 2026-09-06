@@ -3,6 +3,7 @@
 pub mod authentication;
 mod correlation;
 mod limits;
+pub mod measurement;
 pub mod problem;
 pub mod routes;
 pub mod shutdown;
@@ -97,6 +98,12 @@ impl std::fmt::Debug for ApiState {
         routes::health::HealthResponse,
         routes::ready::ReadyResponse,
         routes::version::VersionResponse,
+        measurement::MeasurementResponse,
+        measurement::MeasurementConditionsResponse,
+        measurement::DecimalStringResponse,
+        measurement::UnitCodeResponse,
+        measurement::PowerSettingResponse,
+        measurement::SurfaceTypeResponse,
         problem::ProblemDetails,
         problem::RequiredScope
       ),
@@ -1981,6 +1988,119 @@ mod tests {
       schema.pointer("/properties/instance/type"),
       Some(&json!("string")),
       "instance must not be published as nullable: {schema}"
+    );
+    Ok(())
+  }
+
+  /// A published decimal says it is a decimal, not merely a string.
+  ///
+  /// `type: string` alone would describe exponent notation, a plus sign, and
+  /// arbitrary text equally well, so the grammar is what makes the contract
+  /// answer the issue's fourth criterion. The expected grammar is written out
+  /// here rather than read back from the `#[schema]` attribute, so the two are
+  /// independent statements that a one-sided edit puts into disagreement.
+  ///
+  /// No `maxLength`: `DecimalString` bounds digits at what `PostgreSQL` can
+  /// store, and republishing that ceiling would freeze a storage detail into
+  /// the public contract under the pull-request `oasdiff` gate.
+  #[test]
+  fn a_published_decimal_declares_the_plain_base_ten_grammar() -> Result<()> {
+    let document = serde_json::to_value(openapi())?;
+    let schema = document
+      .pointer("/components/schemas/DecimalStringResponse")
+      .context("DecimalStringResponse is not published")?;
+
+    assert_eq!(schema.pointer("/type"), Some(&json!("string")), "{schema}");
+    assert_eq!(
+      schema.pointer("/pattern"),
+      Some(&json!(r"^-?[0-9]+(\.[0-9]+)?$")),
+      "the published grammar is written here independently of the attribute: {schema}"
+    );
+    assert_eq!(schema.pointer("/maxLength"), None, "capacity is the parser's, not the contract's");
+    Ok(())
+  }
+
+  /// Every optional measurement member is omitted when absent, so none of them
+  /// may be published as required, and none as a nullable union -- `utoipa`
+  /// renders `Option<T>` as nullable unless `#[schema(nullable = false)]` says
+  /// otherwise, which would describe a `null` this API never emits.
+  ///
+  /// The member lists are read against migrations `006`-`008` and `019`, not
+  /// against the DTO, so a field renamed on one side alone fails here.
+  #[test]
+  fn optional_measurement_members_are_published_neither_required_nor_nullable() -> Result<()> {
+    const MEASUREMENT: [&str; 6] = [
+      "raw_value",
+      "raw_unit_code",
+      "canonical_value",
+      "canonical_unit_code",
+      "conditions",
+      "is_canonical",
+    ];
+    const CONDITIONS: [&str; 7] = [
+      "altitude_ft",
+      "weight_lbs",
+      "weight_label",
+      "isa_deviation_c",
+      "power_setting",
+      "surface_type",
+      "notes",
+    ];
+    let document = serde_json::to_value(openapi())?;
+
+    for (component, members) in [
+      ("MeasurementResponse", &MEASUREMENT[..]),
+      ("MeasurementConditionsResponse", &CONDITIONS[..]),
+    ] {
+      let schema = document
+        .pointer(&format!("/components/schemas/{component}"))
+        .context("component is not published")?;
+      let required = schema
+        .pointer("/required")
+        .and_then(serde_json::Value::as_array)
+        .cloned()
+        .unwrap_or_default();
+      for member in members {
+        let published = schema
+          .pointer(&format!("/properties/{member}"))
+          .with_context(|| format!("{component}.{member} is not published"))?;
+        assert!(!required.contains(&json!(member)), "{component}.{member} must not be required");
+        assert!(
+          !published.to_string().contains("null"),
+          "{component}.{member} must not be a nullable union: {published}"
+        );
+      }
+    }
+    Ok(())
+  }
+
+  /// The two condition vocabularies are published with the spellings
+  /// `chk_pm_power_setting` and `chk_pm_surface_type` allow in
+  /// `database/migrations/008_performance_metrics_conditions.sql`. Read against
+  /// the migration rather than against the Rust enums, so a renamed variant
+  /// that still compiles is still caught.
+  #[test]
+  fn the_published_condition_vocabularies_match_the_check_constraints() -> Result<()> {
+    let document = serde_json::to_value(openapi())?;
+
+    assert_eq!(
+      document.pointer("/components/schemas/PowerSettingResponse/enum"),
+      Some(&json!([
+        "MAX_TAKEOFF",
+        "MAX_CONTINUOUS",
+        "MAX_CLIMB",
+        "75_PCT",
+        "65_PCT",
+        "55_PCT",
+        "BEST_POWER",
+        "BEST_ECONOMY",
+        "LONG_RANGE_CRUISE",
+        "IDLE"
+      ]))
+    );
+    assert_eq!(
+      document.pointer("/components/schemas/SurfaceTypeResponse/enum"),
+      Some(&json!(["PAVED", "GRASS", "GRAVEL", "SOFT", "WATER", "CARRIER_DECK"]))
     );
     Ok(())
   }
