@@ -270,9 +270,10 @@ pub enum PowerSetting {
 }
 
 impl PowerSetting {
-  /// Every variant, so `TryFrom` and the test that reads this vocabulary
-  /// against migration `008` share one list instead of keeping two.
-  const ALL: [Self; 10] = [
+  /// Every variant, in the order `chk_pm_power_setting` declares its literals.
+  /// `TryFrom`, the test that reads that constraint, and `aircraft_api`'s
+  /// transport mapping all iterate this one list.
+  pub const ALL: [Self; 10] = [
     Self::MaxTakeoff,
     Self::MaxContinuous,
     Self::MaxClimb,
@@ -323,8 +324,9 @@ pub enum SurfaceType {
 }
 
 impl SurfaceType {
-  /// Every variant, for the reason [`PowerSetting::ALL`] gives.
-  const ALL: [Self; 6] =
+  /// Every variant, in the order `chk_pm_surface_type` declares its literals,
+  /// for the reason [`PowerSetting::ALL`] gives.
+  pub const ALL: [Self; 6] =
     [Self::Paved, Self::Grass, Self::Gravel, Self::Soft, Self::Water, Self::CarrierDeck];
 
   #[must_use]
@@ -429,8 +431,9 @@ pub enum MeasurementError {
 
 #[cfg(test)]
 mod tests {
-  // A failing assertion is the point of a test.
-  #![allow(clippy::expect_used)]
+  // A failing assertion is the point of a test, and the migration reader below
+  // fails by panicking when the constraint it names is gone.
+  #![allow(clippy::expect_used, clippy::panic)]
 
   use super::*;
 
@@ -625,47 +628,58 @@ mod tests {
     assert!(PublicationStatus::from_is_canonical(true).is_canonical());
   }
 
-  /// The literals are read against `chk_pm_power_setting` and
-  /// `chk_pm_surface_type` in
-  /// `database/migrations/008_performance_metrics_conditions.sql`, not against
-  /// `code()`. Exhaustive matches with no `_` arm, so an eleventh setting stops
-  /// this test compiling rather than shipping unpinned.
+  /// The migration itself, so the expectations below are the schema's own
+  /// literals rather than a second copy of `code()`. `include_str!` is
+  /// compile-time and confined to this test module, which is how
+  /// `aircraft_testsupport::SCHEMA_STEPS` embeds the canonical install order.
+  const MIGRATION_008: &str =
+    include_str!("../../../database/migrations/008_performance_metrics_conditions.sql");
+
+  /// The quoted literals of one named `CHECK`, in declaration order.
+  ///
+  /// The slice runs from the constraint's opening line to the next four-space
+  /// `)`, which is its own close; inside it the only single-quoted tokens are
+  /// the allowlist values, since the trailing `--` comments carry no
+  /// apostrophes. Panics rather than returning an empty list when the
+  /// constraint is absent, so a renamed constraint fails loudly instead of
+  /// making the assertions below vacuous.
+  fn codes_in_declaration_order(constraint: &str) -> Vec<&str> {
+    let opening = format!("CONSTRAINT {constraint} CHECK (");
+    let body = MIGRATION_008
+      .split_once(&opening)
+      .unwrap_or_else(|| panic!("migration 008 declares no {constraint}"))
+      .1;
+    let body = body
+      .split_once("\n    )")
+      .unwrap_or_else(|| panic!("{constraint} is not closed as expected"))
+      .0;
+    body.split('\'').skip(1).step_by(2).collect()
+  }
+
+  /// Reads both vocabularies against `chk_pm_power_setting` and
+  /// `chk_pm_surface_type` in migration `008` — the constraints that decide
+  /// what may be stored — rather than against a transcription of `code()`.
+  ///
+  /// Matching is positional, which set membership could not do: two variants
+  /// whose codes were swapped leave the set unchanged and still round-trip
+  /// through `try_from`, and would publish a 65 %-power measurement as
+  /// `55_PCT`. Position is a stable key because an applied migration is
+  /// immutable once hashed in `database/migrations.lock.json`.
   #[test]
   fn the_condition_vocabularies_are_the_ones_the_check_constraints_allow() {
-    fn expected_power(setting: PowerSetting) -> &'static str {
-      match setting {
-        PowerSetting::MaxTakeoff => "MAX_TAKEOFF",
-        PowerSetting::MaxContinuous => "MAX_CONTINUOUS",
-        PowerSetting::MaxClimb => "MAX_CLIMB",
-        PowerSetting::Percent75 => "75_PCT",
-        PowerSetting::Percent65 => "65_PCT",
-        PowerSetting::Percent55 => "55_PCT",
-        PowerSetting::BestPower => "BEST_POWER",
-        PowerSetting::BestEconomy => "BEST_ECONOMY",
-        PowerSetting::LongRangeCruise => "LONG_RANGE_CRUISE",
-        PowerSetting::Idle => "IDLE",
-      }
-    }
-    fn expected_surface(surface: SurfaceType) -> &'static str {
-      match surface {
-        SurfaceType::Paved => "PAVED",
-        SurfaceType::Grass => "GRASS",
-        SurfaceType::Gravel => "GRAVEL",
-        SurfaceType::Soft => "SOFT",
-        SurfaceType::Water => "WATER",
-        SurfaceType::CarrierDeck => "CARRIER_DECK",
-      }
-    }
+    let power = codes_in_declaration_order("chk_pm_power_setting");
+    let surface = codes_in_declaration_order("chk_pm_surface_type");
 
-    for setting in PowerSetting::ALL {
-      let code = expected_power(setting);
-      assert_eq!(setting.code(), code, "{setting:?}");
+    assert_eq!(power.len(), PowerSetting::ALL.len(), "power settings: {power:?}");
+    assert_eq!(surface.len(), SurfaceType::ALL.len(), "surface types: {surface:?}");
+
+    for (setting, code) in PowerSetting::ALL.into_iter().zip(power) {
+      assert_eq!(setting.code(), code, "{setting:?} against migration 008");
       assert_eq!(PowerSetting::try_from(code), Ok(setting), "{code}");
     }
-    for surface in SurfaceType::ALL {
-      let code = expected_surface(surface);
-      assert_eq!(surface.code(), code, "{surface:?}");
-      assert_eq!(SurfaceType::try_from(code), Ok(surface), "{code}");
+    for (surface_type, code) in SurfaceType::ALL.into_iter().zip(surface) {
+      assert_eq!(surface_type.code(), code, "{surface_type:?} against migration 008");
+      assert_eq!(SurfaceType::try_from(code), Ok(surface_type), "{code}");
     }
     assert_eq!(PowerSetting::try_from("CLIMB_POWER"), Err(UnknownConditionCode));
     assert_eq!(SurfaceType::try_from("ICE"), Err(UnknownConditionCode));

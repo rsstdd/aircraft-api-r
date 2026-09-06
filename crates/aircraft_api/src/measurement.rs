@@ -337,44 +337,25 @@ mod tests {
   }
 
   /// The mapping, not the vocabulary: the generated document pins the enum
-  /// lists, but
-  /// only this pins which domain variant becomes which spelling, so two
-  /// variants swapped in the `From` impl fail here and nowhere else.
+  /// lists, but only this pins which domain variant becomes which spelling, so
+  /// two variants swapped in a `From` impl fail here and nowhere else.
+  ///
+  /// The expected spelling is the domain's own `code()` rather than a literal
+  /// written out again, and
+  /// `the_condition_vocabularies_are_the_ones_the_check_constraints_allow` pins
+  /// `code()` to `chk_pm_power_setting` and `chk_pm_surface_type` in migration
+  /// `008`. The chain therefore ends at the schema instead of at a copy.
   #[test]
   fn every_domain_condition_code_maps_to_the_spelling_the_schema_allows() {
-    // Read against `chk_pm_power_setting` and `chk_pm_surface_type` in
-    // migration 008. Exhaustive arrays, so an added variant fails to compile
-    // here rather than shipping an unpinned spelling.
-    const POWER: [(PowerSetting, &str); 10] = [
-      (PowerSetting::MaxTakeoff, "MAX_TAKEOFF"),
-      (PowerSetting::MaxContinuous, "MAX_CONTINUOUS"),
-      (PowerSetting::MaxClimb, "MAX_CLIMB"),
-      (PowerSetting::Percent75, "75_PCT"),
-      (PowerSetting::Percent65, "65_PCT"),
-      (PowerSetting::Percent55, "55_PCT"),
-      (PowerSetting::BestPower, "BEST_POWER"),
-      (PowerSetting::BestEconomy, "BEST_ECONOMY"),
-      (PowerSetting::LongRangeCruise, "LONG_RANGE_CRUISE"),
-      (PowerSetting::Idle, "IDLE"),
-    ];
-    const SURFACE: [(SurfaceType, &str); 6] = [
-      (SurfaceType::Paved, "PAVED"),
-      (SurfaceType::Grass, "GRASS"),
-      (SurfaceType::Gravel, "GRAVEL"),
-      (SurfaceType::Soft, "SOFT"),
-      (SurfaceType::Water, "WATER"),
-      (SurfaceType::CarrierDeck, "CARRIER_DECK"),
-    ];
-
-    for (setting, code) in POWER {
+    for setting in PowerSetting::ALL {
       let published = serde_json::to_value(PowerSettingResponse::from(setting))
         .expect("the transport enum serializes");
-      assert_eq!(published, json!(code), "{setting:?}");
+      assert_eq!(published, json!(setting.code()), "{setting:?}");
     }
-    for (surface, code) in SURFACE {
+    for surface in SurfaceType::ALL {
       let published = serde_json::to_value(SurfaceTypeResponse::from(surface))
         .expect("the transport enum serializes");
-      assert_eq!(published, json!(code), "{surface:?}");
+      assert_eq!(published, json!(surface.code()), "{surface:?}");
     }
   }
 }
