@@ -4,6 +4,7 @@ pub mod authentication;
 mod correlation;
 mod limits;
 pub mod measurement;
+pub mod pagination;
 pub mod problem;
 pub mod routes;
 pub mod shutdown;
@@ -382,6 +383,7 @@ mod tests {
     body::{Body, HttpBody as _, to_bytes},
     http::{HeaderValue, Method, Request, StatusCode, header},
   };
+  use base64::{Engine as _, engine::general_purpose::URL_SAFE_NO_PAD};
   use serde::Deserialize;
   use serde_json::json;
   use tokio::sync::{Notify, mpsc};
@@ -547,6 +549,16 @@ mod tests {
     StatusCode::NO_CONTENT
   }
 
+  /// Stands in for the collection routes #36 onward will register: the only
+  /// way to drive a cursor refusal through the real router while the service
+  /// still has no collection route of its own.
+  async fn accept_list(
+    ApiQuery(query): ApiQuery<pagination::ListQuery>,
+  ) -> Result<StatusCode, ApiProblem> {
+    query.into_page_request(pagination::FilterFingerprint::of(""), "/__test/list")?;
+    Ok(StatusCode::NO_CONTENT)
+  }
+
   fn router_with_test_routes() -> ApplicationRouter {
     use RouteMethod::{Get, Post};
     use RoutePolicy::Public;
@@ -554,6 +566,7 @@ mod tests {
     let routes = Routes::new()
       .route(Post, "/__test/json", Public, accept_json)
       .route(Get, "/__test/query", Public, accept_query)
+      .route(Get, "/__test/list", Public, accept_list)
       .route(Get, "/__test/authentication", Public, || async {
         ApiProblem::authentication_required("/__test/authentication")
       })
@@ -994,6 +1007,68 @@ mod tests {
       .await?;
 
     assert_refusal(response, 400, "/problems/validation-failed", "/__test/query").await
+  }
+
+  /// Every way a cursor can be refused answers the one published `400`.
+  ///
+  /// Driven through the assembled router rather than through `decode` alone,
+  /// because the criterion is about what a caller receives: the status, the
+  /// problem media type, the stable type URI, and a usable request ID.
+  ///
+  /// The three causes are deliberately indistinguishable in the response. The
+  /// test asserts that by sending three different failures and expecting one
+  /// document, which is also what would fail if a future change published a
+  /// cause-specific type.
+  #[tokio::test]
+  async fn every_cursor_refusal_answers_the_same_four_hundred() -> Result<()> {
+    let issued_elsewhere = pagination::encode(
+      &pagination::CursorPosition {
+        sort: "code_asc".to_owned(),
+        last_value: "20".to_owned(),
+        tiebreaker: "KNOTS".to_owned(),
+      },
+      pagination::FilterFingerprint::of("other"),
+    );
+    let future_version = URL_SAFE_NO_PAD.encode(json!({ "version": 99 }).to_string());
+    let cases = [
+      ("malformed", "!!!not-base64!!!"),
+      ("unsupported version", future_version.as_str()),
+      ("filter mismatch", issued_elsewhere.as_str()),
+    ];
+
+    for (case, cursor) in cases {
+      let response = router_with_test_routes()
+        .oneshot(Request::get(format!("/__test/list?cursor={cursor}")).body(Body::empty())?)
+        .await?;
+
+      assert_refusal(response, 400, "/problems/validation-failed", "/__test/list")
+        .await
+        .with_context(|| format!("{case} cursor"))?;
+    }
+    Ok(())
+  }
+
+  /// `limit=0` needs no special handling: `NonZeroU16` makes it a query
+  /// deserialization failure, which `ApiQuery` already answers with the same
+  /// document. An oversized limit is capped instead, because the accepted
+  /// decision lists the `400` cases and does not include it.
+  #[tokio::test]
+  async fn an_explicit_zero_limit_is_refused_while_an_oversized_one_is_capped() -> Result<()> {
+    let refused = router_with_test_routes()
+      .oneshot(Request::get("/__test/list?limit=0").body(Body::empty())?)
+      .await?;
+    assert_refusal(refused, 400, "/problems/validation-failed", "/__test/list").await?;
+
+    let capped = router_with_test_routes()
+      .oneshot(Request::get("/__test/list?limit=500").body(Body::empty())?)
+      .await?;
+
+    assert_eq!(
+      capped.status(),
+      StatusCode::NO_CONTENT,
+      "an oversized limit is capped, not refused"
+    );
+    Ok(())
   }
 
   #[tokio::test]

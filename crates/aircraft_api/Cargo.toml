@@ -26,6 +26,10 @@ tower-http = { workspace = true, features = ["limit", "trace", "cors"] }
 # Data Input Boundary Validation & Serialization
 serde.workspace = true
 serde_json.workspace = true
+# The pagination cursor: base64url on the wire, and a digest of the normalized
+# filters inside it. Both packages are already resolved through `sqlx`.
+base64.workspace = true
+sha2.workspace = true
 
 # OpenAPI Specification / Documentation Generation
 utoipa = { workspace = true, features = ["axum_extras", "chrono", "uuid"] }
