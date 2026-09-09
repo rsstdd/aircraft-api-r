@@ -50,8 +50,8 @@ simply because they were parsed successfully.
 | Ingestion semantics | Immutable input capture, SHA-256 identity, bounded streaming, preflight validation, transactional promotion, audit history, and idempotent replay are implemented |
 | Persistence | SQLx ingestion repository implemented; the broader repository surface remains incomplete |
 | Domain and application | Ingestion rules and orchestration are implemented; most general aircraft, mission, search, and comparison behavior remains scaffolded |
-| HTTP API | Axum health, readiness, and version routes and the scoped `GET /v1/reference/{catalog}` catalog route, with a generated OpenAPI contract, bearer authentication and route-scope enforcement, RFC 9457 problem documents, `X-Request-Id` correlation, one structured trace event per request, and perimeter limits with explicit-origin CORS |
-| Server | Runnable Axum server in the workspace; it serves health, readiness, version, and the reference catalogs, builds a verified, bounded database pool, correlates and traces every request, refuses oversized, over-long, and excess-concurrency work at the perimeter, and drains in-flight requests on SIGINT or SIGTERM |
+| HTTP API | Axum health, readiness, and version routes and the scoped `GET /v1/reference/{catalog}` catalog route, with a generated OpenAPI contract, bearer authentication and route-scope enforcement, RFC 9457 problem documents, `X-Request-Id` correlation, one structured trace event per request, per-principal rate limiting on every scoped route, and perimeter limits with explicit-origin CORS |
+| Server | Runnable Axum server in the workspace; it serves health, readiness, version, and the reference catalogs, builds a verified, bounded database pool, bounds each principal's request rate, correlates and traces every request, refuses oversized, over-long, and excess-concurrency work at the perimeter, and drains in-flight requests on SIGINT or SIGTERM |
 | Repository automation | Boundaries, migration policy, OpenAPI compatibility, dependency review, supply-chain policy, workflow linting, secret scanning, CodeQL, and ingestion golden snapshots are enforced locally or in CI |
 | Tests | Meaningful unit, application, property, repository, and disposable-PostgreSQL ingestion tests. The three placeholder files under `tests/` were deleted; that directory now holds only fixtures |
 | Production readiness | Not ready; target-environment gates remain, and the authenticated HTTP product is incomplete |
@@ -450,16 +450,17 @@ evidence.
   queries.
 - Use `tracing` in application paths rather than `println!` or `dbg!`.
 - Unsafe Rust is forbidden by the workspace lint configuration.
-- Rate limiting and the remaining HTTP middleware are not complete, and the
-  reference catalogs are the only protected business route served; nothing here
-  may be inferred from the legacy server files.
+- Rate limiting bounds each principal on one replica; cross-replica
+  enforcement and the remaining HTTP middleware are not complete, the reference
+  catalogs are the only protected business route served, and nothing here may be
+  inferred from the legacy server files.
 
 ## Not implemented yet
 
 - Aircraft CRUD, search, comparison, and mission-scoring HTTP flows
 - Protected business routes beyond the reference catalogs; bearer authentication
   and route-scope enforcement exist and gate `GET /v1/reference/{catalog}`
-- Complete request limits, timeouts, rate limits, and transport middleware
+- Cross-replica rate limiting and the remaining transport middleware
 - SQLx compile-time query metadata and a meaningful offline-query gate
 - End-to-end production deployment qualification
 

@@ -20,8 +20,10 @@ that file overrides this one only within that crate.
 
 **Current state.** The working implementation is the PlanePHD ingestion vertical
 slice across `aircraft_domain`, `aircraft_app`, `aircraft_ingest`, and
-`aircraft_db`, with composition in `apps/ingest`. `aircraft_api` has a tested
-health route and generated OpenAPI contract but no runnable server.
+`aircraft_db`, with composition in `apps/ingest`. `aircraft_api` serves health,
+readiness, version, and the scoped reference-catalog route behind bearer
+authentication, route-scope enforcement, and per-principal rate limiting, with a
+generated OpenAPI contract; `apps/server` runs it.
 `aircraft_config`, `aircraft_observability`, and `aircraft_testsupport` provide
 the portions needed by the current slice. Most aircraft search, comparison,
 mission, middleware, claims, and general repository modules are empty or
