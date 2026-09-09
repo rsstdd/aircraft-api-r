@@ -7,6 +7,7 @@ use std::{sync::Arc, time::Duration};
 use aircraft_api::{
   ApiState, PerimeterLimits,
   problem::ApiProblem,
+  rate_limit::{Quota, RateLimitPolicy, RateLimiter},
   router, router_with_routes,
   routes::{RouteMethod, RoutePolicy, Routes},
   shutdown::ShutdownState,
@@ -75,6 +76,10 @@ fn state(readiness: Arc<dyn ReadinessProbe>) -> ApiState {
     shutdown: ShutdownState::new(),
     limits: PerimeterLimits::new(1_048_576, Duration::from_secs(30), 256, &[])
       .expect("an empty origin list cannot fail"),
+    rate_limits: Arc::new(RateLimiter::new(
+      RateLimitPolicy::new(Quota::new(1_000, 1_000).expect("a usable quota"), 64, &[])
+        .expect("no tier overrides"),
+    )),
   }
 }
 

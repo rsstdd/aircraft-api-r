@@ -69,6 +69,30 @@ async fn main() -> Result<()> {
   // statement authentication issues is one more bounded acquisition from it.
   let authentication =
     Arc::new(AuthenticationService::new(Arc::new(SqlxCredentialLookup::from_pool(pool.clone()))));
+  // The quota is configuration and not schema, which is migration 025's
+  // decision: `aircraft_auth.rate_limit_tiers` stores a tier's identity and no
+  // numbers, so `http.rate_limit_*` carries them. Translated here for the same
+  // reason the perimeter is, and failing naming the setting that is wrong.
+  let quota = aircraft_api::rate_limit::Quota::new(
+    settings.http.rate_limit_capacity,
+    settings.http.rate_limit_refill_per_second,
+  )
+  .context(
+    "building the rate-limit quota from http.rate_limit_capacity and \
+     http.rate_limit_refill_per_second",
+  )?;
+  let rate_limits = Arc::new(aircraft_api::rate_limit::RateLimiter::new(
+    aircraft_api::rate_limit::RateLimitPolicy::new(
+      quota,
+      settings.http.rate_limit_max_buckets,
+      &settings.http.rate_limit_tiers,
+    )
+    .context(
+      "building the rate-limit policy from http.rate_limit_max_buckets and \
+       http.rate_limit_tiers",
+    )?,
+  ));
+
   let state = ApiState {
     // Shares the pool for the reason the credential lookup does: the bounds an
     // operator configured are the process's, and a catalog read is one more
@@ -80,6 +104,7 @@ async fn main() -> Result<()> {
     build_commit: option_env!("BUILD_COMMIT"),
     shutdown: ShutdownState::new(),
     limits,
+    rate_limits,
   };
 
   let address = settings.bind_address();

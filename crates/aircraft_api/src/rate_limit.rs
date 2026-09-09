@@ -291,9 +291,9 @@ impl RateLimiter {
       // ponytail: evict every bucket that has refilled to capacity by now,
       // which is indistinguishable from one that never existed, and report
       // saturation when none has. The bound is the control this enforces, so
-      // exceeding it is the
-      // failure to avoid; an exhausted bucket is never evicted, because that
-      // would let a caller clear its own debt by cycling principals. The sweep
+      // exceeding it is the failure to avoid; an exhausted bucket is never
+      // evicted, because that would let a caller clear its own debt by cycling
+      // principals. The sweep
       // is `O(max_buckets)` and runs only while the store is full, behind a
       // lookup that already cost a credential round trip; an LRU or a sharded
       // map is the upgrade path if it ever matters.

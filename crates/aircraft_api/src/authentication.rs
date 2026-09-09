@@ -144,7 +144,9 @@ mod tests {
   use uuid::Uuid;
 
   use crate::{
-    ApiState, ApplicationRouter, PerimeterLimits, router_with_routes,
+    ApiState, ApplicationRouter, PerimeterLimits,
+    rate_limit::{Quota, RateLimitPolicy, RateLimiter},
+    router_with_routes,
     routes::{RouteMethod, RoutePolicy, Routes},
     shutdown::ShutdownState,
   };
@@ -175,7 +177,22 @@ mod tests {
     }
   }
 
+  /// A ceiling no test in this file reaches by accident: every one of them
+  /// presents at most two principals.
+  const UNREACHABLE_CEILING: usize = 64;
+
   fn state(lookup: Arc<dyn CredentialLookup>) -> ApiState {
+    state_limited_to(lookup, 1_000, UNREACHABLE_CEILING)
+  }
+
+  /// The same state with a capacity and a bucket ceiling small enough to reach
+  /// in a test. Refill is one per second, which no test waits for, so a bucket
+  /// emptied here stays empty for the rest of the test.
+  fn state_limited_to(
+    lookup: Arc<dyn CredentialLookup>,
+    capacity: u32,
+    max_buckets: usize,
+  ) -> ApiState {
     ApiState {
       readiness: Arc::new(AlwaysReady),
       catalogs: Arc::new(NoCatalogs),
@@ -185,6 +202,10 @@ mod tests {
       shutdown: ShutdownState::new(),
       limits: PerimeterLimits::new(1_048_576, Duration::from_secs(30), 256, &[])
         .expect("an empty origin list cannot fail"),
+      rate_limits: Arc::new(RateLimiter::new(
+        RateLimitPolicy::new(Quota::new(capacity, 1).expect("a usable quota"), max_buckets, &[])
+          .expect("no tier overrides"),
+      )),
     }
   }
 
@@ -239,13 +260,26 @@ mod tests {
   }
 
   fn protected(outcome: Result<Option<CredentialLookupRecord>, PersistenceError>) -> Protected {
-    protected_under(RoutePolicy::CatalogRead, PROTECTED, outcome)
+    protected_under(RoutePolicy::CatalogRead, PROTECTED, outcome, 1_000, UNREACHABLE_CEILING)
+  }
+
+  /// The same protected route behind a bucket of `capacity` requests.
+  fn rate_limited(capacity: u32) -> Protected {
+    protected_under(
+      RoutePolicy::CatalogRead,
+      PROTECTED,
+      Ok(Some(live_record())),
+      capacity,
+      UNREACHABLE_CEILING,
+    )
   }
 
   fn protected_under(
     policy: RoutePolicy,
     path: &str,
     outcome: Result<Option<CredentialLookupRecord>, PersistenceError>,
+    capacity: u32,
+    max_buckets: usize,
   ) -> Protected {
     let lookup = Arc::new(FakeLookup { outcome: Mutex::new(outcome), calls: AtomicUsize::new(0) });
     let handler_calls = Arc::new(AtomicUsize::new(0));
@@ -274,7 +308,11 @@ mod tests {
       || async { StatusCode::NO_CONTENT },
     );
 
-    Protected { router: router_with_routes(state(lookup.clone()), routes), lookup, handler_calls }
+    Protected {
+      router: router_with_routes(state_limited_to(lookup.clone(), capacity, max_buckets), routes),
+      lookup,
+      handler_calls,
+    }
   }
 
   fn request(path: &str, authorization: &[&str]) -> Result<Request<Body>> {
@@ -300,6 +338,141 @@ mod tests {
       .map(|name| response.headers().get(&name).cloned());
     let body = to_bytes(response.into_body(), 4096).await?.to_vec();
     Ok((status, headers, body))
+  }
+
+  /// The token is spent in the registration wrapper, before the handler, so a
+  /// refused caller costs no handler work -- and the answer is the published
+  /// `429` document, not a bare status. The `Public` route is asked afterwards
+  /// because the limit is one principal's, not the router's.
+  #[tokio::test]
+  async fn a_principal_over_its_capacity_is_refused_before_the_handler_runs() -> Result<()> {
+    let protected = rate_limited(1);
+    let credential = format!("Bearer {TOKEN}");
+
+    let served = protected.router.clone().oneshot(request(PROTECTED, &[&credential])?).await?;
+    assert_eq!(served.status(), StatusCode::OK, "the first request is within capacity");
+
+    let refused = protected.router.clone().oneshot(request(PROTECTED, &[&credential])?).await?;
+
+    assert_eq!(refused.status(), StatusCode::TOO_MANY_REQUESTS);
+    assert_eq!(
+      refused.headers().get(header::RETRY_AFTER).map(HeaderValue::to_str).transpose()?,
+      Some("1"),
+      "a refusal tells the caller when to come back"
+    );
+    assert_eq!(
+      refused.headers().get(header::CONTENT_TYPE).map(HeaderValue::to_str).transpose()?,
+      Some("application/problem+json"),
+    );
+    assert_eq!(
+      refused.headers().get("x-request-id").map(HeaderValue::to_str).transpose()?,
+      Some(REQUEST_ID),
+      "a refusal is still correlated"
+    );
+    let document = body_of(refused).await?;
+    assert_eq!(document.pointer("/type"), Some(&json!("/problems/rate-limit-exceeded")));
+    assert_eq!(document.pointer("/status"), Some(&json!(429)));
+    assert_eq!(document.pointer("/instance"), Some(&json!(PROTECTED)));
+    assert_eq!(
+      protected.handler_calls.load(Ordering::SeqCst),
+      1,
+      "only the admitted request reached the handler"
+    );
+
+    let public = protected.router.clone().oneshot(request(PUBLIC, &[])?).await?;
+    assert_eq!(
+      public.status(),
+      StatusCode::NO_CONTENT,
+      "a public route has no principal to limit and is unaffected"
+    );
+    Ok(())
+  }
+
+  /// Buckets are keyed by principal. Without the second principal this would
+  /// pass against a limiter that refused everyone once the first was spent.
+  #[tokio::test]
+  async fn a_second_principal_is_unaffected_by_the_first_ones_exhaustion() -> Result<()> {
+    let protected = rate_limited(1);
+    let credential = format!("Bearer {TOKEN}");
+
+    protected.router.clone().oneshot(request(PROTECTED, &[&credential])?).await?;
+    let refused = protected.router.clone().oneshot(request(PROTECTED, &[&credential])?).await?;
+    assert_eq!(refused.status(), StatusCode::TOO_MANY_REQUESTS, "the first principal is spent");
+
+    // The same credential now resolves to a different principal, which is the
+    // only thing that changes between the refused request above and this one.
+    *protected.lookup.outcome.lock().expect("fake lookup lock") =
+      Ok(Some(CredentialLookupRecord { principal_id: 8, ..live_record() }));
+
+    let served = protected.router.clone().oneshot(request(PROTECTED, &[&credential])?).await?;
+
+    assert_eq!(served.status(), StatusCode::OK, "a second principal holds its own allowance");
+    Ok(())
+  }
+
+  /// A request the scope check refuses has still spent the principal's
+  /// allowance, so a caller cannot loop a route it has no scope for outside the
+  /// limiter -- and each of those loops costs the credential lookup's pooled
+  /// round trip. The `403` first and the `429` second is the whole assertion:
+  /// with the token spent after the scope check the second answer would be
+  /// another `403`, forever.
+  #[tokio::test]
+  async fn a_scope_refusal_still_spends_the_principals_allowance() -> Result<()> {
+    let protected = protected_under(
+      RoutePolicy::CatalogRead,
+      PROTECTED,
+      Ok(Some(record_with(vec![Scope::CurationRead]))),
+      1,
+      UNREACHABLE_CEILING,
+    );
+    let credential = format!("Bearer {TOKEN}");
+
+    let forbidden = protected.router.clone().oneshot(request(PROTECTED, &[&credential])?).await?;
+    assert_eq!(forbidden.status(), StatusCode::FORBIDDEN, "the principal lacks the route's scope");
+
+    let refused = protected.router.clone().oneshot(request(PROTECTED, &[&credential])?).await?;
+
+    assert_eq!(
+      refused.status(),
+      StatusCode::TOO_MANY_REQUESTS,
+      "the forbidden request spent the one token it was allowed"
+    );
+    assert_eq!(protected.handler_calls.load(Ordering::SeqCst), 0, "neither reached the handler");
+    Ok(())
+  }
+
+  /// A principal this replica has no room to track is shed with the `503` the
+  /// perimeter already answers when it is at capacity, not accused of exceeding
+  /// a quota it never touched. The served first request is the anti-vacuity
+  /// guard: a ceiling that refused everyone would satisfy the second assertion
+  /// on its own.
+  #[tokio::test]
+  async fn a_principal_the_bucket_store_cannot_track_is_shed_rather_than_rate_limited() -> Result<()>
+  {
+    let protected =
+      protected_under(RoutePolicy::CatalogRead, PROTECTED, Ok(Some(live_record())), 1, 1);
+    let credential = format!("Bearer {TOKEN}");
+
+    let served = protected.router.clone().oneshot(request(PROTECTED, &[&credential])?).await?;
+    assert_eq!(served.status(), StatusCode::OK, "the one bucket the store holds is this one's");
+
+    // The same credential now resolves to a principal the store has no room
+    // for: its one bucket belongs to another principal and has spent its token,
+    // so a second of refill would have to pass before it were evictable.
+    *protected.lookup.outcome.lock().expect("fake lookup lock") =
+      Ok(Some(CredentialLookupRecord { principal_id: 8, ..live_record() }));
+
+    let shed = protected.router.clone().oneshot(request(PROTECTED, &[&credential])?).await?;
+
+    assert_eq!(shed.status(), StatusCode::SERVICE_UNAVAILABLE);
+    assert!(
+      shed.headers().get(header::RETRY_AFTER).is_none(),
+      "there is no interval that clears a capacity refusal, so none is promised"
+    );
+    let document = body_of(shed).await?;
+    assert_eq!(document.pointer("/type"), Some(&json!("/problems/overloaded")));
+    assert_eq!(document.pointer("/status"), Some(&json!(503)));
+    Ok(())
   }
 
   #[tokio::test]
@@ -543,7 +716,8 @@ mod tests {
     for policy in POLICIES {
       let path = format!("/__test/{policy:?}");
       let Some(required) = decided_scope(policy) else {
-        let public = protected_under(policy, &path, Ok(Some(live_record())));
+        let public =
+          protected_under(policy, &path, Ok(Some(live_record())), 1_000, UNREACHABLE_CEILING);
 
         let response = public.router.oneshot(request(&path, &[])?).await?;
 
@@ -553,15 +727,21 @@ mod tests {
         continue;
       };
 
-      let unauthenticated =
-        protected_under(policy, &path, Ok(Some(record_with(ALL_SCOPES.to_vec()))));
+      let unauthenticated = protected_under(
+        policy,
+        &path,
+        Ok(Some(record_with(ALL_SCOPES.to_vec()))),
+        1_000,
+        UNREACHABLE_CEILING,
+      );
       let response = unauthenticated.router.oneshot(request(&path, &[])?).await?;
       assert_eq!(response.status(), StatusCode::UNAUTHORIZED, "{policy:?}: no credential");
       assert_eq!(unauthenticated.lookup.calls.load(Ordering::SeqCst), 0, "{policy:?}: lookups");
       assert_eq!(unauthenticated.handler_calls.load(Ordering::SeqCst), 0, "{policy:?}: handler");
 
       let others = ALL_SCOPES.into_iter().filter(|scope| *scope != required).collect();
-      let forbidden = protected_under(policy, &path, Ok(Some(record_with(others))));
+      let forbidden =
+        protected_under(policy, &path, Ok(Some(record_with(others))), 1_000, UNREACHABLE_CEILING);
       let response = forbidden.router.oneshot(request(&path, &[&bearer])?).await?;
       assert_eq!(response.status(), StatusCode::FORBIDDEN, "{policy:?}: every other scope");
       assert!(response.headers().get(header::WWW_AUTHENTICATE).is_none(), "{policy:?}: challenged");
@@ -575,7 +755,8 @@ mod tests {
       assert_eq!(forbidden.lookup.calls.load(Ordering::SeqCst), 1, "{policy:?}: lookups");
       assert_eq!(forbidden.handler_calls.load(Ordering::SeqCst), 0, "{policy:?}: handler");
 
-      let authorized = protected_under(policy, &path, Ok(Some(record_with(vec![required]))));
+      let exact = record_with(vec![required]);
+      let authorized = protected_under(policy, &path, Ok(Some(exact)), 1_000, UNREACHABLE_CEILING);
       let response = authorized.router.oneshot(request(&path, &[&bearer])?).await?;
       assert_eq!(response.status(), StatusCode::OK, "{policy:?}: exactly the scope");
       let document = body_of(response).await?;

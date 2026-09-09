@@ -225,6 +225,28 @@ rather than being duplicated in the JSON body.
   concurrency, and timeout bounds before handler work. Pools, retries, queues,
   record counts, and diagnostic messages remain bounded at their owning layers.
 
+The bucket, its ceiling, and its eviction rule are `RateLimiter` in
+`crates/aircraft_api/src/rate_limit.rs`, which names this section in turn; the
+token is spent in `Policed::call` in `crates/aircraft_api/src/routes/mod.rs`,
+after authentication and before both the scope check and the handler, so a
+`Public` route resolves no principal and is not limited while every
+authenticated request a principal makes counts against its allowance --
+including the ones answered `403`, which would otherwise be free to repeat.
+The quota values are `http.rate_limit_*` in
+`crates/aircraft_config/src/settings/structs.rs` rather than columns of
+`aircraft_auth.rate_limit_tiers`, which migration `025` deliberately leaves as
+identity alone. The refusal is `ProblemKind::RateLimited`, and every scoped
+operation publishes it from the route inventory in `publish_route_policies`.
+
+The store's own ceiling is a separate refusal. When `http.rate_limit_max_buckets`
+buckets are live and none has refilled to capacity, the arriving principal
+cannot be tracked at all; it has spent nothing and retrying no slower would help
+it, so it is shed with the existing `ProblemKind::Overloaded` `503` that already
+covers this service being at capacity, and logged at `warn` because only an
+operator can clear it. Answering `429` there would tell a blameless caller it
+exceeded a quota it never touched and hide a capacity problem from the operator
+who owns it.
+
 ### Ingestion boundary
 
 - Source artifact validation, import, run history, and ingestion status remain

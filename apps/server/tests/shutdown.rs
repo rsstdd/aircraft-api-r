@@ -19,7 +19,11 @@ use std::{
   time::Duration,
 };
 
-use aircraft_api::{ApiState, PerimeterLimits, shutdown::ShutdownState};
+use aircraft_api::{
+  ApiState, PerimeterLimits,
+  rate_limit::{Quota, RateLimitPolicy, RateLimiter},
+  shutdown::ShutdownState,
+};
 use aircraft_app::{
   authentication::{AuthenticationService, CredentialLookup, CredentialLookupRecord},
   ingestion::PersistenceError,
@@ -158,6 +162,10 @@ async fn start(grace: Duration, dispatch: tracing::Dispatch) -> Result<Harness> 
     shutdown: shutdown.clone(),
     limits: PerimeterLimits::new(1_048_576, Duration::from_secs(30), 256, &[])
       .expect("an empty origin list cannot fail"),
+    rate_limits: Arc::new(RateLimiter::new(
+      RateLimitPolicy::new(Quota::new(1_000, 1_000).expect("a usable quota"), 64, &[])
+        .expect("no tier overrides"),
+    )),
   };
 
   let (stop, stop_rx) = oneshot::channel::<()>();
