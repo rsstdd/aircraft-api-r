@@ -190,12 +190,14 @@ Canonical: `REPORT_SCHEMA_VERSION` in `aircraft_app`, `apps/ingest/src/main.rs`,
 
 Named so they are visible, with no rule attached — do not infer one from this file:
 
-- **The HTTP runtime.** `aircraft_api` has a health route and a generated contract; request-size
-  limits, timeouts, rate limits, authentication, authorization, and middleware ordering are
-  designed in `AGENTS.md` but not implemented. `apps/server` is a working composition root that
-  boots, builds a bounded pool, and serves the health router; it is no longer excluded legacy
-  source.
-  Writing the first real route means proposing those rules, not inferring them from this file.
+- **The HTTP runtime beyond one replica.** The boundary itself is settled and implemented:
+  `docs/architecture/http_v1_decisions.md` is the accepted contract for problem documents,
+  authentication and route policies, pagination, conditional requests, and single-replica rate
+  limiting, and `aircraft_api` enforces it. Read that document, not this file, for a rule about
+  the boundary. What remains unsettled is what that document explicitly defers: cross-replica
+  enforcement and a distributed rate-limit service. Limiting an unauthenticated caller is not
+  covered by it either -- the limiter is keyed by an authenticated principal, and no accepted
+  decision or open issue yet says what should bound a caller that presents no credential.
 - **Performance method.** Nothing here says what earns a benchmark or how to measure before
   optimizing.
 - **SQLx compile-time query checking.** `just check-offline` is currently equivalent to

@@ -437,6 +437,9 @@
               }
             }
           },
+          "429": {
+            "$ref": "#/components/responses/RateLimitedProblem"
+          },
           "503": {
             "description": "The service is draining, is at capacity, or could not read the catalog",
             "headers": {

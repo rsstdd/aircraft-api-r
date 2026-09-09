@@ -27,6 +27,33 @@ pub struct HttpSettings {
   pub request_timeout_seconds: u64,
   /// How many requests may be in flight before the perimeter sheds with `503`.
   pub max_concurrent_requests: usize,
+  /// The requests one principal may make in a burst before the rate limiter
+  /// refuses, for any tier `rate_limit_tiers` does not name.
+  pub rate_limit_capacity: u32,
+  /// How fast a principal's burst allowance returns, in requests per second.
+  pub rate_limit_refill_per_second: u32,
+  /// The most principals the limiter tracks at once.
+  ///
+  /// The bucket store is bounded memory, so this is the ceiling on it, and a
+  /// principal whose bucket was reclaimed is tracked again on its next request.
+  /// It is a real ceiling on *concurrently active* principals, though: a bucket
+  /// is reclaimable only once it has refilled to capacity, so while more than
+  /// this many principals are mid-burst the next one to arrive is shed with the
+  /// perimeter's `503` rather than tracked. Size it above the number of
+  /// principals expected to be in flight at once, not merely above the number
+  /// issued credentials.
+  pub rate_limit_max_buckets: usize,
+  /// Per-tier quota overrides, as a comma-separated list of
+  /// `CODE:capacity:refill_per_second`.
+  ///
+  /// A tier is an operator-created row in `aircraft_auth.rate_limit_tiers`,
+  /// which by migration `025`'s decision stores identity and no quota, so the
+  /// numbers behind a code live here. A code named by no entry takes the three
+  /// defaults above. The entries are parsed by
+  /// `aircraft_api::rate_limit::RateLimitPolicy::new`, which names this setting
+  /// in turn, so one parser owns the spelling.
+  #[serde(deserialize_with = "comma_separated")]
+  pub rate_limit_tiers: Vec<String>,
   /// Origins allowed to read a cross-origin response, as a comma-separated list.
   ///
   /// Empty is default-deny: no cross-origin request is allowed until an origin
@@ -107,6 +134,19 @@ impl Settings {
       // something is wrong. Shedding below the pool size would refuse work the
       // service could have served.
       .set_default("http.max_concurrent_requests", 256_u64)?
+      // Sixty requests is a burst a legitimate client can spend on one page of
+      // work and an abusive one exhausts immediately, and ten per second is far
+      // above interactive use while staying well under the concurrency bound
+      // above, so one principal cannot saturate the perimeter on its own.
+      .set_default("http.rate_limit_capacity", 60_u32)?
+      .set_default("http.rate_limit_refill_per_second", 10_u32)?
+      // Ten thousand buckets is a few hundred kilobytes and far more principals
+      // than a single-replica deployment has. It bounds the store rather than
+      // trimming a real workload.
+      .set_default("http.rate_limit_max_buckets", 10_000_u64)?
+      // Empty means every tier takes the defaults above; a tier is only named
+      // here when an operator wants it to differ.
+      .set_default("http.rate_limit_tiers", "")?
       // Empty is default-deny. It is also why the wildcard rejection below can
       // only ever fire on a value somebody set deliberately.
       .set_default("http.cors_allowed_origins", "")?
@@ -312,6 +352,25 @@ fn validate_perimeter_limits(settings: &HttpSettings) -> Result<(), ConfigError>
   if settings.max_concurrent_requests == 0 {
     return Err(ConfigError::Message(
       "http.max_concurrent_requests must be greater than zero".to_owned(),
+    ));
+  }
+  // A quota of zero is not a limit but a closed door: no capacity refuses every
+  // request, and no refill makes the first exhaustion permanent.
+  // `aircraft_api::rate_limit::Quota::new` refuses both again for callers that
+  // do not come through configuration.
+  if settings.rate_limit_capacity == 0 {
+    return Err(ConfigError::Message(
+      "http.rate_limit_capacity must be greater than zero".to_owned(),
+    ));
+  }
+  if settings.rate_limit_refill_per_second == 0 {
+    return Err(ConfigError::Message(
+      "http.rate_limit_refill_per_second must be greater than zero".to_owned(),
+    ));
+  }
+  if settings.rate_limit_max_buckets == 0 {
+    return Err(ConfigError::Message(
+      "http.rate_limit_max_buckets must be greater than zero".to_owned(),
     ));
   }
   if settings.max_concurrent_requests > MAX_CONCURRENT_REQUESTS {
@@ -525,6 +584,39 @@ mod tests {
   fn load_database(pairs: &[(&str, &str)]) -> Result<DatabaseSettings, ConfigError> {
     let directory = empty_overrides();
     DatabaseSettings::load_from(&directory_path(&directory), environment(pairs))
+  }
+
+  /// The quota defaults load, and each zero is refused under its own setting
+  /// path. A limiter built from any of the three zeros would refuse every
+  /// request or never return a token, which is why they fail here rather than
+  /// at the first refused caller.
+  #[test]
+  fn a_rate_limit_quota_of_zero_is_refused_naming_its_own_setting() {
+    let settings = load_http(&[]).expect("the quota defaults must load");
+    assert_eq!(settings.http.rate_limit_capacity, 60);
+    assert_eq!(settings.http.rate_limit_refill_per_second, 10);
+    assert_eq!(settings.http.rate_limit_max_buckets, 10_000);
+    assert!(settings.http.rate_limit_tiers.is_empty(), "no tier is overridden by default");
+
+    for (key, path) in [
+      ("APP__HTTP__RATE_LIMIT_CAPACITY", "http.rate_limit_capacity"),
+      ("APP__HTTP__RATE_LIMIT_REFILL_PER_SECOND", "http.rate_limit_refill_per_second"),
+      ("APP__HTTP__RATE_LIMIT_MAX_BUCKETS", "http.rate_limit_max_buckets"),
+    ] {
+      let error = load_http(&[(key, "0")]).expect_err("zero must be refused");
+      assert!(error.to_string().contains(path), "{key} must fail naming {path}: {error}");
+    }
+  }
+
+  /// The overrides reach the perimeter as written, for
+  /// `aircraft_api::rate_limit::RateLimitPolicy::new` to parse. Splitting is the
+  /// only thing configuration does to them.
+  #[test]
+  fn rate_limit_tier_overrides_load_as_the_entries_an_operator_wrote() {
+    let settings = load_http(&[("APP__HTTP__RATE_LIMIT_TIERS", "STANDARD:60:10, BURST:600:100")])
+      .expect("a tier list must load");
+
+    assert_eq!(settings.http.rate_limit_tiers, ["STANDARD:60:10", "BURST:600:100"]);
   }
 
   #[test]

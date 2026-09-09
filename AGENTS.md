@@ -16,7 +16,10 @@ normalization, transactional SQLx persistence, provenance, curation flags,
 idempotent replay, and run/attempt status. The canonical database contains
 the migrations under `database/migrations/`, a checksum lock, ordered seeds, and
 SQL validation. The API crate implements Axum health, readiness, and version
-contracts with OpenAPI generation. `apps/server`
+contracts, bearer authentication with route-scope enforcement, RFC 9457 problem
+documents, validated list queries and cursors, and the scoped
+`GET /v1/reference/{catalog}` catalog route, with OpenAPI generation.
+`apps/server`
 boots: it loads HTTP and database settings, initializes tracing, builds a
 bounded database pool, binds a listener, and serves that router, with
 end-to-end socket tests. `/ready` reads from the pool through an application
@@ -31,9 +34,13 @@ concurrency, and answers cross-origin requests only for explicitly configured
 origins; a wildcard origin is rejected while settings load. Every perimeter
 refusal is an RFC 9457 problem document, as
 `docs/architecture/http_v1_decisions.md` requires of every API-originated `4xx`
-and `5xx`. General
-aircraft CRUD, search, comparison, mission scoring, authentication, and SQLx
-offline metadata are not implemented end to end.
+and `5xx`. Every scoped route spends a token from a bounded in-memory bucket
+keyed by the authenticated principal, refusing with `429` and `Retry-After`
+when the bucket is empty and shedding with `503` when the store itself is full;
+capacity and refill come from the principal's tier through `http.rate_limit_*`.
+General
+aircraft CRUD, search, comparison, mission scoring, and SQLx offline metadata
+are not implemented end to end.
 Canonical-value curation is implemented (`aircraft-ingest curate`), and the
 SQL-versus-Rust parity run served its purpose and was retired with the legacy
 loader; `cargo xtask snapshots` is now a golden-snapshot regression gate. The
@@ -296,13 +303,13 @@ server -> composes adapters and runtime infrastructure
 |---|---|---|
 | `Cargo.toml` | Workspace membership, shared dependencies, lints, profiles | Cargo resolves eleven packages |
 | `apps/ingest/` | Ingestion CLI composition root | Working deployment candidate with Docker-backed gates |
-| `apps/server/` | HTTP runtime composition | Boots, builds a verified database pool, serves health, readiness, and version, correlates and traces every request, enforces perimeter limits and CORS, and drains on signal |
+| `apps/server/` | HTTP runtime composition | Boots, builds a verified database pool, serves health, readiness, version, and the reference catalogs, correlates and traces every request, enforces perimeter limits, per-principal rate limits, and CORS, and drains on signal |
 | `crates/aircraft_domain/` | Pure entities, values, units, invariants | Ingestion invariants implemented; broader domain mostly scaffolded |
 | `crates/aircraft_app/` | Use cases and ports | Ingestion orchestration implemented; broader application incomplete |
-| `crates/aircraft_api/` | Axum DTOs, routes, middleware, OpenAPI | Health, readiness, and version routes, RFC 9457 problem documents, and the OpenAPI contract |
+| `crates/aircraft_api/` | Axum DTOs, routes, middleware, OpenAPI | Health, readiness, and version routes, the scoped reference-catalog route, bearer authentication and route-scope enforcement, RFC 9457 problem documents, per-principal rate limiting, pagination and measurement representations, and the OpenAPI contract |
 | `crates/aircraft_db/` | SQLx repositories and schema mappings | Ingestion repository implemented; broader persistence incomplete |
 | `crates/aircraft_ingest/` | Source capture, parsing, normalization | PlanePHD adapter implemented |
-| `crates/aircraft_config/` | Typed runtime configuration | Ingestion, HTTP, database-URL, database pool, and perimeter limit and CORS settings implemented |
+| `crates/aircraft_config/` | Typed runtime configuration | Ingestion, HTTP, database-URL, database pool, perimeter limit and CORS, and rate-limit quota settings implemented |
 | `crates/aircraft_observability/` | Structured tracing and telemetry | Basic tracing setup implemented; broader telemetry partial |
 | `crates/aircraft_testsupport/` | Disposable PostgreSQL harness shared by integration tests | Dev-only; referenced solely from `[dev-dependencies]` |
 | `crates/aircraft_testsupport/` | Disposable PostgreSQL test harness | Active test-only support crate |

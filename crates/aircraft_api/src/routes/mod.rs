@@ -10,21 +10,26 @@
 //! change to that decision, not to this file.
 //!
 //! Registration is enforcement. [`Routes::route`] wraps the handler in
-//! `Policed`, which for a scoped policy authenticates the request, compares
-//! the principal's grants with [`RoutePolicy::required_scope`], and only then
-//! calls the handler; `Public` calls it directly. Registration also records
-//! what it was given: one [`RouteMethod`], one served path, and one policy per
-//! entry. That inventory is what `crate::openapi` publishes each scoped
-//! operation's security requirement from, and what the tests read against the
-//! generated `OpenAPI` document operation by operation. `/health`, `/ready`,
-//! and `/version` are `Public`; no protected route is served yet.
+//! `Policed`, which for a scoped policy authenticates the request, spends one
+//! of that principal's rate-limit tokens, compares the principal's grants with
+//! [`RoutePolicy::required_scope`], and only then calls the handler; `Public`
+//! calls it directly and is deliberately unlimited, because the limiter is
+//! keyed by a principal a public route never resolves. The token is spent
+//! before the scope comparison so that a `403` counts against the principal
+//! that provoked it rather than being free to repeat.
+//! Registration also records what it was given: one [`RouteMethod`], one
+//! served path, and one policy per entry. That inventory is what
+//! `crate::openapi` publishes each scoped operation's security requirement
+//! from, and what the tests read against the generated `OpenAPI` document
+//! operation by operation. `/health`, `/ready`,
+//! and `/version` are `Public`; `/v1/reference/{catalog}` is `CatalogRead`.
 
 pub mod health;
 pub mod ready;
 pub mod reference;
 pub mod version;
 
-use std::{convert::Infallible, future::Future, pin::Pin};
+use std::{convert::Infallible, future::Future, pin::Pin, time::Instant};
 
 use aircraft_app::authentication::Scope;
 use axum::{
@@ -37,7 +42,7 @@ use axum::{
 use tower::{Layer, Service};
 use utoipa::openapi::path::{Operation, PathItem};
 
-use crate::{ApiState, authentication, problem::ApiProblem};
+use crate::{ApiState, authentication, problem::ApiProblem, rate_limit::Admission};
 
 /// Who may call a route.
 ///
@@ -275,6 +280,52 @@ where
           Ok(principal) => principal,
           Err(problem) => return problem.into_response(),
         };
+      // Keyed by the principal, so this can only run once authentication has
+      // produced one, and *before* the scope check so that every authenticated
+      // request a principal makes counts against its allowance. Spending only on
+      // the requests that pass the scope check would leave a principal free to
+      // loop a route it has no scope for without ever meeting the limiter, and
+      // each of those requests has already cost the credential lookup's pooled
+      // round trip by the time we get here. Before the handler, because refusing
+      // the work is the point.
+      // `docs/architecture/http_v1_decisions.md` § "Single-replica rate limiting
+      // and perimeter bounds" is the contract and `crate::rate_limit` the
+      // implementation; both name this call site.
+      match state.rate_limits.admit(principal.principal_id(), principal.tier(), Instant::now()) {
+        Admission::Admitted => {}
+        Admission::Refused { retry_after_seconds } => {
+          // `debug` and not `warn`: `crate::correlation` already logs one
+          // completion event per request carrying the `429`, its route, and its
+          // request ID, so this adds only the principal and its tier -- and it
+          // adds them on the one path whose rate a caller chooses. At `warn` a
+          // refused caller would be writing two log lines per request it was
+          // refused. Neither field is a secret: the principal ID is internal and
+          // the tier is a lookup code.
+          tracing::debug!(
+            principal_id = principal.principal_id(),
+            tier = principal.tier(),
+            retry_after_seconds,
+            "rate limit exceeded"
+          );
+          return ApiProblem::rate_limited(&instance, retry_after_seconds).into_response();
+        }
+        // Shed load rather than a rate limit: this principal spent nothing and
+        // slowing down will not help it, so it gets the `503` the perimeter's
+        // own saturation answers rather than a `429` blaming it for a quota it
+        // never touched. `warn` and not `debug` because it clears only when the
+        // tracked principals go idle or an operator raises
+        // `http.rate_limit_max_buckets`, and nothing else in the response says
+        // which of the two `503` sources this was.
+        Admission::Saturated => {
+          tracing::warn!(
+            principal_id = principal.principal_id(),
+            tier = principal.tier(),
+            "rate-limit bucket store is at http.rate_limit_max_buckets; a principal could not be \
+             tracked"
+          );
+          return ApiProblem::overloaded(&instance).into_response();
+        }
+      }
       // The effective scopes are the principal's grants: migration 025 stores
       // `principal_scope_grants` per principal and nothing per credential, so
       // this comparison is the one place a narrower credential would change.

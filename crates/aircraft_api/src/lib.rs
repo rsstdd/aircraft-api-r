@@ -6,6 +6,7 @@ mod limits;
 pub mod measurement;
 pub mod pagination;
 pub mod problem;
+pub mod rate_limit;
 pub mod routes;
 pub mod shutdown;
 
@@ -37,6 +38,7 @@ use utoipa::{
 
 pub use crate::limits::{InvalidOrigin, PerimeterLimits};
 use crate::problem::ApiProblem;
+use crate::rate_limit::RateLimiter;
 use crate::routes::{RegisteredRoute, RouteMethod, RoutePolicy, Routes};
 use crate::shutdown::ShutdownState;
 
@@ -66,6 +68,11 @@ pub struct ApiState {
   pub build_commit: Option<&'static str>,
   pub shutdown: ShutdownState,
   pub limits: PerimeterLimits,
+  /// Shared, not per-router: every clone of this state must spend from the same
+  /// buckets, which is the opposite of the crate-private `PerimeterLimits`
+  /// admission semaphore -- rebuilt per router so a clone carries a bound and
+  /// not a share of live permits -- and the reason this one is an `Arc`.
+  pub rate_limits: Arc<RateLimiter>,
 }
 
 /// Written by hand because a trait object cannot derive it, and requiring
@@ -334,8 +341,13 @@ pub fn openapi() -> utoipa::openapi::OpenApi {
 }
 
 /// Declares the bearer scheme and, for every scoped registration, writes its
-/// security requirement and the `401` and `403` it can answer onto the
+/// security requirement and the `401`, `403`, and `429` it can answer onto the
 /// published operation.
+///
+/// The `429` is published from the inventory rather than from each
+/// `#[utoipa::path]` for the same reason the security requirement is: every
+/// scoped route is rate limited by `routes::Policed`, so a per-route
+/// declaration would be a second list to keep in step with the enforcement.
 ///
 /// This is the only writer of an operation's `security`. A `security(...)`
 /// attribute on a `#[utoipa::path]` would be a second declaration the router
@@ -366,9 +378,11 @@ fn publish_route_policies(document: &mut utoipa::openapi::OpenApi, inventory: &[
     };
     operation.security =
       Some(vec![SecurityRequirement::new(API_CREDENTIAL_SCHEME, [scope.code()])]);
-    for (status, response) in
-      [("401", "AuthenticationRequiredProblem"), ("403", "InsufficientScopeProblem")]
-    {
+    for (status, response) in [
+      ("401", "AuthenticationRequiredProblem"),
+      ("403", "InsufficientScopeProblem"),
+      ("429", "RateLimitedProblem"),
+    ] {
       operation
         .responses
         .responses
@@ -453,7 +467,10 @@ mod tests {
   use uuid::Uuid;
 
   use super::*;
-  use crate::problem::{ApiJson, ApiQuery, RequiredScope};
+  use crate::{
+    problem::{ApiJson, ApiQuery, RequiredScope},
+    rate_limit::{Quota, RateLimitPolicy},
+  };
 
   struct AlwaysReady;
 
@@ -588,6 +605,14 @@ mod tests {
           &self.origins,
         )
         .expect("the test perimeter must be usable"),
+        // Far above anything a test in this file sends, so a test that is not
+        // about the limiter never meets it. The rate-limit behavior is proved
+        // in `crate::authentication`'s tests, which build a small quota through
+        // `state_limited_to`.
+        rate_limits: Arc::new(RateLimiter::new(
+          RateLimitPolicy::new(Quota::new(1_000, 1_000).expect("a usable quota"), 64, &[])
+            .expect("no tier overrides"),
+        )),
       }
     }
   }
@@ -1912,6 +1937,40 @@ mod tests {
     assert_refusal(response, 401, "/problems/authentication-required", "/v1/reference/fuel-types")
       .await?;
     assert_eq!(catalogs.reads(), 0, "an unauthenticated request reads nothing");
+    Ok(())
+  }
+
+  /// Every scoped operation publishes the refusal its registration can answer,
+  /// and no `Public` one does. The `Public` half is the anti-vacuity guard: a
+  /// writer that stamped `429` onto every operation would pass the first half
+  /// alone, and would tell a client that `/health` can be rate limited.
+  #[test]
+  fn every_scoped_operation_publishes_the_rate_limit_refusal() -> Result<()> {
+    let document = serde_json::to_value(openapi())?;
+    let mut scoped = 0_usize;
+    let mut public = 0_usize;
+
+    for route in declared_routes().inventory() {
+      // Every declared route is a `GET` today. A registration under another
+      // method finds no operation here and fails the assertion below rather
+      // than passing on a path it never looked at.
+      let pointer = format!("/paths/{}/get/responses/429", route.path.replace('/', "~1"));
+      let published = document.pointer(&pointer);
+      if route.policy.required_scope().is_some() {
+        scoped += 1;
+        assert_eq!(
+          published.and_then(|response| response.pointer("/$ref")),
+          Some(&json!("#/components/responses/RateLimitedProblem")),
+          "{} must publish its 429",
+          route.path
+        );
+      } else {
+        public += 1;
+        assert!(published.is_none(), "{} is unlimited and must publish no 429", route.path);
+      }
+    }
+
+    assert!(scoped > 0 && public > 0, "the inventory must exercise both halves");
     Ok(())
   }
 
