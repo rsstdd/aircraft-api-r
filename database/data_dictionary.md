@@ -90,9 +90,24 @@ deliberately not one type. What a catalog read publishes from `aircraft_core.fam
 `aircraft_core.models`, and `aircraft_core.variants`, and what it withholds --
 the surrogate `id`, the generated `tsvector` columns, `extra_attributes`, the row
 timestamps, and the `ingest_key` and `source_path` staging columns -- is
-`aircraft_app::catalog`. No Rust test holds that list against this schema: a
-column added later arrives in a later migration, so the check belongs in the
-repository that maps these rows, against the installed database.
+`aircraft_app::catalog`. No test holds that list against a migration *file*: a
+column added later arrives in a later migration, so the check belongs against the
+installed database instead. For families it is
+`every_column_the_family_statements_read_exists_in_the_installed_schema` in
+`crates/aircraft_db/tests/family_repository.rs`, which reads
+`information_schema`; the model and variant readers owe the same when they land.
+
+`aircraft_db::repositories::family_repository` is what reads
+`aircraft_core.families`, joining `aircraft_org.organizations` for the
+manufacturer's slug because a surrogate key is not a public identifier. It pages
+by `slug`, which is `NOT NULL UNIQUE` on the table and therefore a total order;
+`aircraft_app`'s `FamilyReader` resumes from that slug and nothing else, so a
+name-ordered page would be a change to the port before it is a change to the
+statement. The runtime role's access to `aircraft_core` and `aircraft_org` is the
+column-level `SELECT` in `database/roles/app_grants.sql` -- no write, and no
+column a statement does not read -- and
+`the_runtime_role_reads_families_and_writes_none` is the only test that connects
+as that role and can therefore fail for `42501`.
 
 `aircraft_domain::reference::Catalog` is the allowlist behind
 `GET /v1/reference/{catalog}`: one variant per catalog, in this migration's

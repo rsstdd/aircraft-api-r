@@ -4,8 +4,9 @@
 -- paths need: the credential verification lookup, `LOOKUP_CREDENTIAL` in
 -- crates/aircraft_db/src/repositories/authentication_repository.rs, and the
 -- reference-catalog statements in
--- crates/aircraft_db/src/repositories/reference_repository.rs. Both name this
--- file in turn. Each grant below is justified by a column one of those
+-- crates/aircraft_db/src/repositories/reference_repository.rs, and the family
+-- statements in crates/aircraft_db/src/repositories/family_repository.rs. Each
+-- names this file in turn. Each grant below is justified by a column one of those
 -- statements reads and by nothing else; the timestamps they do not read, every
 -- write, and every sequence stay ungranted. A column added to a statement
 -- without a grant here fails with 42501, which
@@ -168,3 +169,25 @@ GRANT SELECT (code, label, description, sort_order, is_active)
     ON aircraft_ref.systems_categories TO :"app_role";
 GRANT SELECT (code, label, description, sort_order, is_active)
     ON aircraft_ref.equipment_provision_types TO :"app_role";
+
+-- Catalog reads: the family statements in
+-- crates/aircraft_db/src/repositories/family_repository.rs, which names this
+-- file in turn. Read-only for the same reason the reference catalogs are:
+-- aircraft data is curated through ingestion and migrations, never over HTTP.
+--
+-- Every column below is one a statement there projects or filters on.
+-- PostgreSQL checks column privileges on the WHERE and ORDER BY as well as the
+-- select list, so manufacturer_org_id and country_of_origin_code are granted
+-- for the join and the filter, not only for the projection. The surrogate id,
+-- the generated tsvector, extra_attributes, and the timestamps are not read and
+-- stay ungranted.
+GRANT USAGE ON SCHEMA aircraft_core TO :"app_role";
+GRANT USAGE ON SCHEMA aircraft_org TO :"app_role";
+
+GRANT SELECT (slug, name, common_name, manufacturer_org_id, country_of_origin_code,
+              first_flight_year, name_aliases, description)
+    ON aircraft_core.families TO :"app_role";
+-- id is the join key, slug the manufacturer's public identifier; nothing else
+-- on this table is read by a family statement.
+GRANT SELECT (id, slug)
+    ON aircraft_org.organizations TO :"app_role";
