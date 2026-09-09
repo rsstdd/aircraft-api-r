@@ -124,6 +124,10 @@ impl UnitCode {
   /// [`UnitCodeSyntaxError`] when the code is empty, does not begin with an
   /// ASCII uppercase letter, or contains anything but uppercase letters,
   /// digits, and underscores.
+  /// [`crate::catalog::LookupCode`] validates the same
+  /// `aircraft_ref.lookup_code` syntax for the lookup catalogs. The two are
+  /// separate types on purpose: a measurement unit and a variant type are
+  /// different vocabularies that happen to share a spelling rule.
   pub fn parse(code: &str) -> Result<Self, UnitCodeSyntaxError> {
     let mut characters = code.chars();
     let starts_upper = characters.next().is_some_and(|first| first.is_ascii_uppercase());

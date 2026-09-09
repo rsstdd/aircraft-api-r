@@ -5,6 +5,7 @@
   clippy::indexing_slicing
 )]
 
+pub mod catalog;
 pub mod ingestion;
 pub mod measurement;
 pub mod reference;

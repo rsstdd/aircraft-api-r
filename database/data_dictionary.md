@@ -80,6 +80,20 @@ Each names its migration in turn; this paragraph is the return half, because an
 applied migration is immutable once hashed in `database/migrations.lock.json`
 and cannot carry a pointer added later.
 
+`aircraft_domain::catalog::{Slug, LookupCode, CountryCode}` mirror the `slug_text`
+and `lookup_code` domains above and the `VARCHAR(3)` ISO 3166-1 alpha-3 key of
+`aircraft_geo.countries`, and `aircraft_domain::catalog::{FamilyId, ModelId,
+VariantId}` are the three `aircraft_core` surrogate keys as separate types, so one
+aggregate's key cannot be passed for another's. `LookupCode` and
+`measurement::UnitCode` validate the same rule for different vocabularies and are
+deliberately not one type. What a catalog read publishes from `aircraft_core.families`,
+`aircraft_core.models`, and `aircraft_core.variants`, and what it withholds --
+the surrogate `id`, the generated `tsvector` columns, `extra_attributes`, the row
+timestamps, and the `ingest_key` and `source_path` staging columns -- is
+`aircraft_app::catalog`. No Rust test holds that list against this schema: a
+column added later arrives in a later migration, so the check belongs in the
+repository that maps these rows, against the installed database.
+
 `aircraft_domain::reference::Catalog` is the allowlist behind
 `GET /v1/reference/{catalog}`: one variant per catalog, in this migration's
 declaration order, each carrying only the URL slug. No relation name appears in
