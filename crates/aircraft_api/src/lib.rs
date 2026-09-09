@@ -16,7 +16,10 @@ use std::{
   task::{Context, Poll},
 };
 
-use aircraft_app::{authentication::AuthenticationService, readiness::ReadinessProbe};
+use aircraft_app::{
+  authentication::AuthenticationService, readiness::ReadinessProbe, reference::CatalogReader,
+};
+use aircraft_domain::reference::Catalog;
 use axum::{
   Router,
   extract::{DefaultBodyLimit, OriginalUri, Request},
@@ -27,7 +30,7 @@ use tower::Service;
 use utoipa::{
   OpenApi,
   openapi::{
-    Ref, RefOr,
+    Ref, RefOr, Schema,
     security::{HttpAuthScheme, HttpBuilder, SecurityRequirement, SecurityScheme},
   },
 };
@@ -57,6 +60,7 @@ use crate::shutdown::ShutdownState;
 #[derive(Clone)]
 pub struct ApiState {
   pub readiness: Arc<dyn ReadinessProbe>,
+  pub catalogs: Arc<dyn CatalogReader>,
   pub authentication: Arc<AuthenticationService>,
   pub version: &'static str,
   pub build_commit: Option<&'static str>,
@@ -93,12 +97,18 @@ impl std::fmt::Debug for ApiState {
       )
     ),
     servers((url = "/", description = "Current deployment origin")),
-    paths(routes::health::health, routes::ready::ready, routes::version::version),
+    paths(
+      routes::health::health,
+      routes::ready::ready,
+      routes::version::version,
+      routes::reference::catalog
+    ),
     components(
       schemas(
         routes::health::HealthResponse,
         routes::ready::ReadyResponse,
         routes::version::VersionResponse,
+        routes::reference::CatalogEntryResponse,
         measurement::MeasurementResponse,
         measurement::MeasurementConditionsResponse,
         measurement::DecimalStringResponse,
@@ -125,7 +135,10 @@ impl std::fmt::Debug for ApiState {
         problem::DeadlineExceededProblem
       )
     ),
-    tags((name = "health", description = "Service health checks"))
+    tags(
+      (name = "health", description = "Service health checks"),
+      (name = "reference", description = "Seeded reference catalogs")
+    )
 )]
 struct ApiDoc;
 
@@ -287,6 +300,7 @@ fn declared_routes() -> Routes {
     .route(RouteMethod::Get, "/health", RoutePolicy::Public, routes::health::health)
     .route(RouteMethod::Get, "/ready", RoutePolicy::Public, routes::ready::ready)
     .route(RouteMethod::Get, "/version", RoutePolicy::Public, routes::version::version)
+    .route(RouteMethod::Get, CATALOG_PATH, RoutePolicy::CatalogRead, routes::reference::catalog)
 }
 
 /// `OriginalUri` rather than `Uri`: a fallback runs with the router's own
@@ -302,6 +316,11 @@ async fn method_not_allowed(OriginalUri(uri): OriginalUri) -> ApiProblem {
 
 /// The name the document gives the bearer scheme; every scoped operation's
 /// security requirement refers to it.
+/// The served path of the reference-catalog route, and the key its operation is
+/// published under. One spelling, read by `declared_routes` and by
+/// [`publish_catalog_slugs`], so a rename cannot leave the two disagreeing.
+const CATALOG_PATH: &str = "/v1/reference/{catalog}";
+
 const API_CREDENTIAL_SCHEME: &str = "apiCredential";
 
 /// The generated document: `ApiDoc`'s declarations, with each scoped route's
@@ -310,6 +329,7 @@ const API_CREDENTIAL_SCHEME: &str = "apiCredential";
 pub fn openapi() -> utoipa::openapi::OpenApi {
   let mut document = ApiDoc::openapi();
   publish_route_policies(&mut document, declared_routes().inventory());
+  publish_catalog_slugs(&mut document);
   document
 }
 
@@ -357,6 +377,43 @@ fn publish_route_policies(document: &mut utoipa::openapi::OpenApi, inventory: &[
   }
 }
 
+/// Writes the catalog allowlist onto the `{catalog}` path parameter.
+///
+/// From `Catalog::ALL`, the same list `aircraft_domain` pins against
+/// `database/migrations/002_core_reference_tables.sql` and the same one the
+/// handler resolves a request through, so the published enumeration cannot name
+/// a catalog the router will not serve. A hand-written `ToSchema` enum here
+/// would be a second copy of thirty-six names with nothing keeping it honest.
+///
+/// A missing operation or parameter is left alone rather than asserted on: this
+/// runs during document generation, and
+/// `the_published_catalog_parameter_lists_every_catalog` is what fails if the
+/// declaration and this writer stop agreeing.
+fn publish_catalog_slugs(document: &mut utoipa::openapi::OpenApi) {
+  let slugs: Vec<serde_json::Value> = Catalog::ALL
+    .iter()
+    .map(|catalog| serde_json::Value::String(catalog.slug().to_owned()))
+    .collect();
+
+  let Some(parameters) = document
+    .paths
+    .paths
+    .get_mut(CATALOG_PATH)
+    .and_then(|item| RouteMethod::Get.operation_mut(item).as_mut())
+    .and_then(|operation| operation.parameters.as_mut())
+  else {
+    return;
+  };
+
+  if let Some(RefOr::T(Schema::Object(object))) = parameters
+    .iter_mut()
+    .find(|parameter| parameter.name == "catalog")
+    .and_then(|parameter| parameter.schema.as_mut())
+  {
+    object.enum_values = Some(slugs);
+  }
+}
+
 #[cfg(test)]
 mod tests {
   // A failing assertion is the point of a test, and the probe below fails by
@@ -376,6 +433,7 @@ mod tests {
   use aircraft_app::{
     authentication::{CredentialLookup, CredentialLookupRecord},
     ingestion::PersistenceError,
+    reference::CatalogEntry,
   };
   use anyhow::{Context, Result};
   use async_trait::async_trait;
@@ -508,8 +566,17 @@ mod tests {
 
   impl Perimeter {
     fn state(self, readiness: Arc<dyn ReadinessProbe>) -> ApiState {
+      self.state_with(readiness, Arc::new(FakeCatalogs::default()))
+    }
+
+    fn state_with(
+      self,
+      readiness: Arc<dyn ReadinessProbe>,
+      catalogs: Arc<dyn CatalogReader>,
+    ) -> ApiState {
       ApiState {
         readiness,
+        catalogs,
         authentication: Arc::new(AuthenticationService::new(Arc::new(NeverLooksUp))),
         version: "9.9.9-test",
         build_commit: None,
@@ -528,6 +595,97 @@ mod tests {
   fn state(readiness: Arc<dyn ReadinessProbe>) -> ApiState {
     Perimeter::default().state(readiness)
   }
+
+  /// Answers every catalog from one fixed list, or with one fixed failure, and
+  /// counts what it was asked.
+  ///
+  /// The count is what proves the refusal in
+  /// `an_unknown_catalog_is_refused_before_the_catalog_is_read`: asserting the
+  /// `404` alone would also pass for a handler that queried first and mapped the
+  /// miss afterwards, which is the behavior AC2 forbids.
+  #[derive(Default)]
+  struct FakeCatalogs {
+    entries: Vec<CatalogEntry>,
+    failure: Option<PersistenceError>,
+    reads: AtomicUsize,
+  }
+
+  impl FakeCatalogs {
+    fn serving(entries: Vec<CatalogEntry>) -> Self {
+      Self { entries, failure: None, reads: AtomicUsize::new(0) }
+    }
+
+    /// A dependency outage, carrying driver text that must not reach a client.
+    fn unavailable() -> Self {
+      Self {
+        entries: Vec::new(),
+        failure: Some(PersistenceError::Database {
+          code: "DATABASE_UNAVAILABLE".to_owned(),
+          message: "relation \"aircraft_ref.fuel_types\" does not exist".to_owned(),
+        }),
+        reads: AtomicUsize::new(0),
+      }
+    }
+
+    /// What the repository's row ceiling raises: the database answered, and the
+    /// answer broke a rule this service set.
+    fn breaking_an_invariant() -> Self {
+      Self {
+        entries: Vec::new(),
+        failure: Some(PersistenceError::Invariant(
+          "reference catalog ad-types holds more than 1000 rows".to_owned(),
+        )),
+        reads: AtomicUsize::new(0),
+      }
+    }
+
+    fn reads(&self) -> usize {
+      self.reads.load(Ordering::SeqCst)
+    }
+  }
+
+  #[async_trait]
+  impl CatalogReader for FakeCatalogs {
+    async fn entries(&self, _catalog: Catalog) -> Result<Vec<CatalogEntry>, PersistenceError> {
+      self.reads.fetch_add(1, Ordering::SeqCst);
+      match &self.failure {
+        Some(PersistenceError::Database { code, message }) => {
+          Err(PersistenceError::Database { code: code.clone(), message: message.clone() })
+        }
+        Some(PersistenceError::Invariant(detail)) => {
+          Err(PersistenceError::Invariant(detail.clone()))
+        }
+        None => Ok(self.entries.clone()),
+      }
+    }
+  }
+
+  fn entry(code: &str, label: &str, description: Option<&str>) -> CatalogEntry {
+    CatalogEntry {
+      code: code.to_owned(),
+      label: label.to_owned(),
+      description: description.map(str::to_owned),
+    }
+  }
+
+  /// The real catalog handler behind a `Public` registration, so its own
+  /// behavior is driven through the real perimeter without a credential. What
+  /// this deliberately does not prove is the policy: that
+  /// `/v1/reference/{catalog}` is `CatalogRead` is
+  /// `every_served_route_is_registered_once_and_the_operational_routes_are_public`'s
+  /// job, and that a scoped registration refuses an anonymous caller is
+  /// `every_policy_class_answers_401_403_and_authorized_through_the_router`'s.
+  fn router_serving(catalogs: Arc<dyn CatalogReader>) -> ApplicationRouter {
+    let routes = Routes::new().route(
+      RouteMethod::Get,
+      TEST_CATALOG_PATH,
+      RoutePolicy::Public,
+      routes::reference::catalog,
+    );
+    router_with_routes(Perimeter::default().state_with(Arc::new(AlwaysReady), catalogs), routes)
+  }
+
+  const TEST_CATALOG_PATH: &str = "/__test/reference/{catalog}";
 
   #[derive(Deserialize)]
   struct TypedBody {
@@ -549,9 +707,11 @@ mod tests {
     StatusCode::NO_CONTENT
   }
 
-  /// Stands in for the collection routes #36 onward will register: the only
-  /// way to drive a cursor refusal through the real router while the service
-  /// still has no collection route of its own.
+  /// Stands in for the paged collection routes still to come: the only way to
+  /// drive a cursor refusal through the real router. `/v1/reference/{catalog}`
+  /// is a collection route but not a paged one -- a closed lookup vocabulary is
+  /// answered whole so one validator covers it -- so it issues no cursor and
+  /// leaves this the only path a cursor refusal can take.
   async fn accept_list(
     ApiQuery(query): ApiQuery<pagination::ListQuery>,
   ) -> Result<StatusCode, ApiProblem> {
@@ -1561,6 +1721,217 @@ mod tests {
     assert_refusal(response, 413, "/problems/payload-too-large", "/ready").await
   }
 
+  fn catalog_request(path: &str) -> Request<Body> {
+    Request::builder().uri(path).body(Body::empty()).expect("a valid test request")
+  }
+
+  fn conditional_request(path: &str, if_none_match: &str) -> Request<Body> {
+    Request::builder()
+      .uri(path)
+      .header(header::IF_NONE_MATCH, if_none_match)
+      .body(Body::empty())
+      .expect("a valid test request")
+  }
+
+  const KNOWN_CATALOG: &str = "/__test/reference/fuel-types";
+
+  fn seeded_catalogs() -> Arc<FakeCatalogs> {
+    Arc::new(FakeCatalogs::serving(vec![
+      entry("AVGAS_100LL", "100LL avgas", Some("Leaded aviation gasoline.")),
+      entry("JET_A", "Jet A", None),
+    ]))
+  }
+
+  #[tokio::test]
+  async fn a_known_catalog_serves_its_entries_in_the_order_the_reader_gave_them() -> Result<()> {
+    let catalogs = seeded_catalogs();
+    let response = router_serving(catalogs.clone()).oneshot(catalog_request(KNOWN_CATALOG)).await?;
+
+    assert_eq!(response.status(), StatusCode::OK);
+    assert_eq!(
+      response.headers().get(header::CONTENT_TYPE).context("a catalog needs a media type")?,
+      "application/json"
+    );
+    assert_eq!(
+      body_of(response).await?,
+      json!([
+        {
+          "code": "AVGAS_100LL",
+          "label": "100LL avgas",
+          "description": "Leaded aviation gasoline."
+        },
+        { "code": "JET_A", "label": "Jet A" }
+      ]),
+      "the order is the reader's, and a row without a description omits the member"
+    );
+    assert_eq!(catalogs.reads(), 1, "one request reads the catalog once");
+    Ok(())
+  }
+
+  /// AC2. The count is the half that matters: a handler that queried and then
+  /// mapped an empty result to `404` would satisfy the status alone.
+  #[tokio::test]
+  async fn an_unknown_catalog_is_refused_before_the_catalog_is_read() -> Result<()> {
+    let catalogs = seeded_catalogs();
+    let response = router_serving(catalogs.clone())
+      .oneshot(catalog_request("/__test/reference/pg-catalog"))
+      .await?;
+
+    assert_refusal(response, 404, "/problems/not-found", "/__test/reference/pg-catalog").await?;
+    assert_eq!(catalogs.reads(), 0, "an unknown catalog reaches no statement");
+    Ok(())
+  }
+
+  #[tokio::test]
+  async fn an_empty_catalog_is_a_successful_empty_collection() -> Result<()> {
+    let response = router_serving(Arc::new(FakeCatalogs::serving(Vec::new())))
+      .oneshot(catalog_request(KNOWN_CATALOG))
+      .await?;
+
+    assert_eq!(response.status(), StatusCode::OK, "an empty catalog is not a 404");
+    assert_eq!(body_of(response).await?, json!([]));
+    Ok(())
+  }
+
+  /// The validator and the caching obligation the accepted decision names, and
+  /// that two catalogs do not share a tag -- which a validator computed over
+  /// anything but the body would fail.
+  #[tokio::test]
+  async fn a_catalog_carries_a_strong_validator_over_its_own_body() -> Result<()> {
+    let served = router_serving(seeded_catalogs()).oneshot(catalog_request(KNOWN_CATALOG)).await?;
+    let etag = served
+      .headers()
+      .get(header::ETAG)
+      .context("a catalog response carries a validator")?
+      .to_str()?
+      .to_owned();
+
+    assert_eq!(
+      served.headers().get(header::CACHE_CONTROL).context("a catalog names its cacheability")?,
+      "private, no-cache"
+    );
+    assert!(etag.starts_with('"'), "a strong validator carries no W/ prefix: {etag}");
+
+    let other = router_serving(Arc::new(FakeCatalogs::serving(vec![entry("X", "x", None)])))
+      .oneshot(catalog_request(KNOWN_CATALOG))
+      .await?;
+
+    assert_ne!(
+      other.headers().get(header::ETAG).context("a validator")?.to_str()?,
+      etag,
+      "different bodies must not share a validator"
+    );
+    Ok(())
+  }
+
+  /// AC4, both halves. The stale case is not decoration: without it a handler
+  /// that answered `304` unconditionally would pass every other assertion here.
+  #[tokio::test]
+  async fn a_matching_validator_answers_304_with_no_body_and_a_stale_one_does_not() -> Result<()> {
+    let served = router_serving(seeded_catalogs()).oneshot(catalog_request(KNOWN_CATALOG)).await?;
+    let etag = served.headers().get(header::ETAG).context("a validator")?.to_str()?.to_owned();
+
+    for validator in [etag.clone(), format!("W/{etag}"), "*".to_owned(), format!("\"zz\", {etag}")]
+    {
+      let response = router_serving(seeded_catalogs())
+        .oneshot(conditional_request(KNOWN_CATALOG, &validator))
+        .await?;
+
+      assert_eq!(response.status(), StatusCode::NOT_MODIFIED, "validator {validator:?}");
+      assert_eq!(
+        response.headers().get(header::ETAG).context("a 304 still names the entity")?.to_str()?,
+        etag,
+        "validator {validator:?}"
+      );
+      assert!(
+        response.headers().get(header::CONTENT_TYPE).is_none(),
+        "a 304 carries no body: {validator:?}"
+      );
+      assert!(
+        to_bytes(response.into_body(), 4096).await?.is_empty(),
+        "a 304 carries no body: {validator:?}"
+      );
+    }
+
+    let stale = router_serving(seeded_catalogs())
+      .oneshot(conditional_request(KNOWN_CATALOG, "\"not-this-one\""))
+      .await?;
+
+    assert_eq!(stale.status(), StatusCode::OK, "a stale validator is served the catalog");
+    Ok(())
+  }
+
+  /// The two persistence failures are different answers, and the difference is
+  /// operational: `503` invites a retry, which is right for an outage and wrong
+  /// for a catalog past its row ceiling -- the database answered, and no retry
+  /// will make the answer smaller. A handler that matched neither variant would
+  /// pass whichever row it happened to agree with, so both are asserted here.
+  #[tokio::test]
+  async fn each_persistence_failure_answers_its_own_problem_and_leaks_no_diagnostic() -> Result<()>
+  {
+    assert_failure_answers(FakeCatalogs::unavailable, 503, "/problems/database-unavailable")
+      .await?;
+    assert_failure_answers(FakeCatalogs::breaking_an_invariant, 500, "/problems/internal-error")
+      .await
+  }
+
+  /// Drives one persistence failure twice: once to read the body for a leaked
+  /// diagnostic, once to compare the refusal. The body is consumed either way,
+  /// and `FakeCatalogs` is deliberately not `Clone`.
+  async fn assert_failure_answers(
+    failing: fn() -> FakeCatalogs,
+    status: u16,
+    kind: &str,
+  ) -> Result<()> {
+    let leaked =
+      router_serving(Arc::new(failing())).oneshot(catalog_request(KNOWN_CATALOG)).await?;
+    // Fragments the response must never carry: a relation name, driver text,
+    // and the ceiling detail the repository puts in its refusal. None of them is
+    // a credential -- they are the diagnostics a problem document is forbidden
+    // to echo -- and the failing assertion prints the document because that is
+    // what names the leak.
+    let document = format!("{:?}", body_of(leaked).await?);
+    for forbidden in ["aircraft_ref", "does not exist", "1000 rows", "ad-types"] {
+      assert!(!document.contains(forbidden), "{forbidden:?} reached the client: {document}");
+    }
+
+    let response =
+      router_serving(Arc::new(failing())).oneshot(catalog_request(KNOWN_CATALOG)).await?;
+    assert_refusal(response, status, kind, KNOWN_CATALOG).await
+  }
+
+  /// The registered route is scoped, so an anonymous caller never reaches the
+  /// handler. Driven at the real path, through the real router.
+  #[tokio::test]
+  async fn the_registered_catalog_route_refuses_an_anonymous_caller() -> Result<()> {
+    let catalogs = seeded_catalogs();
+    let response = router(Perimeter::default().state_with(Arc::new(AlwaysReady), catalogs.clone()))
+      .oneshot(catalog_request("/v1/reference/fuel-types"))
+      .await?;
+
+    assert_refusal(response, 401, "/problems/authentication-required", "/v1/reference/fuel-types")
+      .await?;
+    assert_eq!(catalogs.reads(), 0, "an unauthenticated request reads nothing");
+    Ok(())
+  }
+
+  /// The published enumeration comes from `Catalog::ALL`, so a client is told
+  /// exactly the set the router will serve.
+  #[test]
+  fn the_published_catalog_parameter_lists_every_catalog() -> Result<()> {
+    let document = serde_json::to_value(openapi())?;
+    let pointer = "/paths/~1v1~1reference~1{catalog}/get/parameters/0";
+    let parameter = document.pointer(pointer).context("the catalog parameter is published")?;
+
+    assert_eq!(parameter.pointer("/name"), Some(&json!("catalog")), "{parameter}");
+    assert_eq!(
+      parameter.pointer("/schema/enum").context("the parameter enumerates the allowlist")?,
+      &json!(Catalog::ALL.map(Catalog::slug).to_vec()),
+      "the published slugs are Catalog::ALL"
+    );
+    Ok(())
+  }
+
   #[test]
   fn openapi_uses_a_proprietary_license_without_an_spdx_identifier() -> Result<()> {
     let license = openapi().info.license.context("OpenAPI license should be present")?;
@@ -1594,7 +1965,7 @@ mod tests {
   /// must publish every perimeter failure a generated client can receive.
   #[test]
   fn openapi_publishes_every_perimeter_response_for_every_route() -> Result<()> {
-    const PATHS: [&str; 3] = ["~1health", "~1ready", "~1version"];
+    const PATHS: [&str; 4] = ["~1health", "~1ready", "~1version", "~1v1~1reference~1{catalog}"];
     const STATUSES: [&str; 4] = ["400", "413", "503", "504"];
 
     let document = serde_json::to_value(openapi())?;
@@ -1612,10 +1983,11 @@ mod tests {
   /// operational routes, each `Public`, and nothing else. A route added to
   /// `declared_routes` without a row here is a decision the tests reading
   /// this table refuse to make by default.
-  const DECLARED: [(RouteMethod, &str, RoutePolicy); 3] = [
+  const DECLARED: [(RouteMethod, &str, RoutePolicy); 4] = [
     (RouteMethod::Get, "/health", RoutePolicy::Public),
     (RouteMethod::Get, "/ready", RoutePolicy::Public),
     (RouteMethod::Get, "/version", RoutePolicy::Public),
+    (RouteMethod::Get, CATALOG_PATH, RoutePolicy::CatalogRead),
   ];
 
   #[test]
@@ -2285,6 +2657,20 @@ mod tests {
             continue;
           }
           let where_ = format!("{method} {path} -> {status}");
+
+          // A scoped operation publishes its `401` and `403` as references into
+          // `components/responses`, which `publish_route_policies` writes rather
+          // than inlining. The contract is about the document a client reads,
+          // and a client follows the reference, so this does too -- and a
+          // reference naming nothing fails here rather than being skipped.
+          let response = match response.pointer("/$ref").and_then(serde_json::Value::as_str) {
+            Some(reference) => {
+              document.pointer(&reference.replacen('#', "", 1)).with_context(|| {
+                format!("{where_} references {reference}, which is not published")
+              })?
+            }
+            None => response,
+          };
 
           assert!(
             response.pointer("/content/application~1problem+json").is_some(),

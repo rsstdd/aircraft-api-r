@@ -1,5 +1,5 @@
 // A failing assertion is the point of a test, so panicking accessors are fine.
-#![allow(clippy::expect_used)]
+#![allow(clippy::expect_used, clippy::panic)]
 
 //! Every credential state that only `PostgreSQL` can establish, driven through
 //! the real middleware and the real lookup against the canonical install in a
@@ -21,7 +21,7 @@ use std::{
 };
 
 use aircraft_api::{
-  ApiState, ApplicationRouter, PerimeterLimits, router_with_routes,
+  ApiState, ApplicationRouter, PerimeterLimits, router, router_with_routes,
   routes::{RouteMethod, RoutePolicy, Routes},
   shutdown::ShutdownState,
 };
@@ -32,8 +32,10 @@ use aircraft_app::{
   credential_issuance::{CredentialIssuanceService, IssueCredential, IssuedCredential},
   ingestion::PersistenceError,
   readiness::ReadinessProbe,
+  reference::{CatalogEntry, CatalogReader},
 };
-use aircraft_db::{SqlxCredentialLookup, SqlxCredentialStore};
+use aircraft_db::{SqlxCatalogReader, SqlxCredentialLookup, SqlxCredentialStore};
+use aircraft_domain::reference::Catalog;
 use aircraft_testsupport::{TestResult, install_schema, start_postgres};
 use async_trait::async_trait;
 use axum::{
@@ -78,9 +80,21 @@ impl CredentialLookup for Counting {
   }
 }
 
+/// Panics if consulted: the routes here are the protected test route and the
+/// registered catalog route, and the latter is served by the real adapter.
+struct NoCatalogs;
+
+#[async_trait]
+impl CatalogReader for NoCatalogs {
+  async fn entries(&self, _catalog: Catalog) -> Result<Vec<CatalogEntry>, PersistenceError> {
+    panic!("this router was built without a catalog adapter");
+  }
+}
+
 fn state(lookup: Arc<dyn CredentialLookup>) -> ApiState {
   ApiState {
     readiness: Arc::new(AlwaysReady),
+    catalogs: Arc::new(NoCatalogs),
     authentication: Arc::new(AuthenticationService::new(lookup)),
     version: "9.9.9-test",
     build_commit: None,
@@ -110,6 +124,85 @@ fn protected_router(pool: &PgPool) -> (ApplicationRouter, Arc<Counting>) {
     },
   );
   (router_with_routes(state(lookup.clone()), routes), lookup)
+}
+
+/// The shipped router over the real credential lookup *and* the real catalog
+/// adapter: no test route and no fake port stands between the request and
+/// `PostgreSQL`. The registration under test is the one `declared_routes`
+/// makes, at the path a client actually calls.
+fn serving_router(pool: &PgPool) -> ApplicationRouter {
+  let mut state = state(Arc::new(SqlxCredentialLookup::from_pool(pool.clone())));
+  state.catalogs = Arc::new(SqlxCatalogReader::new(pool.clone()));
+  router(state)
+}
+
+fn catalog_request(
+  token: &str,
+  slug: &str,
+  if_none_match: Option<&str>,
+) -> TestResult<Request<Body>> {
+  let mut request = Request::get(format!("/v1/reference/{slug}"))
+    .header("x-request-id", REQUEST_ID)
+    .header(header::AUTHORIZATION, format!("Bearer {token}"));
+  if let Some(validator) = if_none_match {
+    request = request.header(header::IF_NONE_MATCH, validator);
+  }
+  Ok(request.body(Body::empty())?)
+}
+
+/// The composed path, end to end: a real credential carrying `CATALOG_READ`
+/// reads a real seeded catalog through the registered route, its validator
+/// revalidates, and an unknown slug is refused. What the fake-port tests beside
+/// the handler cannot show is that the wiring is real -- that the route is
+/// registered at this path, that `CATALOG_READ` is what opens it, and that the
+/// adapter behind it reads the rows the seeds actually installed.
+#[tokio::test]
+async fn a_catalog_read_credential_reads_a_real_catalog_through_the_registered_route() -> TestResult
+{
+  let (_container, pool) = start_postgres(2, Duration::from_secs(2)).await?;
+  install_schema(&pool).await?;
+  let reader = principal(&pool, "catalog-reader").await?;
+  grant(&pool, reader, "CATALOG_READ").await?;
+  let issued = issue(&pool, reader).await?;
+  let token = issued.clear.expose_secret().to_owned();
+
+  let served = serving_router(&pool).oneshot(catalog_request(&token, "fuel-types", None)?).await?;
+
+  assert_eq!(served.status(), StatusCode::OK);
+  let etag = served
+    .headers()
+    .get(header::ETAG)
+    .expect("a catalog response carries a validator")
+    .to_str()?
+    .to_owned();
+  let document: Value = serde_json::from_slice(&to_bytes(served.into_body(), 65_536).await?)?;
+
+  let seeded: Vec<String> = query_scalar(
+    "SELECT code FROM aircraft_ref.fuel_types WHERE is_active ORDER BY sort_order, code",
+  )
+  .fetch_all(&pool)
+  .await?;
+  let served_codes: Vec<String> = document
+    .as_array()
+    .expect("a catalog is a JSON array")
+    .iter()
+    .map(|entry| entry["code"].as_str().expect("every row has a code").to_owned())
+    .collect();
+
+  assert!(!seeded.is_empty(), "fuel_types is seeded, or this proves nothing");
+  assert_eq!(served_codes, seeded, "the route serves the rows the seeds installed");
+
+  let revalidated =
+    serving_router(&pool).oneshot(catalog_request(&token, "fuel-types", Some(&etag))?).await?;
+  assert_eq!(revalidated.status(), StatusCode::NOT_MODIFIED, "the validator revalidates");
+  assert!(
+    to_bytes(revalidated.into_body(), 4096).await?.is_empty(),
+    "a 304 over the real route carries no body"
+  );
+
+  let unknown = serving_router(&pool).oneshot(catalog_request(&token, "pg-class", None)?).await?;
+  assert_eq!(unknown.status(), StatusCode::NOT_FOUND, "an unknown catalog is refused");
+  Ok(())
 }
 
 async fn principal(pool: &PgPool, name: &str) -> TestResult<i64> {

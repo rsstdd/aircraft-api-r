@@ -62,6 +62,30 @@ There is no accepted ADR catalog in the current tree. If ADRs are introduced,
 an accepted decision can govern design but cannot make unimplemented behavior
 real. Proposed decisions do not authorize scope.
 
+## Required skills
+
+The skills under `.claude/skills/` are binding standards, not advice to weigh.
+Load the applicable ones before the first edit, and apply the one that owns the
+concern where two overlap. They sit below this file in the hierarchy above: a
+skill refines how a change is made, and never overrides a source of truth.
+
+| Skill | Owns | Load before |
+|---|---|---|
+| `clean-code` | Clean Code as applied here, and the settled conflicts against repository conventions that must not be re-litigated | Writing or reviewing any code, and writing any commit message |
+| `ponytail` | The laziest solution that works: YAGNI, reuse what exists, standard library before a dependency. Decides whether code should exist at all | Any coding task, and any dependency choice |
+| `rust-review` | Review for over-engineering and what to delete. Its severity scale is what changed code is judged against | Writing or editing Rust, and reviewing a diff |
+| `rust-comment` | Why-not-what prose, `///` and `//!` sections, two-sided coupling comments to migrations and generated artifacts, debt markers | Writing or editing Rust, and reviewing comments |
+| `rust-production` | Boundary craft codified from modules that prove it: admitting untrusted bytes, verifying a second pass against preflight, transaction ownership and durable audit, provenance without canonical status, durable contract and schema evolution | Rust that reads untrusted input, opens a transaction, changes an identity, or changes a published format or migration |
+| `rust-testing` | TDD order, behavior-sentence naming with no tier prefixes, where a test and its helpers live, the disposable PostgreSQL harness, deterministic setup, proving a new test can fail | Writing, reviewing, or designing any test |
+
+`crates/AGENTS.md` owns TDD order, test naming, and crate boundaries; the skills
+are the craft layer beneath it. Where a skill and a nested `AGENTS.md` disagree,
+the `AGENTS.md` wins.
+
+`.claude/skills/` also holds issue workflow skills, invocable as slash commands.
+They are procedures, not standards, and are deliberately absent from this table
+and from Routing. Do not register them here.
+
 ## Operating rules
 
 - Read the relevant manifest, implementation, tests, migrations, and owning
@@ -314,6 +338,8 @@ when a requested vertical slice needs them.
 | Database lifecycle | `database/README.md`, `database/local_setup_and_testing.md` | Documented SQL-first workflow |
 | Runtime configuration | `.env.example`, `crates/aircraft_config/` | Parsed types and environment mapping; never commit `.env` |
 | Integration-test patterns | `apps/ingest/tests/`, `apps/server/tests/`, `crates/aircraft_db/tests/`, `crates/aircraft_testsupport/` | Disposable PostgreSQL harness and behavioral gates |
+| Binding engineering standards | `.claude/skills/` | Required skills table above; a skill never overrides a source of truth |
+| Delivery commitments for the HTTP failure contract | `DELIVERY-PLAN.md` | Records what issue #33 promised and what shipped; `docs/architecture/http_v1_decisions.md` owns the contract |
 | Historical implementation | `archive/` | Reference only |
 
 ## Commands

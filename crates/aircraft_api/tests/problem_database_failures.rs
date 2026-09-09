@@ -16,8 +16,10 @@ use aircraft_app::{
   credential_issuance::{CredentialStore, CredentialVerifier, NewCredential},
   ingestion::PersistenceError,
   readiness::ReadinessProbe,
+  reference::{CatalogEntry, CatalogReader},
 };
 use aircraft_db::{SqlxCredentialStore, readiness::PoolReadiness};
+use aircraft_domain::reference::Catalog;
 use aircraft_testsupport::{TestResult, install_schema, start_postgres};
 use async_trait::async_trait;
 use axum::{
@@ -53,9 +55,20 @@ impl CredentialLookup for NeverLooksUp {
   }
 }
 
+/// Panics if consulted: no route here reads a reference catalog.
+struct NoCatalogs;
+
+#[async_trait]
+impl CatalogReader for NoCatalogs {
+  async fn entries(&self, _catalog: Catalog) -> Result<Vec<CatalogEntry>, PersistenceError> {
+    panic!("no route here may read a reference catalog");
+  }
+}
+
 fn state(readiness: Arc<dyn ReadinessProbe>) -> ApiState {
   ApiState {
     readiness,
+    catalogs: Arc::new(NoCatalogs),
     authentication: Arc::new(AuthenticationService::new(Arc::new(NeverLooksUp))),
     version: "9.9.9-test",
     build_commit: None,
