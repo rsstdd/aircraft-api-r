@@ -156,17 +156,18 @@ pub struct VariantFilter {
 
 /// Reads families.
 ///
-/// Three ports rather than one, because `aircraft_db` implements them in
-/// separate stories: a single trait would force one adapter to exist before
-/// either half was ready.
-///
 /// # Errors
 ///
-/// [`PersistenceError`] as the repository reported it. A row that does not
-/// exist is `Ok(None)` and not an error -- absence is not a failure, and turning
-/// it into `404` is the HTTP boundary's decision, which is why no `NotFound`
-/// variant exists to prejudge it. `CredentialLookup::resolve` reads the same
-/// way.
+/// [`PersistenceError::Database`] when the repository's query fails, which a
+/// caller answers as a dependency outage, and [`PersistenceError::Invariant`]
+/// when the database answered but broke a rule this service set, which no retry
+/// clears. `crates/aircraft_api/src/routes/reference.rs` already maps that pair
+/// to `503` and `500`.
+///
+/// A row that does not exist is `Ok(None)` and not an error -- absence is not a
+/// failure, and turning it into `404` is the HTTP boundary's decision, which is
+/// why no `NotFound` variant exists to prejudge it. `CredentialLookup::resolve`
+/// reads the same way.
 #[async_trait]
 pub trait FamilyReader: Send + Sync {
   /// One page of families, bounded by `limit` and resuming after `after`.
@@ -245,10 +246,6 @@ mod tests {
     PageLimit::from_requested(NonZeroU16::new(value))
   }
 
-  /// Only what this port owns: the summaries reach the caller as the repository
-  /// built them. How a page is cut and where its continuation comes from is
-  /// `crate::pagination`'s, and `only_a_returned_lookahead_row_yields_a_continuation`
-  /// already proves it.
   #[tokio::test]
   async fn a_populated_read_returns_the_summaries_unchanged() {
     let reader = FakeCatalog::serving(vec![summary("a"), summary("b")]);
@@ -258,11 +255,7 @@ mod tests {
       .await
       .expect("a populated read");
 
-    assert_eq!(
-      page.items().iter().map(|row| row.slug.as_str()).collect::<Vec<_>>(),
-      ["a", "b"],
-      "the port passes its rows through in order"
-    );
+    assert_eq!(page.items(), &[summary("a"), summary("b")]);
   }
 
   #[tokio::test]
