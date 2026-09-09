@@ -21,6 +21,7 @@
 
 pub mod health;
 pub mod ready;
+pub mod reference;
 pub mod version;
 
 use std::{convert::Infallible, future::Future, pin::Pin};

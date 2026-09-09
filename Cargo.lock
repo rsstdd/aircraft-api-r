@@ -173,6 +173,7 @@ dependencies = [
  "aircraft_app",
  "aircraft_config",
  "aircraft_db",
+ "aircraft_domain",
  "aircraft_observability",
  "aircraft_testsupport",
  "anyhow",

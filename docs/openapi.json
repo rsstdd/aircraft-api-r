@@ -245,6 +245,244 @@
         }
       }
     },
+    "/v1/reference/{catalog}": {
+      "get": {
+        "tags": [
+          "reference"
+        ],
+        "summary": "List a seeded reference catalog",
+        "description": "Serve one lookup catalog's active rows in its stable order. The catalog is named by an allowlisted slug; any other value is a 404. Responses carry a strong ETag, and a matching If-None-Match is answered 304 with no body.",
+        "operationId": "catalog",
+        "parameters": [
+          {
+            "name": "catalog",
+            "in": "path",
+            "description": "The catalog to read. Only the allowlisted slugs are served.",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "enum": [
+                "unit-categories",
+                "measurement-units",
+                "aircraft-roles",
+                "service-statuses",
+                "variant-types",
+                "landing-gear-types",
+                "propulsion-categories",
+                "fuel-types",
+                "dimension-metric-types",
+                "weight-metric-types",
+                "performance-metric-types",
+                "certification-authorities",
+                "airworthiness-categories",
+                "pilot-certificate-types",
+                "operating-approval-types",
+                "military-mission-types",
+                "weapon-categories",
+                "hardpoint-position-types",
+                "stores-types",
+                "currencies",
+                "cost-item-types",
+                "aircraft-condition-grades",
+                "ad-types",
+                "sb-compliance-statuses",
+                "availability-grades",
+                "source-types",
+                "source-reliability-grades",
+                "curation-flag-statuses",
+                "curation-entity-types",
+                "assertion-statuses",
+                "mission-profile-types",
+                "comparison-criterion-types",
+                "organization-types",
+                "org-relationship-types",
+                "systems-categories",
+                "equipment-provision-types"
+              ]
+            }
+          },
+          {
+            "name": "If-None-Match",
+            "in": "header",
+            "description": "Entity-tags from an earlier response. A match is answered 304.",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "X-Request-Id",
+            "in": "header",
+            "description": "Correlation identifier. Adopted when it is 1-128 visible ASCII characters sent exactly once; otherwise the service generates one.",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "The catalog's active rows, in its stable order",
+            "headers": {
+              "Cache-Control": {
+                "schema": {
+                  "type": "string"
+                },
+                "description": "private, no-cache."
+              },
+              "ETag": {
+                "schema": {
+                  "type": "string"
+                },
+                "description": "Strong validator for this representation."
+              },
+              "X-Request-Id": {
+                "schema": {
+                  "type": "string"
+                },
+                "description": "The correlation identifier for this request, echoed from the client or generated here."
+              }
+            },
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "array",
+                  "items": {
+                    "$ref": "#/components/schemas/CatalogEntryResponse"
+                  }
+                }
+              }
+            }
+          },
+          "304": {
+            "description": "The client's validator matches; no body is sent",
+            "headers": {
+              "Cache-Control": {
+                "schema": {
+                  "type": "string"
+                },
+                "description": "private, no-cache."
+              },
+              "ETag": {
+                "schema": {
+                  "type": "string"
+                },
+                "description": "Strong validator for this representation."
+              },
+              "X-Request-Id": {
+                "schema": {
+                  "type": "string"
+                },
+                "description": "The correlation identifier for this request, echoed from the client or generated here."
+              }
+            }
+          },
+          "400": {
+            "description": "The request body could not be read",
+            "headers": {
+              "X-Request-Id": {
+                "schema": {
+                  "type": "string"
+                },
+                "description": "The correlation identifier for this request, echoed from the client or generated here."
+              }
+            },
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemDetails"
+                }
+              }
+            }
+          },
+          "401": {
+            "$ref": "#/components/responses/AuthenticationRequiredProblem"
+          },
+          "403": {
+            "$ref": "#/components/responses/InsufficientScopeProblem"
+          },
+          "404": {
+            "description": "No catalog has that name",
+            "headers": {
+              "X-Request-Id": {
+                "schema": {
+                  "type": "string"
+                },
+                "description": "The correlation identifier for this request, echoed from the client or generated here."
+              }
+            },
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemDetails"
+                }
+              }
+            }
+          },
+          "413": {
+            "description": "The request body is larger than the perimeter accepts",
+            "headers": {
+              "X-Request-Id": {
+                "schema": {
+                  "type": "string"
+                },
+                "description": "The correlation identifier for this request, echoed from the client or generated here."
+              }
+            },
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemDetails"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "The service is draining, is at capacity, or could not read the catalog",
+            "headers": {
+              "X-Request-Id": {
+                "schema": {
+                  "type": "string"
+                },
+                "description": "The correlation identifier for this request, echoed from the client or generated here."
+              }
+            },
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemDetails"
+                }
+              }
+            }
+          },
+          "504": {
+            "description": "The handler did not answer within the perimeter deadline",
+            "headers": {
+              "X-Request-Id": {
+                "schema": {
+                  "type": "string"
+                },
+                "description": "The correlation identifier for this request, echoed from the client or generated here."
+              }
+            },
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemDetails"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "apiCredential": [
+              "CATALOG_READ"
+            ]
+          }
+        ]
+      }
+    },
     "/version": {
       "get": {
         "tags": [
@@ -361,6 +599,29 @@
   },
   "components": {
     "schemas": {
+      "CatalogEntryResponse": {
+        "type": "object",
+        "description": "One lookup row on the wire.\n\n`description` is omitted when the row has none, or when the catalog's table\nhas no such column at all -- the rule the measurement representation follows,\nand deliberately the opposite of `PageResponse::next_cursor`, which is `null`\non a final page so a paging client can read the member rather than test for\nit. Nothing polls a catalog for a missing description.",
+        "required": [
+          "code",
+          "label"
+        ],
+        "properties": {
+          "code": {
+            "type": "string",
+            "description": "The stable machine code, as `aircraft_ref.lookup_code` spells it."
+          },
+          "description": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "label": {
+            "type": "string"
+          }
+        }
+      },
       "DecimalStringResponse": {
         "type": "string",
         "description": "A `NUMERIC` value on the wire: always a JSON string, never a JSON number.\n\nThe published `pattern` is the grammar and deliberately not the capacity:\n`DecimalString` bounds digits at what `PostgreSQL` can store, but\nrepublishing those five-digit quantifiers as a `maxLength` would put a\nstorage detail in the public contract, which the pull-request `oasdiff`\ngate would then freeze.",
@@ -932,6 +1193,10 @@
     {
       "name": "health",
       "description": "Service health checks"
+    },
+    {
+      "name": "reference",
+      "description": "Seeded reference catalogs"
     }
   ]
 }

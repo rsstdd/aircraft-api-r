@@ -182,6 +182,7 @@ aircraft-api-r/
 │   ├── validation/             # Post-install schema and behavior checks
 │   ├── fixtures/               # Test-only database data
 │   └── roles/                  # Restricted ingestion-role grants
+├── .claude/skills/             # Binding engineering standards for coding agents
 ├── docs/architecture/          # Architecture and boundary documentation
 ├── tests/fixtures/             # Source fixtures used by Rust integration tests
 ├── xtask/                      # Tested repository automation
@@ -461,10 +462,50 @@ evidence.
 - SQLx compile-time query metadata and a meaningful offline-query gate
 - End-to-end production deployment qualification
 
+## Agent skills
+
+`.claude/skills/` holds binding engineering standards for coding agents working
+in this repository. They are requirements, not advice: load the applicable ones
+before the first edit. [AGENTS.md](AGENTS.md#required-skills) is the authority
+and records which to load when, and how they rank against the nested
+`AGENTS.md` files.
+
+| Skill | Owns |
+|---|---|
+| `clean-code` | Clean Code as applied here, and the settled conflicts against repository conventions |
+| `ponytail` | The laziest solution that works: YAGNI, reuse, standard library before a dependency |
+| `rust-review` | Review for over-engineering; its severity scale is what changed code is judged against |
+| `rust-comment` | Why-not-what prose, `///` and `//!` sections, coupling comments, debt markers |
+| `rust-production` | Untrusted input, two-pass consistency, transaction ownership, provenance, schema evolution |
+| `rust-testing` | TDD order, behavior-sentence naming, test placement, the disposable PostgreSQL harness |
+
+A skill refines how a change is made and never overrides a source of truth.
+Where a skill and a nested `AGENTS.md` disagree, the `AGENTS.md` wins.
+
+## Issue workflow
+
+`.claude/skills/` also holds five issue workflow skills. They are procedures
+rather than standards, so they are deliberately absent from the routing tables
+in `AGENTS.md`. Each takes an issue number, and they compose in order:
+
+| Stage | Skill | Does |
+|---|---|---|
+| 1 | `/issue-plan` | Proves each acceptance criterion satisfied or not against the tree, names the remaining work, and posts the plan as an issue comment |
+| 2 | `/issue-plan-review` | Re-derives the criteria independently, verifies every citation in an existing plan, grades findings Blocking/Major/Minor/Optional, and posts an amendment |
+| 3 | `/issue-implement` | Baseline, blast-radius map, a failing test per criterion, minimal diff, adversarial review, required verification, per-criterion evidence report |
+| 4 | `/issue-implement-review` | Grades every criterion Satisfied / Partially satisfied / Violated / Unverified against the tree, branch, or merge result, and returns one merge verdict |
+| 5 | `rust-remediation` | Acts on review findings, verifying each as a hypothesis before editing, then re-reviews against every criterion |
+
+Stages 1, 2, and 4 write no production code, and the planning stages never edit
+an issue body or an existing comment. None of the five commit, push, or open a
+pull request; those remain manual, as `AGENTS.md` requires.
+
 ## Documentation
 
 - [Repository implementation rules](AGENTS.md) — source-of-truth routing,
   architectural invariants, verification, and safety rules
+- [Agent skills](.claude/skills/) — binding standards loaded before the first
+  edit; `AGENTS.md` records which apply when
 - [Database guide](database/README.md) — SQL ownership, install order, local
   lifecycle, and destructive-command warnings
 - [Database data dictionary](database/data_dictionary.md) — documented schema

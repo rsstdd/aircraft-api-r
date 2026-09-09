@@ -36,7 +36,9 @@ use aircraft_app::{
   credential_issuance::CredentialVerifier,
   ingestion::PersistenceError,
   readiness::ReadinessProbe,
+  reference::{CatalogEntry, CatalogReader},
 };
+use aircraft_domain::reference::Catalog;
 use anyhow::{Context, Result};
 use async_trait::async_trait;
 use axum::{
@@ -263,9 +265,20 @@ fn state(readiness: Arc<dyn ReadinessProbe>) -> ApiState {
   state_with(readiness, Arc::new(NeverLooksUp))
 }
 
+/// Panics if consulted: no route here reads a reference catalog.
+struct NoCatalogs;
+
+#[async_trait]
+impl CatalogReader for NoCatalogs {
+  async fn entries(&self, _catalog: Catalog) -> Result<Vec<CatalogEntry>, PersistenceError> {
+    panic!("no route here may read a reference catalog");
+  }
+}
+
 fn state_with(readiness: Arc<dyn ReadinessProbe>, lookup: Arc<dyn CredentialLookup>) -> ApiState {
   ApiState {
     readiness,
+    catalogs: Arc::new(NoCatalogs),
     authentication: Arc::new(AuthenticationService::new(lookup)),
     version: "9.9.9-test",
     build_commit: None,

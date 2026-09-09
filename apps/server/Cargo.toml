@@ -37,10 +37,12 @@ tracing.workspace = true
 # binary need a disposable PostgreSQL to point it at.
 aircraft_testsupport.workspace = true
 
-# The drain gates call `serve` in process, so they implement the readiness and
-# credential-lookup ports with fakes they control rather than starting a
-# container, and read back the warning the expired window emits. `uuid` is the
-# lookup port's key type.
+# The drain gates call `serve` in process, so they implement the readiness,
+# credential-lookup, and catalog ports with fakes they control rather than
+# starting a container, and read back the warning the expired window emits.
+# `uuid` is the lookup port's key type and `aircraft_domain` carries the catalog
+# vocabulary the reader port is parameterized by.
+aircraft_domain.workspace = true
 async-trait.workspace = true
 tracing-subscriber.workspace = true
 uuid.workspace = true

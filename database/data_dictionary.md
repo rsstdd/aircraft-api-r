@@ -53,7 +53,15 @@ aircraft_auth   ──▶  standalone; depends only on aircraft_ref domains and 
 
 **Purpose.** Stores every extensible enumeration used across the schema as a proper lookup table rather than a `TEXT CHECK` constraint. Adding a new value requires only an `INSERT` into the relevant table, not a schema migration. Also houses the five cross-cutting domains, the `to_canonical()` unit-conversion function, and the three utility functions (`set_updated_at`, `slugify`, `normalize_lookup_code`).
 
-**Key design choices.** All lookup tables share the same structural pattern: a `code aircraft_ref.lookup_code PRIMARY KEY` column (uppercase snake-case, e.g. `RETRACTABLE_TRICYCLE`), a human-readable `label TEXT NOT NULL`, an optional `description`, and `sort_order / is_active` flags. The `code` column is always the FK target, never the surrogate integer `id`, so FK values are self-documenting in query results.
+**Key design choices.** Lookup tables follow a common structural pattern: a `code aircraft_ref.lookup_code PRIMARY KEY` column (uppercase snake-case, e.g. `RETRACTABLE_TRICYCLE`), a human-readable `label TEXT NOT NULL`, an optional `description`, and `sort_order / is_active` flags. The `code` column is always the FK target, never the surrogate integer `id`, so FK values are self-documenting in query results.
+
+Four of the 36 tables deviate, and migration `002` rather than this paragraph is
+the authority on each. `unit_categories` has no `is_active`. `measurement_units`
+and `certification_authorities` have no `description`, carrying `symbol` and
+`full_name` respectively instead. `currencies` has neither, has no `sort_order`,
+and keys on `VARCHAR(3)` rather than `lookup_code` so that its codes are ISO
+4217. Anything reading these tables generically must account for all four; the
+one thing every table does share is `code` as its primary key.
 
 ### Domains
 
@@ -71,6 +79,20 @@ Rust, and `aircraft_domain::measurement::{PowerSetting, SurfaceType}` mirror the
 Each names its migration in turn; this paragraph is the return half, because an
 applied migration is immutable once hashed in `database/migrations.lock.json`
 and cannot carry a pointer added later.
+
+`aircraft_domain::reference::Catalog` is the allowlist behind
+`GET /v1/reference/{catalog}`: one variant per catalog, in this migration's
+declaration order, each carrying only the URL slug. No relation name appears in
+that crate. The mapping from catalog to table is the per-catalog statement in
+`aircraft_db::repositories::reference_repository`, whose four deviating shapes
+are the ones named above, and `the_statements_read_the_tables_migration_002_creates`
+reads this migration back and fails if the set or its order ever disagrees.
+`database/roles/app_grants.sql` grants the runtime role column-level `SELECT` on
+each of these tables and no writes, which
+`the_runtime_role_reads_every_catalog_and_writes_none` asserts from both sides.
+Adding a lookup table to `aircraft_ref` in a later migration therefore means
+adding a `Catalog` variant, its statement, and its grant, or that table is
+unreachable over HTTP; those three tests are what say so.
 
 ### `aircraft_ref.measurement_units`
 

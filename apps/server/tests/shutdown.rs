@@ -24,7 +24,9 @@ use aircraft_app::{
   authentication::{AuthenticationService, CredentialLookup, CredentialLookupRecord},
   ingestion::PersistenceError,
   readiness::ReadinessProbe,
+  reference::{CatalogEntry, CatalogReader},
 };
+use aircraft_domain::reference::Catalog;
 use anyhow::{Context, Result, anyhow};
 use async_trait::async_trait;
 use tokio::{
@@ -130,6 +132,16 @@ struct Harness {
 /// inside a dispatch, so a test that reads them cannot be silenced by a sibling
 /// that does not. That sibling only exists under `cargo test`, which runs the
 /// whole file in one process; `just test` gives each test its own.
+/// Panics if consulted: no route here reads a reference catalog.
+struct NoCatalogs;
+
+#[async_trait]
+impl CatalogReader for NoCatalogs {
+  async fn entries(&self, _catalog: Catalog) -> Result<Vec<CatalogEntry>, PersistenceError> {
+    panic!("no route here may read a reference catalog");
+  }
+}
+
 async fn start(grace: Duration, dispatch: tracing::Dispatch) -> Result<Harness> {
   let listener = TcpListener::bind("127.0.0.1:0").await.context("binding a loopback port")?;
   let address = listener.local_addr().context("reading the bound address")?;
@@ -139,6 +151,7 @@ async fn start(grace: Duration, dispatch: tracing::Dispatch) -> Result<Harness> 
   let shutdown = ShutdownState::new();
   let state = ApiState {
     readiness: Arc::new(BlockingProbe { entered: entered_tx, release: Arc::clone(&release) }),
+    catalogs: Arc::new(NoCatalogs),
     authentication: Arc::new(AuthenticationService::new(Arc::new(NeverLooksUp))),
     version: "9.9.9-test",
     build_commit: None,

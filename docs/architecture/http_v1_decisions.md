@@ -71,6 +71,48 @@ renaming one without moving the version would leave clients holding tokens this
 service could no longer read. Each endpoint still owns its sort allowlist, so
 no shared type carries one.
 
+### Conditional requests and reference catalogs
+
+- The seeded `aircraft_ref` lookup catalogs are served by
+  `GET /v1/reference/{catalog}` from a closed allowlist. A path segment naming no
+  catalog is `404 Not Found`; it never reaches a statement. A known catalog with
+  no active rows is a successful empty collection, as the collection rule above
+  requires.
+- A catalog is answered whole rather than paged. The vocabulary is closed and
+  operator-maintained rather than user-generated, and one validator over the
+  whole catalog is what makes the response cacheable; a page would need the
+  validator to cover the cursor as well. The read is still bounded, by a
+  server-side row ceiling rather than by a client limit.
+- Catalog responses carry a strong `ETag`. Strong is accurate here: the body is
+  produced by one serializer from a totally ordered row set, so equal catalogs
+  serialize to equal bytes.
+- The validator is computed over the serialized response body, so it cannot
+  describe anything other than what was sent.
+- A request whose `If-None-Match` carries a matching entity-tag, or `*`, receives
+  `304 Not Modified` with no body, the same `ETag`, and the same `Cache-Control`.
+  `If-None-Match` is read as the list RFC 9110 defines -- one or more
+  comma-separated entity-tags, compared weakly, so a `W/` prefix still matches --
+  and the number of validators compared is bounded.
+- Catalog responses are `Cache-Control: private, no-cache`. `private` because the
+  route is authenticated under `CatalogRead` and a shared cache must not retain
+  it; `no-cache` because a stored response must be revalidated, which is the
+  behavior the `ETag` exists to make cheap.
+- The `ETag` saves the response body, not the query: a conditional request still
+  reads the catalog. Avoiding the read would need a schema-level version, which
+  v1 does not have.
+
+The allowlist is `Catalog` in `crates/aircraft_domain/src/reference.rs`, which
+carries slugs only; the statement each catalog reads, and its pinning against
+`database/migrations/002_core_reference_tables.sql`, live in
+`crates/aircraft_db/src/repositories/reference_repository.rs`, and the runtime
+role's grants for those tables in `database/roles/app_grants.sql`. Each names
+this section in turn; the ceiling is `MAX_CATALOG_ROWS` in
+`crates/aircraft_app/src/services/reference.rs`; and the validator and the
+conditional answer are `entity_tag` and `if_none_match_matches` in
+`crates/aircraft_api/src/routes/reference.rs`. The published path parameter's
+enumeration is written from `Catalog::ALL` by `publish_catalog_slugs`, so the
+document cannot list a catalog the router will not serve.
+
 ### Problem responses
 
 - Every API-originated `4xx` or `5xx` response uses RFC 9457 problem details with

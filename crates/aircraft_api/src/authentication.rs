@@ -110,7 +110,7 @@ fn bearer_token(headers: &HeaderMap) -> Option<&str> {
 #[cfg(test)]
 mod tests {
   // A failing assertion is the point of a test, so panicking accessors are fine.
-  #![allow(clippy::expect_used)]
+  #![allow(clippy::expect_used, clippy::panic)]
 
   use std::{
     sync::{
@@ -128,7 +128,9 @@ mod tests {
     credential_issuance::CredentialVerifier,
     ingestion::PersistenceError,
     readiness::ReadinessProbe,
+    reference::{CatalogEntry, CatalogReader},
   };
+  use aircraft_domain::reference::Catalog;
   use anyhow::Result;
   use async_trait::async_trait;
   use axum::{
@@ -163,9 +165,20 @@ mod tests {
     }
   }
 
+  /// Panics if consulted: no route here reads a reference catalog.
+  struct NoCatalogs;
+
+  #[async_trait]
+  impl CatalogReader for NoCatalogs {
+    async fn entries(&self, _catalog: Catalog) -> Result<Vec<CatalogEntry>, PersistenceError> {
+      panic!("no route here may read a reference catalog");
+    }
+  }
+
   fn state(lookup: Arc<dyn CredentialLookup>) -> ApiState {
     ApiState {
       readiness: Arc::new(AlwaysReady),
+      catalogs: Arc::new(NoCatalogs),
       authentication: Arc::new(AuthenticationService::new(lookup)),
       version: "9.9.9-test",
       build_commit: None,
