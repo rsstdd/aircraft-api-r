@@ -1885,9 +1885,14 @@ mod tests {
   ) -> Result<()> {
     let leaked =
       router_serving(Arc::new(failing())).oneshot(catalog_request(KNOWN_CATALOG)).await?;
+    // Fragments the response must never carry: a relation name, driver text,
+    // and the ceiling detail the repository puts in its refusal. None of them is
+    // a credential -- they are the diagnostics a problem document is forbidden
+    // to echo -- and the failing assertion prints the document because that is
+    // what names the leak.
     let document = format!("{:?}", body_of(leaked).await?);
-    for secret in ["aircraft_ref", "does not exist", "1000 rows", "ad-types"] {
-      assert!(!document.contains(secret), "{secret:?} reached the client: {document}");
+    for forbidden in ["aircraft_ref", "does not exist", "1000 rows", "ad-types"] {
+      assert!(!document.contains(forbidden), "{forbidden:?} reached the client: {document}");
     }
 
     let response =
