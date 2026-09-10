@@ -177,7 +177,22 @@ mod tests {
         Ok(accepted.to_owned())
       );
     }
-    for refused in ["", "-cessna", "cessna-", "cessna--172", "Cessna", "cessna_172", "cessna 172"] {
+    // The last three are SQL-shaped: a quote cannot enter a slug, so no payload
+    // of this form can reach a statement through `aircraft_app`'s catalog ports.
+    // Binding is the second control; this is the first, and it costs no database
+    // to prove.
+    for refused in [
+      "",
+      "-cessna",
+      "cessna-",
+      "cessna--172",
+      "Cessna",
+      "cessna_172",
+      "cessna 172",
+      "cessna'",
+      "' OR 1=1 --",
+      "'; DROP TABLE aircraft_core.families; --",
+    ] {
       assert_eq!(
         Slug::try_from(refused),
         Err(InvalidCatalogValue::Slug),

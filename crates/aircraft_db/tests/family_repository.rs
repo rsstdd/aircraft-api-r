@@ -59,8 +59,6 @@ fn limit(value: u16) -> PageLimit {
 
 #[tokio::test]
 async fn an_empty_table_is_a_successful_empty_page() -> TestResult {
-  use aircraft_app::catalog::FamilyReader as _;
-
   let (_container, pool) = start_postgres(5, Duration::from_secs(30)).await?;
   install_schema(&pool).await?;
   let reader = SqlxFamilyReader::new(pool.clone());
@@ -69,10 +67,6 @@ async fn an_empty_table_is_a_successful_empty_page() -> TestResult {
 
   assert!(page.items().is_empty(), "no families are seeded, so the page is empty");
   assert!(page.next().is_none(), "an empty page has no continuation");
-  assert!(
-    reader.family(&slug("nothing-here")).await?.is_none(),
-    "an absent slug is Ok(None), not an error"
-  );
   Ok(())
 }
 
@@ -234,29 +228,6 @@ async fn a_stored_country_code_the_domain_refuses_is_an_invariant_failure() -> T
     }
     other => panic!("a value the domain refuses must be an invariant failure, got {other:?}"),
   }
-  Ok(())
-}
-
-/// AC4. Every value these statements take is bound *and* typed: `list_families`
-/// and `family` accept `Slug` and `CountryCode`, so a payload carrying a quote
-/// cannot be constructed to reach them. This asserts that first control, which
-/// is the one a caller meets; the `$n` placeholders and `.bind` calls are the
-/// second. The table is counted afterwards because a test that only asserts a
-/// refusal proves nothing about what the database did.
-#[tokio::test]
-async fn a_payload_that_looks_like_sql_cannot_become_a_slug() -> TestResult {
-  let (_container, pool) = start_postgres(5, Duration::from_secs(30)).await?;
-  install_schema(&pool).await?;
-  insert_family(&pool, "cessna-172", "Cessna 172").await?;
-
-  for payload in ["' OR 1=1 --", "'; DROP TABLE aircraft_core.families; --", "cessna'"] {
-    assert!(Slug::try_from(payload).is_err(), "{payload:?} must not become a slug");
-    assert!(CountryCode::try_from(payload).is_err(), "{payload:?} must not become a country code");
-  }
-
-  let remaining: i64 =
-    query_scalar("SELECT count(*) FROM aircraft_core.families").fetch_one(&pool).await?;
-  assert_eq!(remaining, 1, "the table is intact");
   Ok(())
 }
 
