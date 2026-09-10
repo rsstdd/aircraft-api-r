@@ -93,9 +93,12 @@ timestamps, and the `ingest_key` and `source_path` staging columns -- is
 `aircraft_app::catalog`. No test holds that list against a migration *file*: a
 column added later arrives in a later migration, so the check belongs against the
 installed database instead. For families it is
-`every_column_the_family_statements_read_exists_in_the_installed_schema` in
-`crates/aircraft_db/tests/family_repository.rs`, which reads
-`information_schema`; the model and variant readers owe the same when they land.
+`every_family_column_is_read_or_deliberately_withheld` in
+`crates/aircraft_db/tests/family_repository.rs`, which names this file in turn:
+it reads `information_schema` and requires the installed column list to equal the
+union of what the family statements read and what the contract withholds, so a
+column a later migration adds and nobody classifies fails the gate rather than
+passing unnoticed. The model and variant readers owe the same when they land.
 
 `aircraft_db::repositories::family_repository` is what reads
 `aircraft_core.families`, joining `aircraft_org.organizations` for the

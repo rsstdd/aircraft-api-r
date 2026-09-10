@@ -21,8 +21,8 @@ use aircraft_app::{
 };
 use aircraft_db::{SqlxFamilyReader, pool::connect};
 use aircraft_domain::catalog::{CountryCode, Slug};
-use aircraft_testsupport::{TestResult, install_schema, run_psql, start_postgres};
-use sqlx_core::{error::Error as SqlxError, query::query, query_scalar::query_scalar};
+use aircraft_testsupport::{TestResult, install_schema, run_psql, sqlstate, start_postgres};
+use sqlx_core::{query::query, query_scalar::query_scalar};
 use sqlx_postgres::PgPool;
 
 /// The grant files, read rather than restated, so the gate runs what
@@ -40,13 +40,6 @@ async fn insert_family(pool: &PgPool, slug: &str, name: &str) -> TestResult {
     .execute(pool)
     .await?;
   Ok(())
-}
-
-fn sqlstate(error: &SqlxError) -> Option<String> {
-  match error {
-    SqlxError::Database(database) => database.code().map(std::borrow::Cow::into_owned),
-    _ => None,
-  }
 }
 
 fn slug(value: &str) -> Slug {
@@ -83,7 +76,10 @@ async fn paging_visits_every_family_exactly_once_in_slug_order() -> TestResult {
   let reader = SqlxFamilyReader::new(pool.clone());
 
   let stored = ["airbus-a320", "boeing-737", "cessna-172", "embraer-e175", "piper-pa28"];
-  for name in stored {
+  // Inserted in reverse, deliberately. Inserted in slug order, a sequential scan
+  // returns them sorted anyway, and the assertion below would still hold with
+  // `ORDER BY f.slug` deleted from `LIST`.
+  for name in stored.into_iter().rev() {
     insert_family(&pool, name, name).await?;
   }
 
@@ -278,44 +274,58 @@ async fn the_runtime_role_reads_families_and_writes_none() -> TestResult {
   Ok(())
 }
 
-/// The check #37 deferred: every column the family projection reads exists in
-/// the *installed* schema. A migration-file parser cannot see this -- migration
-/// `004` is immutable, so a rename would arrive in a later migration -- which is
-/// why it belongs here, against the database the adapter will really query.
+/// The check #37 deferred: every column of `aircraft_core.families` is one a
+/// family statement reads or one the catalog contract deliberately withholds.
+///
+/// The direction is the point. That a *read* column exists is already proven by
+/// every test above -- a rename is `42703`, and `LIST` and `DETAIL` both fail --
+/// so an existence check adds no failure mode of its own. The column this gate
+/// exists for is the one a later migration adds that nobody classifies, which no
+/// other test here can see. A migration-file parser cannot see it either:
+/// migration `004` is immutable, so the new column arrives in a *later* file.
+/// Hence `information_schema`, against the database the adapter will really
+/// query.
+///
+/// `aircraft_app::catalog` owns the publish-versus-withhold split;
+/// `database/data_dictionary.md` records both halves and names this test in
+/// turn.
 #[tokio::test]
-async fn every_column_the_family_statements_read_exists_in_the_installed_schema() -> TestResult {
+async fn every_family_column_is_read_or_deliberately_withheld() -> TestResult {
+  const READ: &[&str] = &[
+    "slug",
+    "name",
+    "common_name",
+    "name_aliases",
+    "manufacturer_org_id",
+    "country_of_origin_code",
+    "first_flight_year",
+    "description",
+  ];
+  // The surrogate key, the generated search vector, the open-ended attribute
+  // bag, and the row timestamps. None is aircraft data a client asked for, and
+  // each is listed here so that adding a column without deciding is a failure
+  // rather than a silent omission.
+  const WITHHELD: &[&str] = &["id", "name_tsv", "extra_attributes", "created_at", "updated_at"];
+
   let (_container, pool) = start_postgres(5, Duration::from_secs(30)).await?;
   install_schema(&pool).await?;
 
-  for (schema, table, columns) in [
-    (
-      "aircraft_core",
-      "families",
-      &[
-        "slug",
-        "name",
-        "common_name",
-        "manufacturer_org_id",
-        "country_of_origin_code",
-        "first_flight_year",
-        "name_aliases",
-        "description",
-      ][..],
-    ),
-    ("aircraft_org", "organizations", &["id", "slug"][..]),
-  ] {
-    for column in columns {
-      let present: bool = query_scalar(
-        "SELECT EXISTS (SELECT 1 FROM information_schema.columns
-          WHERE table_schema = $1 AND table_name = $2 AND column_name = $3)",
-      )
-      .bind(schema)
-      .bind(table)
-      .bind(column)
-      .fetch_one(&pool)
-      .await?;
-      assert!(present, "{schema}.{table}.{column} is read by a statement but is not in the schema");
-    }
-  }
+  let installed: Vec<String> = query_scalar(
+    "SELECT column_name FROM information_schema.columns
+      WHERE table_schema = 'aircraft_core' AND table_name = 'families'
+      ORDER BY column_name",
+  )
+  .fetch_all(&pool)
+  .await?;
+
+  let mut classified: Vec<String> =
+    READ.iter().chain(WITHHELD).copied().map(str::to_owned).collect();
+  classified.sort();
+
+  assert_eq!(
+    installed, classified,
+    "every column of aircraft_core.families must be read by a family statement or listed as \
+     deliberately withheld"
+  );
   Ok(())
 }
