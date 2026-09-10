@@ -11,7 +11,6 @@
 //! Every assertion that touches a token or digest fails with a fixed sentence.
 
 use std::{
-  borrow::Cow,
   sync::Arc,
   time::{Duration, Instant},
 };
@@ -22,14 +21,10 @@ use aircraft_app::{
   ingestion::PersistenceError,
 };
 use aircraft_db::{SqlxCredentialLookup, SqlxCredentialStore, pool::connect};
-use aircraft_testsupport::{TestResult, install_schema, run_psql, start_postgres};
+use aircraft_testsupport::{TestResult, install_schema, run_psql, sqlstate, start_postgres};
 use secrecy::ExposeSecret as _;
 use sha2::{Digest, Sha256};
-use sqlx_core::{
-  error::{DatabaseError, Error as SqlxError},
-  query::query,
-  query_scalar::query_scalar,
-};
+use sqlx_core::{query::query, query_scalar::query_scalar};
 use sqlx_postgres::PgPool;
 use uuid::Uuid;
 
@@ -96,10 +91,6 @@ fn sha256_hex(text: &str) -> String {
     let _ = write!(hex, "{byte:02x}");
     hex
   })
-}
-
-fn sqlstate(error: &SqlxError) -> Option<String> {
-  error.as_database_error().and_then(DatabaseError::code).map(Cow::into_owned)
 }
 
 /// Grants are inserted out of order so the sorted array is the statement's

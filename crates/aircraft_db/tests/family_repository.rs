@@ -1,0 +1,428 @@
+//! What the family adapter owes: a bounded, ordered page that resumes without a
+//! gap or a repeat, a detail lookup that separates absence from failure, values
+//! that survive as the schema stores them, and a statement whose parameters are
+//! bound rather than interpolated.
+//!
+//! Against the canonical schema, as `crates/AGENTS.md` requires: `install_schema`
+//! runs the migrations and seeds, so `aircraft_geo.countries`,
+//! `aircraft_org.organizations`, and the `aircraft_ref` lookups are the ones a
+//! deployment has. `aircraft_core.families` is populated by no seed, so each
+//! test inserts the rows it asserts on.
+
+// A failing assertion is the point of a test.
+#![allow(clippy::expect_used, clippy::panic)]
+
+use std::time::Duration;
+
+use aircraft_app::{
+  catalog::{FamilyFilter, FamilyReader as _},
+  ingestion::PersistenceError,
+  pagination::PageLimit,
+};
+use aircraft_db::{SqlxFamilyReader, pool::connect};
+use aircraft_domain::catalog::{CountryCode, Slug};
+use aircraft_testsupport::{TestResult, install_schema, run_psql, sqlstate, start_postgres};
+use sqlx_core::{query::query, query_scalar::query_scalar};
+use sqlx_postgres::PgPool;
+
+/// The grant files, read rather than restated, so the gate runs what
+/// `just db-grant-app-role` runs.
+const CREATE_APP_ROLE_SQL: &str = include_str!("../../../database/roles/create_app_role.sql");
+const APP_GRANTS_SQL: &str = include_str!("../../../database/roles/app_grants.sql");
+const RUNTIME_ROLE: &str = "aircraft_api_app";
+const RUNTIME_ROLE_PASSWORD: &str = "gate-only-runtime-password";
+
+/// Inserts one family, with every optional column left NULL.
+async fn insert_family(pool: &PgPool, slug: &str, name: &str) -> TestResult {
+  query("INSERT INTO aircraft_core.families (slug, name) VALUES ($1, $2)")
+    .bind(slug)
+    .bind(name)
+    .execute(pool)
+    .await?;
+  Ok(())
+}
+
+/// Ensures one organization exists to stand as a manufacturer.
+///
+/// `ON CONFLICT DO NOTHING` because migration `003` already seeds real
+/// manufacturers into `aircraft_org.organizations` (`003:670`) and the
+/// slug is `NOT NULL UNIQUE`: a test that declares one the migration also ships
+/// must not fail on `23505`. `aircraft_ref.organization_types` is seeded too, so
+/// the type code is read from the database rather than guessed at.
+async fn insert_organization(pool: &PgPool, slug: &str, name: &str) -> TestResult {
+  let org_type: String =
+    query_scalar("SELECT code FROM aircraft_ref.organization_types ORDER BY code LIMIT 1")
+      .fetch_one(pool)
+      .await?;
+  query(
+    "INSERT INTO aircraft_org.organizations (slug, name, org_type_code)
+     VALUES ($1, $2, $3) ON CONFLICT (slug) DO NOTHING",
+  )
+  .bind(slug)
+  .bind(name)
+  .bind(&org_type)
+  .execute(pool)
+  .await?;
+  Ok(())
+}
+
+/// Inserts one family attributed to an existing organization and country, which
+/// is what makes the `LIST` join and both filter predicates observable at all.
+async fn insert_attributed_family(
+  pool: &PgPool,
+  slug: &str,
+  name: &str,
+  manufacturer: &str,
+  country: &str,
+) -> TestResult {
+  query(
+    "INSERT INTO aircraft_core.families (slug, name, manufacturer_org_id, country_of_origin_code)
+     VALUES ($1, $2, (SELECT id FROM aircraft_org.organizations WHERE slug = $3), $4)",
+  )
+  .bind(slug)
+  .bind(name)
+  .bind(manufacturer)
+  .bind(country)
+  .execute(pool)
+  .await?;
+  Ok(())
+}
+
+fn slug(value: &str) -> Slug {
+  Slug::try_from(value).expect("a slug_text value")
+}
+
+fn limit(value: u16) -> PageLimit {
+  PageLimit::from_requested(std::num::NonZeroU16::new(value))
+}
+
+#[tokio::test]
+async fn an_empty_table_is_a_successful_empty_page() -> TestResult {
+  let (_container, pool) = start_postgres(5, Duration::from_secs(30)).await?;
+  install_schema(&pool).await?;
+  let reader = SqlxFamilyReader::new(pool.clone());
+
+  let page = reader.list_families(&FamilyFilter::default(), limit(50), None).await?;
+
+  assert!(page.items().is_empty(), "no families are seeded, so the page is empty");
+  assert!(page.next().is_none(), "an empty page has no continuation");
+  Ok(())
+}
+
+/// AC1. The whole table, page by page: the visited slugs must equal the stored
+/// order with no repeat and no gap. A single-boundary assertion would pass while
+/// every later page skipped a row, which is why this walks to exhaustion --
+/// `crates/aircraft_db/tests/keyset_pagination.rs` established the shape.
+#[tokio::test]
+async fn paging_visits_every_family_exactly_once_in_slug_order() -> TestResult {
+  const MAX_PAGES: usize = 32;
+
+  let (_container, pool) = start_postgres(5, Duration::from_secs(30)).await?;
+  install_schema(&pool).await?;
+  let reader = SqlxFamilyReader::new(pool.clone());
+
+  let stored = ["airbus-a320", "boeing-737", "cessna-172", "embraer-e175", "piper-pa28"];
+  // Inserted in reverse, deliberately. Inserted in slug order, a sequential scan
+  // returns them sorted anyway, and the assertion below would still hold with
+  // `ORDER BY f.slug` deleted from `LIST`.
+  for name in stored.into_iter().rev() {
+    insert_family(&pool, name, name).await?;
+  }
+
+  let mut visited: Vec<String> = Vec::new();
+  let mut resume: Option<Slug> = None;
+  for _ in 0..MAX_PAGES {
+    let page = reader.list_families(&FamilyFilter::default(), limit(2), resume.as_ref()).await?;
+    visited.extend(page.items().iter().map(|row| row.slug.as_str().to_owned()));
+    match page.next() {
+      Some(next) => resume = Some(next.clone()),
+      None => break,
+    }
+  }
+
+  assert_eq!(visited, stored, "every family exactly once, in slug order");
+  Ok(())
+}
+
+/// AC1. Two families share a name, so a `name`-ordered page would be
+/// non-deterministic. Ordering by the unique slug keeps it total.
+#[tokio::test]
+async fn families_sharing_a_name_are_still_totally_ordered() -> TestResult {
+  let (_container, pool) = start_postgres(5, Duration::from_secs(30)).await?;
+  install_schema(&pool).await?;
+  let reader = SqlxFamilyReader::new(pool.clone());
+
+  insert_family(&pool, "cessna-172-early", "Cessna 172").await?;
+  insert_family(&pool, "cessna-172-late", "Cessna 172").await?;
+
+  let first = reader.list_families(&FamilyFilter::default(), limit(1), None).await?;
+  let resume = first.next().expect("a continuation").clone();
+  let second = reader.list_families(&FamilyFilter::default(), limit(1), Some(&resume)).await?;
+
+  assert_eq!(first.items()[0].slug.as_str(), "cessna-172-early");
+  assert_eq!(second.items()[0].slug.as_str(), "cessna-172-late", "the second page does not repeat");
+  Ok(())
+}
+
+/// The `## Scope` slug filter, and the only test that reads a non-NULL
+/// `manufacturer` out of `LIST` rather than `DETAIL`.
+///
+/// Every other list here runs with `FamilyFilter::default()`, so `$1` and `$2`
+/// are NULL and the two optional predicates are never evaluated. Two wrong
+/// implementations passed the whole suite that way: swapping the two `.bind()`
+/// calls, and joining on `o.slug = f.slug`. A third -- joining on `f.id` -- was
+/// caught, but by `the_runtime_role_reads_families_and_writes_none` for reading
+/// an ungranted column, which says nothing about whether the join is right.
+/// Each filter is asserted against a different column, so a swap cannot satisfy
+/// both.
+#[tokio::test]
+async fn each_filter_admits_only_the_families_that_match_it() -> TestResult {
+  let (_container, pool) = start_postgres(5, Duration::from_secs(30)).await?;
+  install_schema(&pool).await?;
+  let reader = SqlxFamilyReader::new(pool.clone());
+
+  // `USA` and `BRA` are rows migration `003` inserts into `aircraft_geo.countries`
+  // (`003:299`, `003:305`), not codes invented here.
+  insert_organization(&pool, "cessna", "Cessna Aircraft Company").await?;
+  insert_organization(&pool, "embraer", "Embraer").await?;
+  insert_attributed_family(&pool, "cessna-172", "Cessna 172", "cessna", "USA").await?;
+  insert_attributed_family(&pool, "embraer-e175", "Embraer E175", "embraer", "BRA").await?;
+  // Unattributed, so a filter that degenerated to "admit everything" is visible.
+  insert_family(&pool, "unbuilt-family", "Unbuilt").await?;
+
+  let by_manufacturer = reader
+    .list_families(
+      &FamilyFilter { manufacturer: Some(slug("cessna")), country_of_origin: None },
+      limit(50),
+      None,
+    )
+    .await?;
+  let by_country = reader
+    .list_families(
+      &FamilyFilter {
+        manufacturer: None,
+        country_of_origin: Some(CountryCode::try_from("BRA").expect("an alpha-3 code")),
+      },
+      limit(50),
+      None,
+    )
+    .await?;
+
+  assert_eq!(
+    by_manufacturer.items().iter().map(|row| row.slug.as_str()).collect::<Vec<_>>(),
+    ["cessna-172"],
+    "the manufacturer filter excludes the other manufacturer and the unattributed family"
+  );
+  assert_eq!(
+    by_manufacturer.items().first().and_then(|row| row.manufacturer.as_ref()).map(Slug::as_str),
+    Some("cessna"),
+    "LIST resolves the manufacturer through its own join, not only DETAIL"
+  );
+  assert_eq!(
+    by_country.items().iter().map(|row| row.slug.as_str()).collect::<Vec<_>>(),
+    ["embraer-e175"],
+    "the country filter binds to its own column"
+  );
+  Ok(())
+}
+
+/// AC2. Present and absent asserted together so the pair cannot drift: a reader
+/// that answered `Ok(None)` for everything would pass the absent half alone.
+#[tokio::test]
+async fn a_detail_lookup_returns_the_family_and_a_missing_slug_returns_none() -> TestResult {
+  let (_container, pool) = start_postgres(5, Duration::from_secs(30)).await?;
+  install_schema(&pool).await?;
+  let reader = SqlxFamilyReader::new(pool.clone());
+
+  insert_family(&pool, "cessna-172", "Cessna 172").await?;
+
+  let found = reader.family(&slug("cessna-172")).await?.expect("the family exists");
+
+  assert_eq!(found.summary.name, "Cessna 172");
+  assert!(reader.family(&slug("no-such-family")).await?.is_none(), "an absent slug is Ok(None)");
+  Ok(())
+}
+
+/// AC3, both halves. A populated family reads every value back and an all-null
+/// one reads `None`: a mapper returning `None` for everything passes the second
+/// half alone, and one inventing defaults passes the first alone.
+#[tokio::test]
+async fn every_nullable_column_survives_as_none_and_every_populated_one_as_its_value() -> TestResult
+{
+  let (_container, pool) = start_postgres(5, Duration::from_secs(30)).await?;
+  install_schema(&pool).await?;
+  let reader = SqlxFamilyReader::new(pool.clone());
+
+  insert_organization(&pool, "cessna", "Cessna Aircraft Company").await?;
+  query(
+    "INSERT INTO aircraft_core.families
+       (slug, name, common_name, name_aliases, manufacturer_org_id,
+        country_of_origin_code, first_flight_year, description)
+     VALUES ($1, $2, $3, $4, (SELECT id FROM aircraft_org.organizations WHERE slug = 'cessna'),
+             $5, $6, $7)",
+  )
+  .bind("cessna-172")
+  .bind("Cessna 172")
+  .bind("Skyhawk")
+  .bind(vec!["Skyhawk".to_owned(), "C172".to_owned()])
+  .bind("USA")
+  .bind(1955_i16)
+  .bind("A four-seat single-engine aircraft.")
+  .execute(&pool)
+  .await?;
+  insert_family(&pool, "sparse-family", "Sparse").await?;
+
+  let populated = reader.family(&slug("cessna-172")).await?.expect("the populated family");
+  let sparse = reader.family(&slug("sparse-family")).await?.expect("the sparse family");
+
+  assert_eq!(populated.summary.common_name.as_deref(), Some("Skyhawk"));
+  assert_eq!(populated.summary.manufacturer.as_ref().map(Slug::as_str), Some("cessna"));
+  assert_eq!(populated.summary.country_of_origin.as_ref().map(CountryCode::as_str), Some("USA"));
+  assert_eq!(populated.summary.first_flight_year, Some(1955));
+  assert_eq!(populated.name_aliases, ["Skyhawk", "C172"]);
+  assert_eq!(populated.description.as_deref(), Some("A four-seat single-engine aircraft."));
+
+  assert_eq!(sparse.summary.common_name, None);
+  assert_eq!(sparse.summary.manufacturer, None, "a family with no manufacturer is still returned");
+  assert_eq!(sparse.summary.country_of_origin, None);
+  assert_eq!(sparse.summary.first_flight_year, None);
+  assert!(sparse.name_aliases.is_empty(), "a NULL array reads as an empty list");
+  assert_eq!(sparse.description, None);
+  Ok(())
+}
+
+/// AC3. `aircraft_geo.countries.code` is `VARCHAR(3)` with no case constraint,
+/// while `CountryCode` requires three upper-case letters, so a legal stored row
+/// can fail conversion. It must be a typed failure that names the column and not
+/// the value -- never a panic, never a silently dropped row.
+#[tokio::test]
+async fn a_stored_country_code_the_domain_refuses_is_an_invariant_failure() -> TestResult {
+  let (_container, pool) = start_postgres(5, Duration::from_secs(30)).await?;
+  install_schema(&pool).await?;
+  let reader = SqlxFamilyReader::new(pool.clone());
+
+  query("INSERT INTO aircraft_geo.countries (code, name) VALUES ('us1', 'Lower Case Land')")
+    .execute(&pool)
+    .await?;
+  query(
+    "INSERT INTO aircraft_core.families (slug, name, country_of_origin_code)
+         VALUES ('odd-country', 'Odd', 'us1')",
+  )
+  .execute(&pool)
+  .await?;
+
+  match reader.family(&slug("odd-country")).await {
+    Err(PersistenceError::Invariant(message)) => {
+      assert!(
+        message.contains("country_of_origin_code"),
+        "the refusal names the column: {message}"
+      );
+      assert!(!message.contains("us1"), "the refusal must not echo the stored value: {message}");
+    }
+    other => panic!("a value the domain refuses must be an invariant failure, got {other:?}"),
+  }
+  Ok(())
+}
+
+/// The restricted runtime role reads families and can write none.
+///
+/// Every other test here connects as the container owner, which holds every
+/// privilege and therefore cannot see a missing grant: the route would pass all
+/// of them and still answer `503` in production, where
+/// `database/roles/app_grants.sql` is what the server connects with. This is the
+/// only test that can fail for `42501`.
+#[tokio::test]
+async fn the_runtime_role_reads_families_and_writes_none() -> TestResult {
+  let (container, admin) = start_postgres(2, Duration::from_secs(30)).await?;
+  install_schema(&admin).await?;
+  insert_family(&admin, "cessna-172", "Cessna 172").await?;
+  run_psql(
+    &container,
+    CREATE_APP_ROLE_SQL,
+    &[("app_role", RUNTIME_ROLE)],
+    &[("API_ROLE_PASSWORD", RUNTIME_ROLE_PASSWORD)],
+  )?;
+  run_psql(&container, APP_GRANTS_SQL, &[("app_role", RUNTIME_ROLE)], &[])?;
+  let url = container
+    .database_url
+    .replace("postgres:postgres@", &format!("{RUNTIME_ROLE}:{RUNTIME_ROLE_PASSWORD}@"));
+  let runtime = connect(&url, 2, 2, 5).await?;
+  let reader = SqlxFamilyReader::new(runtime.clone());
+
+  let page = reader.list_families(&FamilyFilter::default(), limit(50), None).await?;
+  assert_eq!(page.items().len(), 1, "the runtime role must read families");
+  assert!(reader.family(&slug("cessna-172")).await?.is_some(), "and read one by slug");
+
+  for statement in [
+    "UPDATE aircraft_core.families SET name = 'x'",
+    "INSERT INTO aircraft_core.families (slug, name) VALUES ('x', 'x')",
+    "DELETE FROM aircraft_core.families",
+  ] {
+    let error = query(statement)
+      .execute(&runtime)
+      .await
+      .expect_err("the runtime role must not write catalog data");
+    assert_eq!(
+      sqlstate(&error).as_deref(),
+      Some("42501"),
+      "{statement} must be refused for insufficient privilege: {error}"
+    );
+  }
+  Ok(())
+}
+
+/// The check #37 deferred: every column of `aircraft_core.families` is one a
+/// family statement reads or one the catalog contract deliberately withholds.
+///
+/// The direction is the point. That a *read* column exists is already proven by
+/// every test above -- a rename is `42703`, and `LIST` and `DETAIL` both fail --
+/// so an existence check adds no failure mode of its own. The column this gate
+/// exists for is the one a later migration adds that nobody classifies, which no
+/// other test here can see. A migration-file parser cannot see it either:
+/// migration `004` is immutable, so the new column arrives in a *later* file.
+/// Hence `information_schema`, against the database the adapter will really
+/// query.
+///
+/// `aircraft_app::catalog` owns the publish-versus-withhold split;
+/// `database/data_dictionary.md` records both halves and names this test in
+/// turn.
+#[tokio::test]
+async fn every_family_column_is_read_or_deliberately_withheld() -> TestResult {
+  const READ: &[&str] = &[
+    "slug",
+    "name",
+    "common_name",
+    "name_aliases",
+    "manufacturer_org_id",
+    "country_of_origin_code",
+    "first_flight_year",
+    "description",
+  ];
+  // The surrogate key, the generated search vector, the open-ended attribute
+  // bag, and the row timestamps. None is aircraft data a client asked for, and
+  // each is listed here so that adding a column without deciding is a failure
+  // rather than a silent omission.
+  const WITHHELD: &[&str] = &["id", "name_tsv", "extra_attributes", "created_at", "updated_at"];
+
+  let (_container, pool) = start_postgres(5, Duration::from_secs(30)).await?;
+  install_schema(&pool).await?;
+
+  let installed: Vec<String> = query_scalar(
+    "SELECT column_name FROM information_schema.columns
+      WHERE table_schema = 'aircraft_core' AND table_name = 'families'
+      ORDER BY column_name",
+  )
+  .fetch_all(&pool)
+  .await?;
+
+  let mut classified: Vec<String> =
+    READ.iter().chain(WITHHELD).copied().map(str::to_owned).collect();
+  classified.sort();
+
+  assert_eq!(
+    installed, classified,
+    "every column of aircraft_core.families must be read by a family statement or listed as \
+     deliberately withheld"
+  );
+  Ok(())
+}

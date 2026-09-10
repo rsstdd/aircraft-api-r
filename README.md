@@ -495,7 +495,7 @@ in `AGENTS.md`. Each takes an issue number, and they compose in order:
 | 1 | `/issue-plan` | Proves each acceptance criterion satisfied or not against the tree, names the remaining work, and posts the plan as an issue comment |
 | 2 | `/issue-plan-review` | Re-derives the criteria independently, verifies every citation in an existing plan, grades findings Blocking/Major/Minor/Optional, and posts an amendment |
 | 3 | `/issue-implement` | Baseline, blast-radius map, a failing test per criterion, minimal diff, adversarial review, required verification, per-criterion evidence report |
-| 4 | `/issue-implement-review` | Grades every criterion Satisfied / Partially satisfied / Violated / Unverified against the tree, branch, or merge result, and returns one merge verdict |
+| 4 | `/ac-audit` | Grades every criterion Satisfied / Partially satisfied / Violated / Unverified against the tree, branch, or merge result, and returns one merge verdict |
 | 5 | `rust-remediation` | Acts on review findings, verifying each as a hypothesis before editing, then re-reviews against every criterion |
 
 Stages 1, 2, and 4 write no production code, and the planning stages never edit

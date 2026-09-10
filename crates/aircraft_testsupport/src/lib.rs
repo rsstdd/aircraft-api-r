@@ -20,10 +20,25 @@ use aircraft_app::ingestion::{
   SourceDescriptor,
 };
 use chrono::Utc;
-use sqlx_core::raw_sql::raw_sql;
+use sqlx_core::{error::Error as SqlxError, raw_sql::raw_sql};
 use sqlx_postgres::{PgPool, PgPoolOptions};
 
 pub type TestResult<T = ()> = Result<T, Box<dyn Error + Send + Sync>>;
+
+/// The `SQLSTATE` of a database failure, or `None` when the error never reached
+/// the server.
+///
+/// The suites under `crates/aircraft_db/tests/` assert on `42501` and `23505`
+/// to prove a grant or a constraint held; this is the one place the match is
+/// written, so a test cannot accidentally assert on a client-side failure that
+/// carries no code at all.
+#[must_use]
+pub fn sqlstate(error: &SqlxError) -> Option<String> {
+  match error {
+    SqlxError::Database(database) => database.code().map(std::borrow::Cow::into_owned),
+    _ => None,
+  }
+}
 
 /// The canonical install sequence, embedded at compile time so the tests cannot
 /// drift from the SQL on disk.
