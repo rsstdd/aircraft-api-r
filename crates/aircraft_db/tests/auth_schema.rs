@@ -6,14 +6,10 @@
 //!
 //! These gates use the canonical install in a disposable `PostgreSQL` container.
 
-use std::{borrow::Cow, time::Duration};
+use std::time::Duration;
 
-use aircraft_testsupport::{TestResult, install_schema, start_postgres};
-use sqlx_core::{
-  error::{DatabaseError, Error as SqlxError},
-  query::query,
-  query_scalar::query_scalar,
-};
+use aircraft_testsupport::{TestResult, install_schema, sqlstate, start_postgres};
+use sqlx_core::{error::Error as SqlxError, query::query, query_scalar::query_scalar};
 use sqlx_postgres::PgPool;
 use uuid::Uuid;
 
@@ -60,10 +56,6 @@ const LOOKUP_COLLISIONS: [(&str, &str, &str); 4] = [
     "INSERT INTO aircraft_auth.rate_limit_tiers (code, label) VALUES ('T_B', 'Tier')",
   ),
 ];
-
-fn sqlstate(error: &SqlxError) -> Option<String> {
-  error.as_database_error().and_then(DatabaseError::code).map(Cow::into_owned)
-}
 
 fn digest(lead: char) -> String {
   format!("{lead}{}", "0".repeat(63))

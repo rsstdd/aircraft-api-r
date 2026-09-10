@@ -23,8 +23,7 @@ use aircraft_app::{
 };
 use aircraft_db::{SqlxCatalogReader, pool::connect};
 use aircraft_domain::reference::Catalog;
-use aircraft_testsupport::{TestResult, install_schema, run_psql, start_postgres};
-use sqlx_core::error::Error as SqlxError;
+use aircraft_testsupport::{TestResult, install_schema, run_psql, sqlstate, start_postgres};
 use sqlx_core::{query::query, query_scalar::query_scalar, row::Row};
 use sqlx_postgres::PgPool;
 
@@ -46,13 +45,6 @@ const RUNTIME_ROLE: &str = "aircraft_api_app";
 const RUNTIME_ROLE_PASSWORD: &str = "gate-only-runtime-password";
 const ACQUIRE_TIMEOUT_SECONDS: u64 = 2;
 const STATEMENT_TIMEOUT_SECONDS: u64 = 5;
-
-fn sqlstate(error: &SqlxError) -> Option<String> {
-  match error {
-    SqlxError::Database(database) => database.code().map(std::borrow::Cow::into_owned),
-    _ => None,
-  }
-}
 
 /// The restricted runtime role reads every catalog and can write none of them.
 ///

@@ -42,6 +42,52 @@ async fn insert_family(pool: &PgPool, slug: &str, name: &str) -> TestResult {
   Ok(())
 }
 
+/// Ensures one organization exists to stand as a manufacturer.
+///
+/// `ON CONFLICT DO NOTHING` because migration `003` already seeds real
+/// manufacturers into `aircraft_org.organizations` (`003:670`) and the
+/// slug is `NOT NULL UNIQUE`: a test that declares one the migration also ships
+/// must not fail on `23505`. `aircraft_ref.organization_types` is seeded too, so
+/// the type code is read from the database rather than guessed at.
+async fn insert_organization(pool: &PgPool, slug: &str, name: &str) -> TestResult {
+  let org_type: String =
+    query_scalar("SELECT code FROM aircraft_ref.organization_types ORDER BY code LIMIT 1")
+      .fetch_one(pool)
+      .await?;
+  query(
+    "INSERT INTO aircraft_org.organizations (slug, name, org_type_code)
+     VALUES ($1, $2, $3) ON CONFLICT (slug) DO NOTHING",
+  )
+  .bind(slug)
+  .bind(name)
+  .bind(&org_type)
+  .execute(pool)
+  .await?;
+  Ok(())
+}
+
+/// Inserts one family attributed to an existing organization and country, which
+/// is what makes the `LIST` join and both filter predicates observable at all.
+async fn insert_attributed_family(
+  pool: &PgPool,
+  slug: &str,
+  name: &str,
+  manufacturer: &str,
+  country: &str,
+) -> TestResult {
+  query(
+    "INSERT INTO aircraft_core.families (slug, name, manufacturer_org_id, country_of_origin_code)
+     VALUES ($1, $2, (SELECT id FROM aircraft_org.organizations WHERE slug = $3), $4)",
+  )
+  .bind(slug)
+  .bind(name)
+  .bind(manufacturer)
+  .bind(country)
+  .execute(pool)
+  .await?;
+  Ok(())
+}
+
 fn slug(value: &str) -> Slug {
   Slug::try_from(value).expect("a slug_text value")
 }
@@ -118,6 +164,68 @@ async fn families_sharing_a_name_are_still_totally_ordered() -> TestResult {
   Ok(())
 }
 
+/// The `## Scope` slug filter, and the only test that reads a non-NULL
+/// `manufacturer` out of `LIST` rather than `DETAIL`.
+///
+/// Every other list here runs with `FamilyFilter::default()`, so `$1` and `$2`
+/// are NULL and the two optional predicates are never evaluated. Two wrong
+/// implementations passed the whole suite that way: swapping the two `.bind()`
+/// calls, and joining on `o.slug = f.slug`. A third -- joining on `f.id` -- was
+/// caught, but by `the_runtime_role_reads_families_and_writes_none` for reading
+/// an ungranted column, which says nothing about whether the join is right.
+/// Each filter is asserted against a different column, so a swap cannot satisfy
+/// both.
+#[tokio::test]
+async fn each_filter_admits_only_the_families_that_match_it() -> TestResult {
+  let (_container, pool) = start_postgres(5, Duration::from_secs(30)).await?;
+  install_schema(&pool).await?;
+  let reader = SqlxFamilyReader::new(pool.clone());
+
+  // `USA` and `BRA` are rows migration `003` inserts into `aircraft_geo.countries`
+  // (`003:299`, `003:305`), not codes invented here.
+  insert_organization(&pool, "cessna", "Cessna Aircraft Company").await?;
+  insert_organization(&pool, "embraer", "Embraer").await?;
+  insert_attributed_family(&pool, "cessna-172", "Cessna 172", "cessna", "USA").await?;
+  insert_attributed_family(&pool, "embraer-e175", "Embraer E175", "embraer", "BRA").await?;
+  // Unattributed, so a filter that degenerated to "admit everything" is visible.
+  insert_family(&pool, "unbuilt-family", "Unbuilt").await?;
+
+  let by_manufacturer = reader
+    .list_families(
+      &FamilyFilter { manufacturer: Some(slug("cessna")), country_of_origin: None },
+      limit(50),
+      None,
+    )
+    .await?;
+  let by_country = reader
+    .list_families(
+      &FamilyFilter {
+        manufacturer: None,
+        country_of_origin: Some(CountryCode::try_from("BRA").expect("an alpha-3 code")),
+      },
+      limit(50),
+      None,
+    )
+    .await?;
+
+  assert_eq!(
+    by_manufacturer.items().iter().map(|row| row.slug.as_str()).collect::<Vec<_>>(),
+    ["cessna-172"],
+    "the manufacturer filter excludes the other manufacturer and the unattributed family"
+  );
+  assert_eq!(
+    by_manufacturer.items().first().and_then(|row| row.manufacturer.as_ref()).map(Slug::as_str),
+    Some("cessna"),
+    "LIST resolves the manufacturer through its own join, not only DETAIL"
+  );
+  assert_eq!(
+    by_country.items().iter().map(|row| row.slug.as_str()).collect::<Vec<_>>(),
+    ["embraer-e175"],
+    "the country filter binds to its own column"
+  );
+  Ok(())
+}
+
 /// AC2. Present and absent asserted together so the pair cannot drift: a reader
 /// that answered `Ok(None)` for everything would pass the absent half alone.
 #[tokio::test]
@@ -145,18 +253,7 @@ async fn every_nullable_column_survives_as_none_and_every_populated_one_as_its_v
   install_schema(&pool).await?;
   let reader = SqlxFamilyReader::new(pool.clone());
 
-  // A manufacturer to point at. `organization_types` is seeded, so the code is
-  // read from the database rather than guessed.
-  let org_type: String =
-    query_scalar("SELECT code FROM aircraft_ref.organization_types ORDER BY code LIMIT 1")
-      .fetch_one(&pool)
-      .await?;
-  query("INSERT INTO aircraft_org.organizations (slug, name, org_type_code) VALUES ($1, $2, $3)")
-    .bind("cessna")
-    .bind("Cessna Aircraft Company")
-    .bind(&org_type)
-    .execute(&pool)
-    .await?;
+  insert_organization(&pool, "cessna", "Cessna Aircraft Company").await?;
   query(
     "INSERT INTO aircraft_core.families
        (slug, name, common_name, name_aliases, manufacturer_org_id,

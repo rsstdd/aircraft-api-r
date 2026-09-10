@@ -307,7 +307,7 @@ server -> composes adapters and runtime infrastructure
 | `crates/aircraft_domain/` | Pure entities, values, units, invariants | Ingestion invariants implemented; broader domain mostly scaffolded |
 | `crates/aircraft_app/` | Use cases and ports | Ingestion orchestration implemented; broader application incomplete |
 | `crates/aircraft_api/` | Axum DTOs, routes, middleware, OpenAPI | Health, readiness, and version routes, the scoped reference-catalog route, bearer authentication and route-scope enforcement, RFC 9457 problem documents, per-principal rate limiting, pagination and measurement representations, and the OpenAPI contract |
-| `crates/aircraft_db/` | SQLx repositories and schema mappings | Ingestion repository implemented; broader persistence incomplete |
+| `crates/aircraft_db/` | SQLx repositories and schema mappings | Ingestion, curation, credential, authentication, reference-catalog, and family repositories implemented; `aircraft_repository` and `comparison_repository` remain empty scaffolds |
 | `crates/aircraft_ingest/` | Source capture, parsing, normalization | PlanePHD adapter implemented |
 | `crates/aircraft_config/` | Typed runtime configuration | Ingestion, HTTP, database-URL, database pool, perimeter limit and CORS, and rate-limit quota settings implemented |
 | `crates/aircraft_observability/` | Structured tracing and telemetry | Basic tracing setup implemented; broader telemetry partial |
