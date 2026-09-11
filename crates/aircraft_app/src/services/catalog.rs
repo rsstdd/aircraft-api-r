@@ -33,6 +33,14 @@
 //! `crates/aircraft_db/tests/reference_catalogs.rs` already does for the lookup
 //! catalogs -- and arrives with the repository that first maps these rows.
 
+//! **The published set is also a grant.** `database/roles/app_grants.sql` gives
+//! the runtime role column-level `SELECT` on exactly the columns these
+//! projections name, and nothing else, so a field added to a summary without a
+//! grant answers `42501` in production while every owner-connected test passes.
+//! That file names this module in turn;
+//! `the_runtime_role_reads_the_catalog_and_writes_none` in
+//! `crates/aircraft_db/tests/family_repository.rs` is what can fail for it.
+
 use aircraft_domain::catalog::{CountryCode, FamilyId, LookupCode, ModelId, Slug};
 use async_trait::async_trait;
 

@@ -10,7 +10,7 @@
 //! The runtime role's access to `aircraft_core` and `aircraft_org` is the
 //! column-level `SELECT` in `database/roles/app_grants.sql`, which names this
 //! file in turn. A column added to a statement here without a grant there fails
-//! with `42501`, and `the_runtime_role_reads_families_and_writes_none` in
+//! with `42501`, and `the_runtime_role_reads_the_catalog_and_writes_none` in
 //! `crates/aircraft_db/tests/family_repository.rs` is what catches it: every
 //! other test connects as the container owner and cannot see a missing grant.
 
