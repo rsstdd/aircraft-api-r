@@ -16,6 +16,7 @@ use std::{
   time::Duration,
 };
 
+use aircraft_ingest::planephd::PlanePhdAdapter;
 use aircraft_testsupport::{TestResult, install_schema, start_postgres};
 use serde_json::Value;
 use sqlx_core::{query::query, query_scalar::query_scalar, raw_sql::raw_sql, row::Row};
@@ -338,11 +339,17 @@ async fn a_retry_closes_a_stale_importing_attempt() -> TestResult {
     "INSERT INTO aircraft_ingest.ingest_runs(
             run_label,source_name,source_slug,content_sha256,parser_name,parser_version,
             input_byte_length,input_locator,status)
-         VALUES('planephd_interrupted','PlanePHD','planephd',$1,'planephd-json','1.0.0',
+         VALUES('planephd_interrupted','PlanePHD','planephd',$1,$2,$3,
             1,'interrupted.json','IMPORTING')
          RETURNING id",
   )
   .bind(&content_sha256)
+  // Bound from the adapter, not spelled out: the retry only reuses this run
+  // when the logical identity matches, so a literal here would silently stop
+  // testing reuse the moment the parser version moved -- which is exactly what
+  // it did.
+  .bind(PlanePhdAdapter::PARSER_NAME)
+  .bind(PlanePhdAdapter::PARSER_VERSION)
   .fetch_one(&pool)
   .await?;
   query(

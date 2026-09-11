@@ -11,6 +11,11 @@ use url::Url;
 use crate::artifact::hex_digest;
 
 const KNOWN_FIELDS: &[&str] = &[
+  // Identity, carried inside the record as well as in the enclosing map keys the
+  // parser reads. Consumed, not ignored: omitting them here made every record in
+  // the published file warn twice and so never disposition clean.
+  "manufacturer_name",
+  "aircraft_name",
   "source_link",
   "page_url",
   "title",
@@ -71,8 +76,21 @@ pub fn normalize_record(manufacturer: &str, aircraft: &str, raw: Value) -> Prepa
   }
 
   let description = scalar(object.get("description"), "description", &mut issues);
-  let start = integer::<i16>(object, "start_year", &mut issues);
-  let end = integer::<i16>(object, "end_year", &mut issues);
+  // Read before `description` is moved into the identity below, and once rather
+  // than per use: the match lower-cases the whole string.
+  // Lower-cased once: both helpers match case-insensitively on the same text, and
+  // this runs for every record of every import.
+  let prose = description.as_deref().map(str::to_ascii_lowercase);
+  let propulsion = prose.as_deref().and_then(propulsion_category).map(str::to_owned);
+  let landing_gear = prose.as_deref().and_then(landing_gear_type);
+  // A feed that states the years outranks one that only spells them in a name.
+  // No record in the published PlanePHD file carries either field, so in practice
+  // the name is the only source; a later feed that adds them wins without a code
+  // change.
+  let (named_start, named_end, named_in_production) = production_range(aircraft, &mut issues);
+  let in_production = boolean(object, "in_production", &mut issues).or(named_in_production);
+  let start = integer::<i16>(object, "start_year", &mut issues).or(named_start);
+  let end = integer::<i16>(object, "end_year", &mut issues).or(named_end);
   if let Err(error) = ProductionYears::new(start, end) {
     issues.push(issue(
       "INVALID_PRODUCTION_YEARS",
@@ -116,13 +134,17 @@ pub fn normalize_record(manufacturer: &str, aircraft: &str, raw: Value) -> Prepa
     lifecycle: LifecycleInput {
       production_start_year: start,
       production_end_year: end,
-      is_in_production: boolean(object, "in_production", &mut issues),
+      is_in_production: in_production,
+      service_status: service_status(in_production).map(str::to_owned),
+      landing_gear: landing_gear.map(str::to_owned),
+      variant_type: variant_type(start).map(str::to_owned),
       passenger_capacity: passengers,
       crew_count: crew,
     },
     performance: PerformanceInput { measurements: performance },
     weights: WeightInput { measurements: weights },
     propulsion: PropulsionInput {
+      category: propulsion,
       manufacturer: engine
         .and_then(|value| scalar(value.get("manufacturer"), "engine.manufacturer", &mut issues)),
       model: engine.and_then(|value| scalar(value.get("model"), "engine.model", &mut issues)),
@@ -454,6 +476,171 @@ fn value_text(value: &Value) -> Option<String> {
   }
 }
 
+/// The `aircraft_ref.variant_types` code a documented production run evidences.
+///
+/// Set from the production range rather than from the corpus: a record naming the
+/// years an aircraft was built documents a series aircraft, which is what
+/// `PRODUCTION_STANDARD` means. A record without one evidences nothing and stays
+/// absent, so this never asserts a type merely because `PlanePHD` listed the row.
+///
+/// The narrower codes -- `PROTOTYPE`, `PRE_PRODUCTION`, `EXPORT`,
+/// `MILITARY_CONVERSION`, `CIVIL_CONVERSION`, `STC_CONVERSION`, `SPECIAL_MISSION`,
+/// `CLASSIC_SERIES` -- describe distinctions a production range cannot evidence, and
+/// nothing in this source states them: none of the 1005 records mentions any of
+/// those words in its description or title. A curator narrows the code when one
+/// applies.
+const fn variant_type(production_start_year: Option<i16>) -> Option<&'static str> {
+  match production_start_year {
+    Some(_) => Some("PRODUCTION_STANDARD"),
+    None => None,
+  }
+}
+
+/// The `aircraft_ref.landing_gear_types` code the description states.
+///
+/// `PlanePHD` writes retraction but not configuration -- "with fixed landing
+/// gear", never "fixed tricycle" -- and the four wheeled codes each bundle the
+/// two. `FIXED_UNSPECIFIED` and `RETRACTABLE_UNSPECIFIED` exist so the half the
+/// source does give is kept instead of discarded; a curator narrows them later.
+///
+/// Configuration is checked first, so a source that states it resolves to the
+/// specific code and this never flattens a known tricycle to the unspecified
+/// pair. Float, ski, and amphibious gear are deliberately not matched: the words
+/// appear in aircraft names as often as in gear descriptions here, and a wrong
+/// code in a filterable column is worse than an absent one.
+fn landing_gear_type(lowered: &str) -> Option<&'static str> {
+  let tricycle = lowered.contains("tricycle");
+  let tailwheel = lowered.contains("tailwheel") || lowered.contains("taildragger");
+
+  if lowered.contains("retractable") {
+    return Some(if tricycle {
+      "RETRACTABLE_TRICYCLE"
+    } else if tailwheel {
+      "RETRACTABLE_TAILWHEEL"
+    } else {
+      "RETRACTABLE_UNSPECIFIED"
+    });
+  }
+  if lowered.contains("fixed landing gear") {
+    return Some(if tricycle {
+      "FIXED_TRICYCLE"
+    } else if tailwheel {
+      "FIXED_TAILWHEEL"
+    } else {
+      "FIXED_UNSPECIFIED"
+    });
+  }
+  None
+}
+
+/// The `aircraft_ref.service_statuses` code a known production state implies.
+///
+/// Restatement, not inference: the source gives a production range, an open range
+/// means the type is still being built and a closed one means it is not. The
+/// vocabulary's own labels are "In Production" and "Discontinued".
+///
+/// Deliberately never `RETIRED`, which is about service rather than production --
+/// a closed production run says nothing about whether airframes still fly -- and
+/// never `LIMITED_PRODUCTION` or `EXPERIMENTAL`, which the source never states.
+const fn service_status(in_production: Option<bool>) -> Option<&'static str> {
+  match in_production {
+    Some(true) => Some("IN_PRODUCTION"),
+    Some(false) => Some("DISCONTINUED"),
+    None => None,
+  }
+}
+
+/// The `aircraft_ref.propulsion_categories` code the description states.
+///
+/// `PlanePHD` writes the category in prose and in no structured field: "Single
+/// engine piston aircraft with fixed landing gear". Only phrases that name
+/// exactly one code are mapped. `turbofan` is deliberately absent -- the
+/// vocabulary distinguishes `TURBOFAN_LOW_BPR` from `TURBOFAN_HIGH_BPR` and the
+/// source never states the bypass ratio, so a mapping would invent the fact into
+/// a column `VariantFilter::propulsion_category` filters on.
+///
+/// Two-sided: the codes are seeded by
+/// `database/seeds/002_lookup_seed_data.sql` and constrained by the foreign key
+/// on `aircraft_core.variants.propulsion_category_code`
+/// (`database/migrations/004_aircraft_identity_taxonomy.sql:123`), which is what
+/// makes an unmapped spelling a failed import rather than a silent bad row.
+fn propulsion_category(lowered: &str) -> Option<&'static str> {
+  // Ordered longest-first: "turboprop" and "turbojet" both contain neither
+  // substring of the other, but checking "piston" first keeps the common case
+  // cheap.
+  if lowered.contains("piston") {
+    return Some("PISTON_RECIPROCATING");
+  }
+  if lowered.contains("turboprop") {
+    return Some("TURBOPROP");
+  }
+  if lowered.contains("turbojet") {
+    return Some("TURBOJET");
+  }
+  None
+}
+
+/// Production years read off an aircraft name: start, end, and whether the range
+/// is still open. All three are absent together when the name carries no range.
+type ProductionRange = (Option<i16>, Option<i16>, Option<bool>);
+
+/// The production years `PlanePHD` spells into the aircraft name.
+///
+/// The published file names aircraft `120 (1946 - 1946)` and
+/// `777-200ER (1997 - present)`, and carries no `start_year`/`end_year` field on
+/// any record, so this trailing range is the only production-year evidence the
+/// source offers. These are *production* years: first flight and certification
+/// are not in this source and stay absent.
+///
+/// A name with no parenthetical is ordinary -- the checked-in fixtures are named
+/// that way -- and raises nothing. Only a parenthetical that opens with a digit
+/// and holds a separator is read as a range, so `Baron G58 (Turbo)` stays quiet
+/// while `120 (19xx - 1946)` is reported: a source whose range stopped parsing is
+/// evidence, and guessing at it would be worse than leaving the columns empty.
+fn production_range(aircraft: &str, issues: &mut Vec<IngestIssue>) -> ProductionRange {
+  parsed_production_range(aircraft).unwrap_or_else(|what| {
+    issues.push(issue(
+      "UNPARSEABLE_PRODUCTION_RANGE",
+      IssueSeverity::Warning,
+      "$.<aircraft>",
+      what,
+      None,
+    ));
+    (None, None, None)
+  })
+}
+
+/// The parse alone, so it is testable without an issue list.
+///
+/// `Err` only for a parenthetical that opens like a range and then is not one; a
+/// name carrying no range at all is `Ok` with nothing found.
+fn parsed_production_range(aircraft: &str) -> Result<ProductionRange, &'static str> {
+  let Some(range) = trailing_parenthetical(aircraft) else { return Ok((None, None, None)) };
+  let Some((start_text, end_text)) = range.split_once('-') else { return Ok((None, None, None)) };
+  let (start_text, end_text) = (start_text.trim(), end_text.trim());
+  if !start_text.starts_with(|character: char| character.is_ascii_digit()) {
+    return Ok((None, None, None));
+  }
+
+  let start = start_text
+    .parse::<i16>()
+    .map_err(|_| "aircraft name opens a production range that is not a year")?;
+  if end_text.eq_ignore_ascii_case("present") {
+    return Ok((Some(start), None, Some(true)));
+  }
+  let end = end_text
+    .parse::<i16>()
+    .map_err(|_| "aircraft name closes a production range that is not a year")?;
+  Ok((Some(start), Some(end), Some(false)))
+}
+
+/// The contents of a trailing `(...)`, trimmed, or `None` when the text has none.
+fn trailing_parenthetical(text: &str) -> Option<&str> {
+  let inner = text.trim_end().strip_suffix(')')?;
+  let open = inner.rfind('(')?;
+  Some(inner.get(open + 1..)?.trim())
+}
+
 fn integer<T: std::str::FromStr>(
   object: &Map<String, Value>,
   field: &str,
@@ -655,13 +842,14 @@ fn metric_dimensions(metric: &str) -> &'static [Dimension] {
     "SPEED_CRUISE_BEST" | "SPEED_STALL_CLEAN" => &[Dimension::Speed],
     "RANGE_NORMAL"
     | "CEILING_SERVICE"
+    | "CEILING_OEI"
     | "DIST_TO_GROUND_ROLL"
     | "DIST_TO_50FT"
     | "DIST_LDG_GROUND_ROLL"
     | "DIST_LDG_50FT" => &[Dimension::Length],
-    "CLIMB_RATE_SL" => &[Dimension::ClimbRate],
+    "CLIMB_RATE_SL" | "CLIMB_RATE_OEI" => &[Dimension::ClimbRate],
     "FUEL_BURN_CRUISE" => &[Dimension::FuelFlow],
-    "WEIGHT_EMPTY" | "WEIGHT_MTOW" => &[Dimension::Mass],
+    "WEIGHT_EMPTY" | "WEIGHT_MTOW" | "WEIGHT_PAYLOAD" => &[Dimension::Mass],
     // Usable fuel is quoted by volume or by weight depending on the source.
     "FUEL_CAPACITY_USABLE" => &[Dimension::Volume, Dimension::Mass],
     _ => &[],
@@ -683,6 +871,10 @@ fn perf_code(field: &str) -> Option<&'static str> {
     "ceiling" => Some("CEILING_SERVICE"),
     "fuel_burn" | "fuel_burn_75" => Some("FUEL_BURN_CRUISE"),
     "rate_of_climb" => Some("CLIMB_RATE_SL"),
+    // One engine inoperative. Distinct metrics, not variants of the all-engine
+    // figures: a twin's OEI ceiling is the one that decides terrain clearance.
+    "rate_of_climb_1_engine_out" => Some("CLIMB_RATE_OEI"),
+    "ceiling_1_engine_out" => Some("CEILING_OEI"),
     "takeoff_distance" => Some("DIST_TO_GROUND_ROLL"),
     "takeoff_distance_over_50ft_obstacle" => Some("DIST_TO_50FT"),
     "landing_distance" => Some("DIST_LDG_GROUND_ROLL"),
@@ -697,6 +889,7 @@ fn weight_code(field: &str) -> Option<&'static str> {
     "empty_weight" => Some("WEIGHT_EMPTY"),
     "gross_weight" => Some("WEIGHT_MTOW"),
     "fuel_capacity" => Some("FUEL_CAPACITY_USABLE"),
+    "maximum_payload" => Some("WEIGHT_PAYLOAD"),
     _ => None,
   }
 }
@@ -710,7 +903,10 @@ fn cost_code(key: &str) -> (Option<&'static str>, bool, bool) {
     return (Some("TOTAL_VARIABLE_COST"), true, true);
   }
   if key.contains("total")
-    && (key.contains("annual") || key.contains("yearly") || key.contains("cost_per_year"))
+    && (key.contains("annual")
+      || key.contains("yearly")
+      || key.contains("cost_per_year")
+      || key.contains("ownership"))
   {
     return (Some("TOTAL_COST_ANNUAL"), true, true);
   }
@@ -718,6 +914,7 @@ fn cost_code(key: &str) -> (Option<&'static str>, bool, bool) {
     return (Some("PILOT_TRAINING"), true, false);
   }
   let mappings = [
+    ("miscellaneous", "MISC_VARIABLE"),
     ("inspection", "ANNUAL_INSPECTION"),
     ("insurance", "INSURANCE"),
     ("hangar", "HANGAR_STORAGE"),
@@ -805,6 +1002,246 @@ fn issue(
 mod tests {
   use super::*;
   use serde_json::json;
+
+  /// A documented production run evidences a series aircraft; nothing else here
+  /// evidences a type at all. The absent case is the one that matters -- without
+  /// it this would stamp a type on every row `PlanePHD` happened to list.
+  #[test]
+  fn a_documented_production_run_evidences_a_standard_variant_and_nothing_else_does() {
+    let kind =
+      |aircraft: &str| normalize_record("CESSNA", aircraft, json!({})).lifecycle.variant_type;
+
+    assert_eq!(kind("172S (1998 - present)").as_deref(), Some("PRODUCTION_STANDARD"));
+    assert_eq!(kind("310R (1975 - 1980)").as_deref(), Some("PRODUCTION_STANDARD"));
+    assert_eq!(kind("172S Skyhawk SP"), None, "no production run, no type asserted");
+  }
+
+  /// The source states retraction and withholds configuration, so the unspecified
+  /// codes keep the half it gives. A source that does state configuration must
+  /// still reach the specific code -- otherwise adding those two codes would have
+  /// thrown information away rather than kept it.
+  #[test]
+  fn landing_gear_keeps_stated_retraction_and_narrows_when_configuration_is_stated() {
+    let gear = |prose: &str| {
+      normalize_record("CESSNA", "310R", json!({"description": prose})).lifecycle.landing_gear
+    };
+
+    assert_eq!(
+      gear("Single engine piston aircraft with fixed landing gear.").as_deref(),
+      Some("FIXED_UNSPECIFIED")
+    );
+    assert_eq!(
+      gear("Twin engine piston aircraft with retractable landing gear.").as_deref(),
+      Some("RETRACTABLE_UNSPECIFIED")
+    );
+    assert_eq!(
+      gear("Piston aircraft with retractable tricycle landing gear.").as_deref(),
+      Some("RETRACTABLE_TRICYCLE"),
+      "a stated configuration must not be flattened"
+    );
+    assert_eq!(
+      gear("Piston taildragger with fixed landing gear.").as_deref(),
+      Some("FIXED_TAILWHEEL")
+    );
+    assert_eq!(gear("Single engine piston aircraft."), None, "no gear stated, none recorded");
+  }
+
+  /// The production range already tells us whether the type is still built, so the
+  /// status restates it rather than guessing. A name with no range leaves it
+  /// absent: `VariantFilter::service_status` must not partition on an assumption.
+  #[test]
+  fn service_status_restates_the_production_range_and_is_absent_without_one() {
+    let status =
+      |aircraft: &str| normalize_record("CESSNA", aircraft, json!({})).lifecycle.service_status;
+
+    assert_eq!(status("172S (1998 - present)").as_deref(), Some("IN_PRODUCTION"));
+    assert_eq!(status("310R (1975 - 1980)").as_deref(), Some("DISCONTINUED"));
+    assert_eq!(status("172S Skyhawk SP"), None, "no range means nothing is known");
+  }
+
+  /// `PlanePHD` states the propulsion category in prose -- "Single engine piston
+  /// aircraft with fixed landing gear" -- and nowhere else. Three of the four
+  /// phrases it uses map onto exactly one `aircraft_ref.propulsion_categories`
+  /// code; `turbofan` does not, because that vocabulary splits low- and
+  /// high-bypass and the source never says which. Guessing would put an invented
+  /// fact in a filterable column, so a turbofan stays absent.
+  #[test]
+  fn a_stated_propulsion_category_maps_and_an_ambiguous_one_stays_absent() {
+    let category = |prose: &str| {
+      normalize_record("CESSNA", "310R", json!({"description": prose})).propulsion.category
+    };
+
+    assert_eq!(
+      category("Single engine piston aircraft with fixed landing gear.").as_deref(),
+      Some("PISTON_RECIPROCATING")
+    );
+    assert_eq!(category("Twin engine turboprop aircraft.").as_deref(), Some("TURBOPROP"));
+    assert_eq!(category("Single engine turbojet aircraft.").as_deref(), Some("TURBOJET"));
+    assert_eq!(
+      category("Twin engine turbofan aircraft."),
+      None,
+      "low- and high-bypass are distinct codes and the source does not choose"
+    );
+    assert_eq!(category("Nothing about propulsion here."), None);
+  }
+
+  /// The three measurements the shipped file carries that reached the database
+  /// with no `metric_code`: 1,039 curation flags between them. All three codes
+  /// were already seeded, so this was a missing mapping rather than missing
+  /// vocabulary. Each pairing also asserts the unit survived, because a metric
+  /// absent from `metric_dimensions` silently loses its unit instead.
+  #[test]
+  fn one_engine_out_metrics_and_maximum_payload_map_to_their_reference_codes() {
+    let record = normalize_record(
+      "BEECHCRAFT",
+      "Baron G58",
+      json!({
+        "performance": {
+          "rate_of_climb_1_engine_out": "390 FPM",
+          "ceiling_1_engine_out": "7284 FT"
+        },
+        "weights": {"maximum_payload": "1000 LBS"}
+      }),
+    );
+
+    let coded: Vec<(&str, Option<&str>, Option<&str>)> = record
+      .performance
+      .measurements
+      .iter()
+      .chain(record.weights.measurements.iter())
+      .map(|measurement| {
+        (
+          measurement.source_field.as_str(),
+          measurement.metric_code.as_deref(),
+          measurement.unit_code.as_deref(),
+        )
+      })
+      .collect();
+
+    assert!(
+      coded.contains(&("rate_of_climb_1_engine_out", Some("CLIMB_RATE_OEI"), Some("FPM"))),
+      "{coded:?}"
+    );
+    assert!(
+      coded.contains(&("ceiling_1_engine_out", Some("CEILING_OEI"), Some("FT"))),
+      "{coded:?}"
+    );
+    assert!(coded.contains(&("maximum_payload", Some("WEIGHT_PAYLOAD"), Some("LBS"))), "{coded:?}");
+  }
+
+  /// 727 of the unmapped-cost flags are these two keys. `overhaul_reserves` is
+  /// deliberately not mapped here: the vocabulary distinguishes `ENGINE_RESERVE`
+  /// from `PROP_RESERVE` and the bare key says which is meant, so it stays
+  /// evidence.
+  #[test]
+  fn the_two_named_ownership_totals_map_to_their_cost_codes() {
+    let record = normalize_record(
+      "CESSNA",
+      "172S",
+      json!({"ownership_costs": {
+        "total_cost_of_ownership": "$25,000",
+        "miscellaneous_expenses": "$1,200",
+        "overhaul_reserves": "$3,000"
+      }}),
+    );
+
+    let coded: Vec<(&str, Option<&str>)> = record
+      .operating_costs
+      .items
+      .iter()
+      .map(|item| (item.source_key.as_str(), item.mapped_code.as_deref()))
+      .collect();
+
+    assert!(coded.contains(&("total_cost_of_ownership", Some("TOTAL_COST_ANNUAL"))), "{coded:?}");
+    assert!(coded.contains(&("miscellaneous_expenses", Some("MISC_VARIABLE"))), "{coded:?}");
+    assert!(
+      coded.contains(&("overhaul_reserves", None)),
+      "an ambiguous reserve stays evidence: {coded:?}"
+    );
+  }
+
+  /// The real `PlanePHD` file carries `manufacturer_name` and `aircraft_name` in
+  /// every record, and the parser consumes both -- as the enclosing map keys.
+  /// Flagging them as unpromoted made `warning_count > 0` for all 1005 records,
+  /// so none was ever dispositioned clean. The checked-in fixtures omit both
+  /// keys, which is why no test caught it.
+  #[test]
+  fn the_identity_fields_the_parser_consumes_are_not_flagged_as_unsupported() {
+    let record = normalize_record(
+      "CESSNA",
+      "120 (1946 - 1946)",
+      json!({"manufacturer_name": "CESSNA", "aircraft_name": "120 (1946 - 1946)"}),
+    );
+
+    assert!(
+      !record.issues.iter().any(|issue| issue.code == "UNSUPPORTED_RECORD_FIELD"),
+      "the two identity fields are consumed, not ignored: {:?}",
+      record.issues
+    );
+  }
+
+  /// `start_year`/`end_year` are in `KNOWN_FIELDS` but absent from every record
+  /// of the shipped file; the years live in the aircraft name instead.
+  #[test]
+  fn production_years_are_read_from_the_aircraft_name_when_the_record_omits_them() {
+    let record = normalize_record("CESSNA", "120 (1946 - 1946)", json!({}));
+
+    assert_eq!(record.lifecycle.production_start_year, Some(1946));
+    assert_eq!(record.lifecycle.production_end_year, Some(1946));
+    assert_eq!(record.lifecycle.is_in_production, Some(false));
+  }
+
+  #[test]
+  fn an_open_ended_range_leaves_the_end_absent_and_marks_the_aircraft_in_production() {
+    let record = normalize_record("BOEING", "777-200ER (1997 - present)", json!({}));
+
+    assert_eq!(record.lifecycle.production_start_year, Some(1997));
+    assert_eq!(record.lifecycle.production_end_year, None, "`present` is not a year");
+    assert_eq!(record.lifecycle.is_in_production, Some(true));
+  }
+
+  /// A feed that states the years outranks one that only spells them in a name.
+  #[test]
+  fn an_explicit_year_field_outranks_the_range_in_the_name() {
+    let record = normalize_record(
+      "CESSNA",
+      "120 (1946 - 1946)",
+      json!({"start_year": "1950", "end_year": "1951", "in_production": false}),
+    );
+
+    assert_eq!(record.lifecycle.production_start_year, Some(1950));
+    assert_eq!(record.lifecycle.production_end_year, Some(1951));
+  }
+
+  /// The checked-in fixtures carry names with no parenthetical at all. Absence is
+  /// ordinary, so it must not raise a warning -- that mistake is what buried the
+  /// signal in 2010 false ones.
+  #[test]
+  fn a_name_without_a_year_range_leaves_the_lifecycle_empty_and_raises_nothing() {
+    let record = normalize_record("CESSNA", "172S Skyhawk SP", json!({}));
+
+    assert_eq!(record.lifecycle.production_start_year, None);
+    assert_eq!(record.lifecycle.is_in_production, None);
+    assert!(
+      !record.issues.iter().any(|issue| issue.code == "UNPARSEABLE_PRODUCTION_RANGE"),
+      "a name with no range is not malformed: {:?}",
+      record.issues
+    );
+  }
+
+  /// A parenthetical that looks like a range but is not one is evidence of a
+  /// source change, so it is flagged rather than guessed at.
+  #[test]
+  fn a_malformed_year_range_is_flagged_rather_than_guessed() {
+    let record = normalize_record("CESSNA", "120 (19xx - 1946)", json!({}));
+
+    assert_eq!(record.lifecycle.production_start_year, None);
+    assert!(
+      record.issues.iter().any(|issue| issue.code == "UNPARSEABLE_PRODUCTION_RANGE"),
+      "{:?}",
+      record.issues
+    );
+  }
 
   #[test]
   fn known_measurement_is_mapped_and_unknown_unit_is_flagged() {
