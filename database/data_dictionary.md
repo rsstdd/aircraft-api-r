@@ -53,7 +53,9 @@ aircraft_auth   ──▶  standalone; depends only on aircraft_ref domains and 
 
 **Purpose.** Stores every extensible enumeration used across the schema as a proper lookup table rather than a `TEXT CHECK` constraint. Adding a new value requires only an `INSERT` into the relevant table, not a schema migration. Also houses the five cross-cutting domains, the `to_canonical()` unit-conversion function, and the three utility functions (`set_updated_at`, `slugify`, `normalize_lookup_code`).
 
-**Key design choices.** Lookup tables follow a common structural pattern: a `code aircraft_ref.lookup_code PRIMARY KEY` column (uppercase snake-case, e.g. `RETRACTABLE_TRICYCLE`), a human-readable `label TEXT NOT NULL`, an optional `description`, and `sort_order / is_active` flags. The `code` column is always the FK target, never the surrogate integer `id`, so FK values are self-documenting in query results.
+**Key design choices.** Lookup tables follow a common structural pattern: a `code aircraft_ref.lookup_code PRIMARY KEY` column (uppercase snake-case, e.g. `RETRACTABLE_TRICYCLE`), a human-readable `label TEXT NOT NULL`, a `description`, and `sort_order / is_active` flags. The `code` column is always the FK target, never the surrogate integer `id`, so FK values are self-documenting in query results.
+
+`description` is `TEXT` and nullable in the DDL, but seeded canonical rows must carry one: `validation/002_core_reference_tables_validation.sql` requires it non-blank for all 33 lookup tables that have the column, and rejects text uniformly derived from the row's own `label`. `database/README.md` § *Canonical seed audit policy* owns that content rule. The nullability is for rows a curator adds later, not a licence to leave the canonical vocabulary undescribed.
 
 Four of the 36 tables deviate, and migration `002` rather than this paragraph is
 the authority on each. `unit_categories` has no `is_active`. `measurement_units`
@@ -109,7 +111,7 @@ name-ordered page would be a change to the port before it is a change to the
 statement. The runtime role's access to `aircraft_core` and `aircraft_org` is the
 column-level `SELECT` in `database/roles/app_grants.sql` -- no write, and no
 column a statement does not read -- and
-`the_runtime_role_reads_families_and_writes_none` is the only test that connects
+`the_runtime_role_reads_the_catalog_and_writes_none` is the only test that connects
 as that role and can therefore fail for `42501`.
 
 `aircraft_domain::reference::Catalog` is the allowlist behind

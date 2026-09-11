@@ -40,6 +40,86 @@ This directory owns the SQL lifecycle for the Aircraft Management Engine.
 - `implementation_notes.md`: dependency rules, curator workflows, known
   limitations, and deferred database decisions.
 
+## Canonical seed audit policy
+
+The canonical seed vocabulary was audited on 2026-09-10 and extended on
+2026-09-11 by two `aircraft_ref.landing_gear_types` codes, `FIXED_UNSPECIFIED`
+and `RETRACTABLE_UNSPECIFIED`. Every other wheeled code bundles retraction with
+configuration, so a source that states "fixed landing gear" without saying
+tricycle or tailwheel had nowhere to land and was discarded entirely. The two
+codes keep the half the source gives; a curator narrows them once the
+configuration is established. `crates/aircraft_ingest/src/normalization.rs`
+maps them and checks for a stated configuration first, so a source that does
+give one still resolves to the specific code.
+ Reapplying the four
+files under `seeds/` restores every seed-owned mutable column without replacing
+keys or generated identities. Mission suitability caches are invalidated only
+when the criteria policy for their profile differs; unknown lookup rows and
+user-created data are not deleted. Exact row-count validation continues to flag
+vocabulary outside the canonical set.
+
+Externally factual fields use these primary sources:
+
+- Measurement conversion factors follow [NIST Special Publication
+  811](https://www.nist.gov/pml/special-publication-811). Values are rounded to
+  the nearest value representable by `NUMERIC(18,10)`. Fahrenheit is affine and
+  PPH volume conversion depends on fuel density, so neither is assigned a fake
+  universal factor.
+- The six seeded currency codes, names, and minor units follow [ISO
+  4217](https://www.iso.org/iso-4217-currency-codes.html). Display symbols are
+  repository policy rather than ISO assertions.
+- EASA jurisdictions follow the [EASA member-state
+  register](https://www.easa.europa.eu/en/light/topics/easa-member-states) and
+  use the complete current ISO 3166-1 alpha-3 member set rather than a regional
+  pseudo-code.
+- FAA light-sport and sport-pilot descriptions follow the performance-based
+  [MOSAIC rule](https://www.faa.gov/aircraft/MOSAIC), whose aircraft
+  certification provisions took effect July 24, 2026. Approach category text
+  follows the FAA [runway visual range
+  guidance](https://www.faa.gov/about/office_org/headquarters_offices/ato/service_units/techops/navservices/lsg/rvr).
+
+Repository-owned policy includes display labels and symbols, descriptions that
+do not quote an external rule, grouping, ordering, activity flags, mission
+profile metadata, and all mission criterion choices, weights, required flags,
+bounds, and notes. The first five configured profiles retain their original
+criteria and weights with complete bounds. The ten former stubs use the v1
+six-criterion matrix in `seeds/003_mission_profile_seed_data.sql`; the complete
+policy contains exactly 88 criteria and every profile weight sum is `1.000`.
+
+Canonical seed fields are populated unless absence has defined semantics. The
+complete semantic-`NULL` allowlist is:
+
+- canonical-unit key/factor pairs on units that are their own canonical
+  representation;
+- SI fields for affine or context-dependent conversion (`DEG_F` and `PPH`);
+- unpowered (`NONE_GLIDER`) `primary_power_unit`;
+- fuel density for non-liquid or state-dependent carriers;
+- canonical units for dimensionless metrics;
+- context-dependent comparison direction for wingspan and the documented
+  V-speeds;
+- `MILITARY_SPEC.authority_code`, because no single civil authority owns it;
+- metric foreign keys for computed comparison criteria.
+
+All other seeded descriptions, labels, notes, applicable URLs and arrays, and
+mission scoring bounds must be present and non-blank. The assertions in
+`validation/002_core_reference_tables_validation.sql` and
+`validation/phase15_16_comparison_readmodels_validation.sql` enforce this
+policy, and `crates/aircraft_testsupport/tests/seed_data.rs` runs both against a
+disposable canonical installation.
+
+Non-blank is the floor, not the standard. A lookup `description` must add
+information its `label` does not already carry: what the value means, and where
+its boundary against the neighbouring codes falls. It has to survive having the
+label deleted from it. This is enforceable rather than advisory because
+`GET /v1/reference/{catalog}` publishes the column verbatim — twelve of these
+tables briefly carried `label || ' <suffix>'` text, which satisfied every
+completeness assertion while telling an API client nothing. The second loop in
+`validation/002_core_reference_tables_validation.sql` now rejects any table
+whose descriptions are uniformly its labels plus one shared suffix. Descriptions
+that do not quote an external rule remain repository-owned policy, per the
+paragraph above; a description that does quote one belongs in the primary-source
+list with its citation.
+
 ## Local workflow
 
 ```bash

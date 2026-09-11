@@ -31,7 +31,7 @@ MIGRATION_DATABASE_URL='postgresql://migration-role@db.example/aircraft' \
   just db-prod-bootstrap
 ```
 
-`just db-seed` and `just db-prod-seed` reapply only the three canonical seed
+`just db-seed` and `just db-prod-seed` reapply only the four canonical seed
 files. They do not execute transient ingestion or validation scripts.
 
 The Rust ingestion adapter is the primary operational path. It captures a local
