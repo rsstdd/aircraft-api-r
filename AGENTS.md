@@ -192,8 +192,21 @@ message file handed to the user, a squash-merge body, and an amend.
 `hooks/commit-msg` enforces this mechanically and is the authority when a
 default disagrees. It is checked in, but `core.hooksPath` is local git config
 and cannot be committed, so **each clone runs `just hooks-install` once**;
-`just hooks-check` reports whether this clone is covered. A genuine human
-`Co-authored-by:` is still rejected — all are refused.
+`just hooks-check` reports whether this clone is covered.
+
+The hook refuses three trailer shapes, anchored to the start of a line so prose
+discussing the rule is not caught: a `Co-Authored-By:` whose value begins with
+`Claude`, any `Claude-Session:` line, and any trailer carrying
+`noreply@anthropic.com` — which catches a `Signed-off-by:` too. A
+`Co-authored-by:` naming a real person is not agent attribution and passes; that
+is the hook's deliberate behaviour, and this paragraph is the description of it,
+so change both together or neither.
+
+**No agent attribution ever ships.** An agent writes no `Co-Authored-By:` line
+of any value and no `Claude-Session:` URL, in a commit message, a pull-request
+body, or an issue comment, whether or not the hook would catch that particular
+spelling. The hook is the backstop for the shapes it knows; the prohibition is
+absolute and is not limited to them.
 
 ## Architectural invariants
 
