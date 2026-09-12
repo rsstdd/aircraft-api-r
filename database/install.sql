@@ -317,6 +317,17 @@ INSERT INTO public.aircraft_schema_migrations(version) VALUES ('027');
 \echo 'Skipping applied migration 027'
 \endif
 
+SELECT NOT EXISTS (
+    SELECT 1 FROM public.aircraft_schema_migrations WHERE version = '028'
+) AS apply_migration \gset
+\if :apply_migration
+\echo 'Applying migration 028: 028_variant_powerplant_engine_count_optional.sql'
+\ir migrations/028_variant_powerplant_engine_count_optional.sql
+INSERT INTO public.aircraft_schema_migrations(version) VALUES ('028');
+\else
+\echo 'Skipping applied migration 028'
+\endif
+
 -- The authentication scope vocabulary, seeded after the migration that creates
 -- the table it fills.
 \ir seeds/004_authentication_seed_data.sql

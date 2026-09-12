@@ -314,7 +314,7 @@ unreachable over HTTP; those three tests are what say so.
 | `crew_count` | `smallint` | nullable | &mdash; | &mdash; |  |
 | `landing_gear_type_code` | `aircraft_ref.lookup_code` | nullable | &mdash; | aircraft_ref.landing_gear_types(code) ON DELETE NO ACTION | Denormalized for faceted search |
 | `propulsion_category_code` | `aircraft_ref.lookup_code` | nullable | &mdash; | aircraft_ref.propulsion_categories(code) ON DELETE NO ACTION | Denormalized for faceted search |
-| `engine_count` | `smallint` | nullable | &mdash; | &mdash; | Denormalized from the primary `aircraft_power.variant_powerplants` row. Rust ingestion writes both projections; migration 023 backfills earlier Rust imports. |
+| `engine_count` | `smallint` | nullable | &mdash; | &mdash; | Denormalized from the primary `aircraft_power.variant_powerplants` row, which is the authority. Rust ingestion writes both; migration 023 backfills earlier Rust imports and migration 028 repaired thirteen rows where the two had drifted apart. Must equal the powerplant's count, NULL included. |
 | `is_in_production` | `boolean` | nullable | &mdash; | &mdash; |  |
 | `ingest_key` | `text` | nullable | &mdash; | &mdash; | Opaque ingestion deduplication key. The legacy SQL loader writes concatenated raw names, e.g. "AERONCA::11AC Chief"; the Rust adapter writes SHA-256 over "planephd\0<manufacturer>\0<aircraft>". Prevents duplicate variant rows. Not a semantic business key; superseded by aircraft_prov.source_documents once Phase 14 is populated. |
 | `source_path` | `text` | nullable | &mdash; | &mdash; | URI path from the originating source system used during Phase 17 ingestion. Canonical source URL lives in aircraft_prov.source_documents.source_url. |
@@ -545,7 +545,7 @@ M:N junction — multiple engine options per variant.
 | `id` | `bigint` | NOT NULL | identity | PK |  |
 | `variant_id` | `bigint` | NOT NULL | &mdash; | aircraft_core.variants(id) ON DELETE CASCADE; UNIQUE (composite) |  |
 | `engine_variant_id` | `bigint` | NOT NULL | &mdash; | aircraft_power.engine_variants(id) ON DELETE RESTRICT; UNIQUE (composite) |  |
-| `engine_count` | `smallint` | NOT NULL | `1` | &mdash; | Number of installed engines of this engine_variant type. For a twin with identical engines: engine_count = 2. For a tandem helicopter with different power sections: two rows, each engine_count = 1. |
+| `engine_count` | `smallint` | nullable | &mdash; | &mdash; | Number of installed engines of this engine_variant type, as the source states it. For a twin with identical engines: 2. For a tandem helicopter with different power sections: two rows, each 1. NULL means the source does not say, which migration 028 made representable — it was NOT NULL DEFAULT 1, so ingestion had to invent a count and "one engine" could not be told from "nobody counted". `aircraft_core.variants.engine_count` projects this column and must agree with it, including when both are NULL; `validation/023_backfill_ingestion_identity_projections_validation.sql` enforces that. |
 | `is_standard` | `boolean` | NOT NULL | `false` | &mdash; | Factory standard fitment |
 | `is_optional` | `boolean` | NOT NULL | `false` | &mdash; | Factory option (non-exclusive with `is_standard` for conversions) |
 | `is_primary` | `boolean` | NOT NULL | `false` | &mdash; | The engine used for performance comparisons; partial UNIQUE ensures one per variant |

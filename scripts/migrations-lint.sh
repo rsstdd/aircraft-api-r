@@ -34,11 +34,22 @@ squawk=(npm exec --yes --package squawk-cli@2.51.0 -- squawk)
   --exclude=require-concurrent-index-creation \
   database/migrations/027_ownership_cost_summary_fuel_code.sql
 
+# 028 drops a NOT NULL on purpose: while the column could not be NULL,
+# ingestion had to invent an engine count for every source that states none, and
+# "one engine" became indistinguishable from "nobody counted". ban-drop-not-null
+# guards readers that assume the column is populated; the only such reader is
+# validation 023, which is strengthened in the same change to treat two NULLs as
+# agreement. Reviewed and held file-scoped so a careless DROP NOT NULL elsewhere
+# is still caught.
+"${squawk[@]}" \
+  --exclude=ban-drop-not-null \
+  database/migrations/028_variant_powerplant_engine_count_optional.sql
+
 current_migrations=()
 for migration in database/migrations/*.sql; do
   filename="${migration##*/}"
   version="${filename%%_*}"
-  if ((10#$version >= 19)) && [[ "$filename" != 027_* ]]; then
+  if ((10#$version >= 19)) && [[ "$filename" != 027_* && "$filename" != 028_* ]]; then
     current_migrations+=("$migration")
   fi
 done

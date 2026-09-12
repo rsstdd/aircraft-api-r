@@ -4,12 +4,19 @@ DECLARE
     missing_manufacturers BIGINT;
     unpublished_manufacturers BIGINT;
 BEGIN
+    -- Compares the projection against the authority rather than asserting the
+    -- projection is merely not NULL. The weaker form could not see ten ingested
+    -- variants whose powerplant claimed one engine while the variant column
+    -- said two, or four for a DC-8-62: both were non-NULL, so both passed.
+    -- Since migration 028 the authority may itself be NULL, and IS DISTINCT
+    -- FROM treats two NULLs as agreement -- a source that states no count
+    -- leaves both sides silent, which is the honest answer and not a defect.
     SELECT count(*)
     INTO missing_engine_counts
     FROM aircraft_core.variants AS variant
     JOIN aircraft_power.variant_powerplants AS powerplant
         ON powerplant.variant_id = variant.id AND powerplant.is_primary
-    WHERE variant.engine_count IS NULL
+    WHERE variant.engine_count IS DISTINCT FROM powerplant.engine_count
       AND EXISTS (
           SELECT 1
           FROM aircraft_prov.source_documents AS document
@@ -51,7 +58,7 @@ BEGIN
        OR missing_manufacturers <> 0
        OR unpublished_manufacturers <> 0 THEN
         RAISE EXCEPTION
-            'ingestion identity projections incomplete: engine counts %, manufacturer links %, read-model manufacturers %',
+            'ingestion identity projections incomplete: engine counts disagreeing with their powerplant %, manufacturer links %, read-model manufacturers %',
             missing_engine_counts,
             missing_manufacturers,
             unpublished_manufacturers;

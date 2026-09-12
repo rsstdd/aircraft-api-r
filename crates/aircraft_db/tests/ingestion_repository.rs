@@ -210,6 +210,58 @@ async fn a_stated_propulsion_category_is_published_and_an_ambiguous_one_is_not()
 /// only when the source produced nothing, and all three phases below pin one of
 /// those behaviours.
 #[tokio::test]
+async fn a_later_run_corrects_an_engine_count_the_first_one_could_not_state() -> TestResult {
+  const STORED_COUNT: &str = "SELECT powerplant.engine_count
+         FROM aircraft_power.variant_powerplants AS powerplant
+         JOIN aircraft_core.variants AS variant ON variant.id = powerplant.variant_id
+        WHERE variant.name = '800XP' AND powerplant.is_primary";
+  let (_container, pool) = start_postgres(5, Duration::from_secs(30)).await?;
+  install_schema(&pool).await?;
+  let store = SqlxIngestionStore::from_pool(pool.clone());
+
+  // The engine section names a powerplant either way; only the thrust string
+  // says how many. PlanePHD's `/research` layout omits it for some aircraft and
+  // the retired one stated it, so the same variant is genuinely read both ways.
+  let counted = |thrust: Option<&str>| {
+    let mut performance = serde_json::Map::new();
+    if let Some(thrust) = thrust {
+      performance.insert("thrust".to_owned(), json!(thrust));
+    }
+    normalize_record(
+      "HAWKER",
+      "800XP",
+      json!({
+        "engine": {"manufacturer": "Honeywell", "model": "TFE731-5BR"},
+        "performance": performance,
+      }),
+    )
+  };
+
+  import_record(&store, request('a', "1.0.0"), &counted(None)).await?;
+  assert_eq!(
+    query_scalar::<_, Option<i16>>(STORED_COUNT).fetch_one(&pool).await?,
+    None,
+    "a source that states no count must leave the powerplant saying so, not claim one engine"
+  );
+
+  import_record(&store, request('b', "1.0.0"), &counted(Some("2 x 4,660 LBF"))).await?;
+  assert_eq!(
+    query_scalar::<_, Option<i16>>(STORED_COUNT).fetch_one(&pool).await?,
+    Some(2),
+    "a later run that does state the count must correct the stored row, not be discarded"
+  );
+
+  import_record(&store, request('c', "1.0.0"), &counted(None)).await?;
+  assert_eq!(
+    query_scalar::<_, Option<i16>>(STORED_COUNT).fetch_one(&pool).await?,
+    Some(2),
+    "and a run that says nothing again must not take the known count back"
+  );
+
+  Ok(())
+}
+
+#[tokio::test]
 async fn a_reimport_fills_corrects_and_never_loses_production_years() -> TestResult {
   let (_container, pool) = start_postgres(5, Duration::from_secs(30)).await?;
   install_schema(&pool).await?;

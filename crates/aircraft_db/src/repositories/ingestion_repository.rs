@@ -1026,15 +1026,30 @@ impl SqlxIngestionUnitOfWork {
     .await
     .map_err(database_error)?;
     query(
+      // The count is bound as stated, never defaulted. It was
+      // `unwrap_or(1)` while the column was NOT NULL, which made "the source
+      // does not say" indistinguishable from "one engine" -- and DO NOTHING
+      // then froze that fiction, so a later run that did state a count could
+      // not correct it. Thirteen variants carried the result: ten whose
+      // powerplant said one engine while the variant column, fed from the same
+      // parse a run later, correctly said two or four.
+      //
+      // COALESCE(EXCLUDED, existing) is the same direction
+      // `promote_variant` uses: a run that states a count wins, a run that
+      // does not leaves the stored one alone. `aircraft_power.variant_powerplants`
+      // allows NULL from `database/migrations/028_variant_powerplant_engine_count_optional.sql`,
+      // which names this statement in turn.
       "INSERT INTO aircraft_power.variant_powerplants(
                 variant_id,engine_variant_id,engine_count,is_standard,is_optional,is_primary,
                 source_document_id)
              VALUES($1,$2,$3,TRUE,FALSE,TRUE,$4)
-             ON CONFLICT(variant_id,engine_variant_id) DO NOTHING",
+             ON CONFLICT(variant_id,engine_variant_id) DO UPDATE SET
+                engine_count=COALESCE(EXCLUDED.engine_count,
+                    aircraft_power.variant_powerplants.engine_count)",
     )
     .bind(variant_id)
     .bind(engine_id)
-    .bind(engine.engine_count.unwrap_or(1))
+    .bind(engine.engine_count)
     .bind(document_id)
     .execute(&mut *self.transaction)
     .await

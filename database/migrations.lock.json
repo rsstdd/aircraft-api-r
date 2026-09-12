@@ -108,6 +108,10 @@
     {
       "file": "027_ownership_cost_summary_fuel_code.sql",
       "sha256": "f450a815a0c4d39d1e4c4e371302323c60478f5b0662362fdeb9c179ad9a0935"
+    },
+    {
+      "file": "028_variant_powerplant_engine_count_optional.sql",
+      "sha256": "0331c7deda86e2d17ed75b429c2e770e8fe6a65900543462ee664cac1ef5d061"
     }
   ]
 }

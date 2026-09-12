@@ -72,6 +72,7 @@ deployment.
 | Phase 25 before `004_authentication_seed_data.sql` | The scope seed fills a table migration 025 creates |
 | Phase 14 before Phase 26 | The licence update targets the `aircraft_prov.sources` row migration 014 seeds, and raises if it finds none |
 | Phase 16 before Phase 27 | The read-model replacement drops and recreates the two views migration 016 creates, and refreshes them in its own transaction |
+| Phase 23 before Phase 28 | The engine-count repair reads the variant projection migration 023 backfills, and its validation companion is strengthened in the same change |
 
 Do not run the migration glob directly; its lexical order cannot express the
 required Phase 2 seed boundary.
