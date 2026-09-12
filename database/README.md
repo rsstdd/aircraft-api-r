@@ -124,6 +124,25 @@ that do not quote an external rule remain repository-owned policy, per the
 paragraph above; a description that does quote one belongs in the primary-source
 list with its citation.
 
+## What the ingested data may be used for
+
+`aircraft_prov.sources.license_notes` records the terms each source publishes, and
+migration `026_source_license_terms.sql` fills it for `planephd` from
+<https://planephd.com/terms> and <https://planephd.com/robots.txt> as they stood on
+2026-09-12. Read the column rather than this paragraph; it is the copy that ships with the
+data, and `database/validation/026_source_license_terms_validation.sql` fails the install
+if it goes missing.
+
+The short version, which does not replace the column: PlanePHD reserves its data
+absolutely, forbids incorporating it into another database or redistributing it in any
+form, and its robots.txt carries `ai-train=no, use=reference` as an express reservation of
+rights. No vendor or client agreement is on file here. Treat every PlanePHD-derived value
+as reference-only evidence.
+
+A new source must record its own terms the same way. `promote_document` upserts a source
+row with only `base_url` in its `ON CONFLICT` clause, so an auto-created source starts with
+`license_notes` NULL and nothing will tell you.
+
 ## Catalog columns the ingested data leaves empty
 
 Measured against the 1,005 variants, 1,005 models, and 75 families the PlanePHD

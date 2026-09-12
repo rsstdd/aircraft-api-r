@@ -827,6 +827,11 @@ impl SqlxIngestionUnitOfWork {
     record: &PreparedAircraftRecord,
     variant_id: i64,
   ) -> Result<i64, PersistenceError> {
+    // The ON CONFLICT clause names `base_url` and nothing else on purpose:
+    // `database/migrations/026_source_license_terms.sql` writes `license_notes`
+    // for this row and every import would otherwise erase it. Adding a column
+    // here means changing that migration's assumption too; it names this
+    // function in turn.
     let source_id: i64 = query_scalar(
       "INSERT INTO aircraft_prov.sources(name,slug,source_type_code,
                 reliability_grade_code,base_url,default_confidence,notes)

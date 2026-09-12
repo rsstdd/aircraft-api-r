@@ -70,6 +70,7 @@ deployment.
 | Phase 14 before Phase 17 promotion | Promotion writes provenance documents and assertions |
 | Phase 16 before ingestion refresh | The search materialized views must exist before refresh |
 | Phase 25 before `004_authentication_seed_data.sql` | The scope seed fills a table migration 025 creates |
+| Phase 14 before Phase 26 | The licence update targets the `aircraft_prov.sources` row migration 014 seeds, and raises if it finds none |
 
 Do not run the migration glob directly; its lexical order cannot express the
 required Phase 2 seed boundary.

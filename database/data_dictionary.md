@@ -831,7 +831,7 @@ items.
 | `source_type_code` | `aircraft_ref.lookup_code` | nullable | &mdash; | aircraft_ref.source_types(code) ON DELETE NO ACTION | e.g. `OFFICIAL_TC`, `MARKETPLACE_DB`, `MANUFACTURER_SPEC` |
 | `reliability_grade_code` | `aircraft_ref.lookup_code` | nullable | &mdash; | aircraft_ref.source_reliability_grades(code) ON DELETE NO ACTION | e.g. `AUTHORITATIVE`, `VERIFIED`, `UNVERIFIED` |
 | `base_url` | `text` | nullable | &mdash; | &mdash; |  |
-| `license_notes` | `text` | nullable | &mdash; | &mdash; |  |
+| `license_notes` | `text` | nullable | &mdash; | &mdash; | What the source publishes about how its data may be used, recorded verbatim. Migration 026 fills it for `planephd` from that site's terms and robots.txt; `validation/026_source_license_terms_validation.sql` fails the install if it goes missing. Ingestion never writes this column, so a source row created by `promote_document` starts NULL. |
 | `default_confidence` | `aircraft_ref.confidence_score` | nullable | &mdash; | &mdash; | Baseline confidence for assertions from this source (0.00–1.00). Derived from reliability_grade_code.numeric_score / 5 at creation. Curators may override per-assertion in source_assertions.confidence. |
 | `refresh_interval_days` | `smallint` | nullable | &mdash; | &mdash; |  |
 | `is_active` | `boolean` | NOT NULL | `true` | &mdash; |  |
