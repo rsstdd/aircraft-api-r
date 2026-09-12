@@ -385,10 +385,13 @@ BEGIN
           AND description ILIKE '%performance-based%'
           AND description LIKE '%July 24, 2026%'
           AND description ILIKE '%legacy%'
-    ) OR NOT EXISTS (
+    ) OR EXISTS (
+        -- Positive form on purpose. Written as NOT EXISTS(... AND description NOT
+        -- ILIKE ...) this also fired when the row was absent, reporting stale
+        -- wording for a missing row. Absence is caught separately below.
         SELECT 1 FROM aircraft_ref.pilot_certificate_types
         WHERE code = 'FAA_SPORT'
-          AND description NOT ILIKE '%LSA in VMC%'
+          AND description ILIKE '%LSA in VMC%'
     ) OR NOT EXISTS (
         SELECT 1 FROM aircraft_ref.operating_approval_types
         WHERE code = 'CAT_III_ILS' AND is_positive
@@ -401,6 +404,12 @@ BEGIN
           AND description LIKE '%5.5°%'
     ) THEN
         RAISE EXCEPTION 'FAA-backed light-sport, approach, or sport-pilot anchors are stale';
+    END IF;
+
+    IF NOT EXISTS (
+        SELECT 1 FROM aircraft_ref.pilot_certificate_types WHERE code = 'FAA_SPORT'
+    ) THEN
+        RAISE EXCEPTION 'pilot_certificate_types.FAA_SPORT is missing; the sport-pilot anchor has nothing to check';
     END IF;
 END
 $validation$;
