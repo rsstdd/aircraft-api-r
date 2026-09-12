@@ -692,16 +692,34 @@ impl SqlxIngestionUnitOfWork {
              ON CONFLICT(ingest_key) WHERE ingest_key IS NOT NULL DO UPDATE SET
                 description=EXCLUDED.description,
                 engine_count=COALESCE(aircraft_core.variants.engine_count,EXCLUDED.engine_count),
+                -- The production range moves as one value, never column by column.
+                -- Merging independently lets a later start (1985) sit beside a
+                -- retained older end (1980), which chk_variant_production_years
+                -- rejects -- aborting the promote transaction and losing every
+                -- later record in the run. The incoming record's own pair is
+                -- always valid, so the parser cannot catch this; only the merge
+                -- can. A record that states a start therefore defines the whole
+                -- lifecycle, including an open end; one that states nothing keeps
+                -- what is already stored.
                 production_start_year=COALESCE(EXCLUDED.production_start_year,
                     aircraft_core.variants.production_start_year),
-                production_end_year=COALESCE(EXCLUDED.production_end_year,
-                    aircraft_core.variants.production_end_year),
-                is_in_production=COALESCE(EXCLUDED.is_in_production,
-                    aircraft_core.variants.is_in_production),
+                production_end_year=CASE
+                    WHEN EXCLUDED.production_start_year IS NOT NULL
+                        THEN EXCLUDED.production_end_year
+                    ELSE aircraft_core.variants.production_end_year END,
+                is_in_production=CASE
+                    WHEN EXCLUDED.production_start_year IS NOT NULL
+                        THEN EXCLUDED.is_in_production
+                    ELSE COALESCE(EXCLUDED.is_in_production,
+                        aircraft_core.variants.is_in_production) END,
                 propulsion_category_code=COALESCE(EXCLUDED.propulsion_category_code,
                     aircraft_core.variants.propulsion_category_code),
-                service_status_code=COALESCE(EXCLUDED.service_status_code,
-                    aircraft_core.variants.service_status_code),
+                -- Derived from the range, so it travels with it.
+                service_status_code=CASE
+                    WHEN EXCLUDED.production_start_year IS NOT NULL
+                        THEN EXCLUDED.service_status_code
+                    ELSE COALESCE(EXCLUDED.service_status_code,
+                        aircraft_core.variants.service_status_code) END,
                 landing_gear_type_code=COALESCE(EXCLUDED.landing_gear_type_code,
                     aircraft_core.variants.landing_gear_type_code),
                 variant_type_code=COALESCE(EXCLUDED.variant_type_code,
@@ -907,6 +925,18 @@ impl SqlxIngestionUnitOfWork {
         .map_err(database_error)?;
       }
     }
+    self.promote_weight_metrics(record, variant_id, document_id).await
+  }
+
+  /// The weight half of [`Self::promote_measurements`], split out because that
+  /// function promotes two metric families and `clippy::too_many_lines` fires at
+  /// 100; it was at 98 before the canonicalisation guard grew a rationale.
+  async fn promote_weight_metrics(
+    &mut self,
+    record: &PreparedAircraftRecord,
+    variant_id: i64,
+    document_id: i64,
+  ) -> Result<(), PersistenceError> {
     for metric in &record.weights.measurements {
       let field =
         format!("weight.{}", metric.metric_code.as_deref().unwrap_or(&metric.source_field));

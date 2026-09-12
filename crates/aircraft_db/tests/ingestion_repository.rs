@@ -248,6 +248,21 @@ async fn a_reimport_fills_corrects_and_never_loses_production_years() -> TestRes
   import_record(&store, request('d', "1.0.0"), &undated()).await?;
   let survived = years(&pool).await?;
   assert_eq!(survived, (Some(1976), Some(1980)), "a run that parsed no year must lose nothing");
+
+  // A range that reopens: the source now gives a later start and no end. Merged
+  // per-column that is start 1985 against a retained end 1980, which
+  // chk_variant_production_years (migration 004) rejects -- aborting the whole
+  // promote transaction and losing every later record in the run. The incoming
+  // record's own pair is valid, so the parser's ProductionYears guard cannot see
+  // it; only the merge can.
+  let reopened =
+    normalize_record("CESSNA", "310R", json!({"description": "reopened", "start_year": "1985"}));
+  import_record(&store, request('e', "1.0.0"), &reopened).await?;
+  assert_eq!(
+    years(&pool).await?,
+    (Some(1985), None),
+    "a later start with no end must replace the pair, never straddle two runs"
+  );
   Ok(())
 }
 
