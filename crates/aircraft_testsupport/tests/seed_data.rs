@@ -198,3 +198,50 @@ async fn reapplying_seeds_repairs_drift_without_retaining_stale_scores() -> Test
 
   Ok(())
 }
+
+/// Every vocabulary the catalog filters bind to must offer more than one code.
+///
+/// `aircraft_app::catalog`'s `FamilyFilter` and `VariantFilter` name seven
+/// reference vocabularies between them, and issue #42 requires each filter to be
+/// "independently effective". A filter whose vocabulary holds a single code
+/// cannot be: every row matches or none does, and a test written against such a
+/// vocabulary passes whether or not the predicate was ever bound.
+///
+/// Nothing else notices a vocabulary shrinking. The readers that will bind these
+/// columns do not exist yet, so no query fails when a seed loses a row, and
+/// `database/validation/002_core_reference_tables_validation.sql` pins expected
+/// counts only for the tables it happens to list. This test is the gate that
+/// fails when a seed edit quietly makes a documented filter undiscriminating --
+/// which nearly happened to `aircraft_ref.landing_gear_types`, whose two
+/// `_UNSPECIFIED` codes were added by the same branch that added this file.
+#[tokio::test]
+async fn every_catalog_filter_vocabulary_offers_more_than_one_code() -> TestResult {
+  // Each entry is (filter field, the table its column references). The pairs are
+  // the foreign keys on `aircraft_core.families` and `aircraft_core.variants`;
+  // `database/roles/app_grants.sql` grants the referencing columns.
+  const VOCABULARIES: [(&str, &str); 5] = [
+    ("country_of_origin", "aircraft_geo.countries"),
+    ("variant_type", "aircraft_ref.variant_types"),
+    ("service_status", "aircraft_ref.service_statuses"),
+    ("landing_gear_type", "aircraft_ref.landing_gear_types"),
+    ("propulsion_category", "aircraft_ref.propulsion_categories"),
+  ];
+
+  let (_container, pool) = start_postgres(2, Duration::from_secs(5)).await?;
+  install_schema(&pool).await?;
+
+  for (field, table) in VOCABULARIES {
+    let codes: i64 =
+      query_scalar(&format!("SELECT count(DISTINCT code) FROM {table}")).fetch_one(&pool).await?;
+    assert!(
+      codes >= 2,
+      "the {field} filter binds {table}, which holds {codes} code(s); a filter cannot be \
+       shown independently effective against a vocabulary it can never discriminate within"
+    );
+  }
+
+  // `model`, `family`, `is_in_production` and `produced_in_year` are the filters
+  // with no vocabulary: they bind an identity, a boolean, and a year, and their
+  // discriminating power comes from the rows themselves.
+  Ok(())
+}

@@ -154,12 +154,27 @@ pub struct ModelFilter {
 #[derive(Clone, Debug, Default, Eq, PartialEq)]
 pub struct VariantFilter {
   pub model: Option<ModelId>,
+  /// A resolved grandparent, for the same reason [`ModelFilter::family`] is
+  /// resolved. A variant reaches its family only through its model, so this is
+  /// a two-step join and not an alternative spelling of `model`.
+  pub family: Option<FamilyId>,
   pub variant_type: Option<LookupCode>,
   pub service_status: Option<LookupCode>,
   pub landing_gear_type: Option<LookupCode>,
   pub propulsion_category: Option<LookupCode>,
   pub country_of_origin: Option<CountryCode>,
   pub is_in_production: Option<bool>,
+  /// Variants whose production run covered this year:
+  /// `production_start_year <= year AND (production_end_year IS NULL OR
+  /// production_end_year >= year)`.
+  ///
+  /// The open-ended arm is not a convenience. A run with no end year is one
+  /// still in production -- 83 of the 1,005 rows the catalogue holds today
+  /// -- so excluding NULL would drop exactly the aircraft a caller asking about
+  /// a recent year most wants, and `aircraft_core.variants`'
+  /// `chk_variant_production_years` already guarantees a NULL end never means
+  /// "ended before it started".
+  pub produced_in_year: Option<i16>,
 }
 
 /// Reads families.
