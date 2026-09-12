@@ -802,8 +802,14 @@ fn parse_unit(raw: &str) -> Option<String> {
 fn unit_code(raw: &str) -> Option<&'static str> {
   match raw {
     "KIAS" => Some("KIAS"),
-    "KCAS" => Some("KNOTS"),
     "KTAS" => Some("KTAS"),
+    // PlanePHD's `/research/<slug>` layout writes speeds as "192 kt" where the
+    // retired `/wizard/details` layout wrote "192 KIAS". It is deliberately not
+    // mapped to KIAS: the new page states knots without saying which airspeed,
+    // and recording indicated when the source stopped saying so would be an
+    // invention. KNOTS is the canonical unit both KIAS and KTAS convert into
+    // (`database/seeds/001_reference_units.sql`).
+    "KCAS" | "KT" | "KTS" | "KNOTS" => Some("KNOTS"),
     "NM" => Some("NM"),
     "FT" => Some("FT"),
     "FPM" => Some("FPM"),
@@ -867,7 +873,12 @@ fn metric_dimensions(metric: &str) -> &'static [Dimension] {
     | "DIST_LDG_50FT" => &[Dimension::Length],
     "CLIMB_RATE_SL" | "CLIMB_RATE_OEI" => &[Dimension::ClimbRate],
     "FUEL_BURN_CRUISE" => &[Dimension::FuelFlow],
-    "WEIGHT_EMPTY" | "WEIGHT_MTOW" | "WEIGHT_PAYLOAD" => &[Dimension::Mass],
+    "WEIGHT_EMPTY"
+    | "WEIGHT_MTOW"
+    | "WEIGHT_PAYLOAD"
+    | "WEIGHT_USEFUL_LOAD"
+    | "FUEL_WEIGHT_MAX"
+    | "WEIGHT_PAYLOAD_FULL_FUEL" => &[Dimension::Mass],
     // Usable fuel is quoted by volume or by weight depending on the source.
     "FUEL_CAPACITY_USABLE" => &[Dimension::Volume, Dimension::Mass],
     _ => &[],
@@ -908,6 +919,13 @@ fn weight_code(field: &str) -> Option<&'static str> {
     "gross_weight" => Some("WEIGHT_MTOW"),
     "fuel_capacity" => Some("FUEL_CAPACITY_USABLE"),
     "maximum_payload" => Some("WEIGHT_PAYLOAD"),
+    // Stated only by PlanePHD's `/research` layout, which the scraper emits
+    // under these three keys. Payload with full fuel is deliberately not folded
+    // into WEIGHT_PAYLOAD: it is what is left after filling the tanks, which is
+    // a smaller and different quantity from the maximum the airframe can carry.
+    "useful_load" => Some("WEIGHT_USEFUL_LOAD"),
+    "fuel_weight" => Some("FUEL_WEIGHT_MAX"),
+    "payload_full_fuel" => Some("WEIGHT_PAYLOAD_FULL_FUEL"),
     _ => None,
   }
 }
@@ -1290,6 +1308,73 @@ mod tests {
       "{coded:?}"
     );
     assert!(coded.contains(&("pilot_training", Some("PILOT_TRAINING"))), "{coded:?}");
+  }
+
+  /// The `/research` layout's unit spellings, which arrived when `PlanePHD`
+  /// retired `/wizard/details`. Mapping `kt` is what stopped 151 speeds being
+  /// flagged `UNKNOWN_MEASUREMENT_UNIT` on the 1,079-aircraft import; it resolves
+  /// to KNOTS rather than KIAS because the new page no longer says which
+  /// airspeed it means.
+  #[test]
+  fn the_research_layouts_unit_spellings_are_recognised() {
+    let record = normalize_record(
+      "REMOS",
+      "GX",
+      json!({"performance": {"best_cruise_speed": "192 kt", "stall_speed": "63 kt"}}),
+    );
+
+    let coded: Vec<(&str, Option<&str>)> = record
+      .performance
+      .measurements
+      .iter()
+      .map(|m| (m.source_field.as_str(), m.unit_code.as_deref()))
+      .collect();
+
+    assert!(coded.contains(&("best_cruise_speed", Some("KNOTS"))), "{coded:?}");
+    assert!(coded.contains(&("stall_speed", Some("KNOTS"))), "{coded:?}");
+    assert!(
+      !record.issues.iter().any(|i| i.code == "UNKNOWN_MEASUREMENT_UNIT"),
+      "{:?}",
+      record.issues
+    );
+  }
+
+  /// The three weights only the `/research` layout states. Each has a code in
+  /// `aircraft_ref.weight_metric_types` already, so none of this invents
+  /// vocabulary -- and payload-with-full-fuel is kept apart from maximum payload
+  /// because filling the tanks is what makes the two differ.
+  #[test]
+  fn the_research_layouts_weights_map_to_their_own_canonical_types() {
+    let record = normalize_record(
+      "GLASAIR AVIATION",
+      "II RG",
+      json!({"weights": {
+        "useful_load": "750 lbs",
+        "fuel_weight": "486 lbs",
+        "payload_full_fuel": "264 lbs",
+        "maximum_payload": "700 LBS"
+      }}),
+    );
+
+    let coded: Vec<(&str, Option<&str>)> = record
+      .weights
+      .measurements
+      .iter()
+      .map(|m| (m.source_field.as_str(), m.metric_code.as_deref()))
+      .collect();
+
+    assert!(coded.contains(&("useful_load", Some("WEIGHT_USEFUL_LOAD"))), "{coded:?}");
+    assert!(coded.contains(&("fuel_weight", Some("FUEL_WEIGHT_MAX"))), "{coded:?}");
+    assert!(coded.contains(&("payload_full_fuel", Some("WEIGHT_PAYLOAD_FULL_FUEL"))), "{coded:?}");
+    assert!(
+      coded.contains(&("maximum_payload", Some("WEIGHT_PAYLOAD"))),
+      "the legacy key keeps its own code: {coded:?}"
+    );
+    assert!(
+      !record.issues.iter().any(|i| i.code == "UNMAPPED_MEASUREMENT_FIELD"),
+      "{:?}",
+      record.issues
+    );
   }
 
   /// The real `PlanePHD` file carries `manufacturer_name` and `aircraft_name` in
