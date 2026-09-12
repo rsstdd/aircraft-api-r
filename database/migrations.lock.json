@@ -104,6 +104,10 @@
     {
       "file": "026_source_license_terms.sql",
       "sha256": "7827337dea6f1a2d9506a2f2f0fa6d24dd08f9eca331783712457d0d2b40f677"
+    },
+    {
+      "file": "027_ownership_cost_summary_fuel_code.sql",
+      "sha256": "f450a815a0c4d39d1e4c4e371302323c60478f5b0662362fdeb9c179ad9a0935"
     }
   ]
 }
