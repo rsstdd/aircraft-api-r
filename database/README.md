@@ -54,9 +54,13 @@ give one still resolves to the specific code.
  Reapplying the four
 files under `seeds/` restores every seed-owned mutable column without replacing
 keys or generated identities. Mission suitability caches are invalidated only
-when the criteria policy for their profile differs; unknown lookup rows and
-user-created data are not deleted. Exact row-count validation continues to flag
-vocabulary outside the canonical set.
+when the criteria policy for their profile differs. Unknown lookup rows and
+user-created data are not deleted, with one deliberate exception: the criteria of
+a seeded mission profile are wholly seed-owned, so a criterion added to one by
+hand is removed on reapplication. That is what makes the policy converge rather
+than accumulate, and `reapplying_seeds_repairs_drift_without_retaining_stale_scores`
+asserts it. Extend a profile by editing the seed, not the table. Exact row-count
+validation continues to flag vocabulary outside the canonical set.
 
 Externally factual fields use these primary sources:
 
@@ -119,6 +123,53 @@ whose descriptions are uniformly its labels plus one shared suffix. Descriptions
 that do not quote an external rule remain repository-owned policy, per the
 paragraph above; a description that does quote one belongs in the primary-source
 list with its citation.
+
+## Catalog columns the ingested data leaves empty
+
+Measured against the 1,005 variants, 1,005 models, and 75 families the PlanePHD
+import publishes. These are not defects to close by writing a value: `AGENTS.md`
+forbids inventing one, and nothing in the source states them.
+
+| Column | Populated | Why |
+|---|---|---|
+| `variants.service_status_code` | 1,005/1,005 | derived from the production range |
+| `variants.production_start_year` | 1,005/1,005 | parsed from the aircraft name |
+| `variants.is_in_production` | 1,005/1,005 | `(1997 - present)` versus a closed range |
+| `variants.propulsion_category_code` | 855/1,005 | stated in prose; turbofan stays unstated |
+| `variants.landing_gear_type_code` | 832/1,005 | fixed or retractable only; no tricycle/tailwheel wording |
+| `variants.variant_type_code` | 1,005/1,005, one code | every row is `PRODUCTION_STANDARD`; no source distinguishes a second |
+| `variants.country_of_origin_code` | 0/1,005 | PlanePHD states no country |
+| `families.country_of_origin_code` | 0/75 | the same |
+| `variants.first_flight_year` | 0/1,005 | PlanePHD states no first-flight date |
+| `models.first_flight_year`, `models.certification_year` | 0/1,005 | the same |
+| `aircraft_core.variant_manufacturers.production_country_code` | 0/1,005 | no per-variant manufacturing country in the source |
+
+Country of origin and first flight are obtainable, and were verified against live
+Wikidata (CC0): `P495` → `P298` gives an ISO alpha-3, `P606` gives a first-flight
+year. Matching is the work — Wikidata models notable types where this catalog
+models year-range variants — so the usable join is at the manufacturer, assigning
+the country its aircraft agree on when that agreement covers at least 90% of at
+least 10 Wikidata aircraft. Ten manufacturers qualify, covering 537 of the 1,005
+variants. The threshold is load-bearing: relaxing it to 80%/5 admits
+`Learjet → CAN`, which reflects Bombardier's ownership rather than where the
+aircraft were designed.
+
+That work belongs behind a Wikidata source of its own, with its own
+`aircraft_prov.sources` row and its own provenance, not inside the PlanePHD
+parser — a second source's facts must not reach the catalog under the first
+source's identity. It is planned, not built.
+
+Landing-gear class beyond fixed-versus-retractable and variant type are
+obtainable from **neither** source: `Q15896132`'s complete claim set carries no
+landing-gear and no variant-class property. Their emptiness is the correct state.
+
+Two consequences for the catalog read routes. The `country_of_origin` filter on
+families and variants binds correctly and returns nothing, because no row carries
+a code — a data gap, not a query defect, and
+`every_catalog_filter_vocabulary_offers_more_than_one_code` in
+`crates/aircraft_testsupport/tests/seed_data.rs` proves the vocabulary behind it
+is seeded and able to discriminate. The `variant_type` filter matches every row
+or none until a second code has a source.
 
 ## Local workflow
 
