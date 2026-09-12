@@ -1017,12 +1017,18 @@ VALUES
      'Weather briefing subscriptions and navigation database fees.', TRUE, FALSE, 14),
     ('PILOT_TRAINING', 'Pilot Training / Currency',
      'Recurrent training, simulator, and check-ride costs.', TRUE, FALSE, 15),
+    -- Employing a pilot is not training one, and a source that publishes both --
+    -- PlanePHD does, as sibling keys on the same aircraft -- needs two codes or
+    -- one of the figures is lost. crates/aircraft_ingest's cost_code maps
+    -- pilot_salary* here and names this file in turn.
+    ('PILOT_SALARY', 'Pilot Salary / Employment',
+     'Pilot salary with payroll taxes and benefits.', TRUE, FALSE, 16),
     ('REFURBISHING', 'Refurbishing / Modernisation',
-     'Interior, paint, and avionics update reserves.', TRUE, FALSE, 16),
+     'Interior, paint, and avionics update reserves.', TRUE, FALSE, 17),
     ('REGISTRATION_TAXES', 'Registration / Taxes',
-     'Annual aircraft registration and excise taxes.', TRUE, FALSE, 17),
+     'Annual aircraft registration and excise taxes.', TRUE, FALSE, 18),
     ('FINANCING', 'Financing Costs',
-     'Loan interest or equivalent finance charges.', TRUE, FALSE, 18),
+     'Loan interest or equivalent finance charges.', TRUE, FALSE, 19),
     -- Per-hour variable costs
     ('FUEL', 'Fuel',
      'Direct fuel cost per flight hour.', FALSE, FALSE, 30),
@@ -1032,16 +1038,25 @@ VALUES
      'Line maintenance and labour per flight hour.', FALSE, FALSE, 32),
     ('UNSCHEDULED_MAINT', 'Unscheduled Maintenance',
      'Reserve for unscheduled repairs and AOG situations.', FALSE, FALSE, 33),
+    -- Sits ahead of the two it generalises, and the three following codes moved
+    -- down one to keep the reserves contiguous. A source that separates engine
+    -- from propeller accrual uses those; one that publishes a single
+    -- undifferentiated reserve uses this, rather than having a split invented
+    -- for it. PlanePHD is the second kind: crates/aircraft_ingest's cost_code
+    -- maps overhaul_reserves here and names this file in turn.
+    ('OVERHAUL_RESERVE', 'Overhaul Reserve',
+     'Per-hour accrual toward overhaul, not split between engine and propeller.',
+     FALSE, FALSE, 34),
     ('ENGINE_RESERVE', 'Engine Overhaul Reserve',
-     'Per-hour accrual toward TBO overhaul cost.', FALSE, FALSE, 34),
+     'Per-hour accrual toward TBO overhaul cost.', FALSE, FALSE, 35),
     ('PROP_RESERVE', 'Propeller Reserve',
-     'Per-hour accrual toward propeller overhaul.', FALSE, FALSE, 35),
+     'Per-hour accrual toward propeller overhaul.', FALSE, FALSE, 36),
     ('AVIONICS_RESERVE', 'Avionics Reserve',
-     'Per-hour accrual for avionics maintenance and upgrades.', FALSE, FALSE, 36),
+     'Per-hour accrual for avionics maintenance and upgrades.', FALSE, FALSE, 37),
     ('LANDING_FEES', 'Landing / Navigation Fees',
-     'Airport landing fees averaged per flight hour.', FALSE, FALSE, 37),
+     'Airport landing fees averaged per flight hour.', FALSE, FALSE, 38),
     ('MISC_VARIABLE', 'Miscellaneous Variable',
-     'Catering, ground handling, parking, and sundry costs.', FALSE, FALSE, 38),
+     'Catering, ground handling, parking, and sundry costs.', FALSE, FALSE, 39),
     -- Source-provided aggregate totals; routed to cost_snapshot_totals.
     ('TOTAL_COST_ANNUAL', 'Total Annual Cost',
      'Source-provided annual ownership cost total.', FALSE, TRUE, 90),

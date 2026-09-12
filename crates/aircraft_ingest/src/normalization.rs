@@ -326,12 +326,30 @@ fn cost_items(
       let raw = scalar(Some(value), &format!("ownership_costs.{key}"), issues)?;
       let (mapped, numeric, aggregate) = cost_code(key);
       let amount = numeric.then(|| parse_numeric(&raw)).flatten();
-      if mapped.is_none() || (numeric && amount.is_none()) {
+      // Two different failures, and a curator resolves them differently: an
+      // unmapped key needs a vocabulary decision, an unparseable value needs the
+      // source read again. They shared one code until 2026-09, which made the
+      // 737 open flags on this corpus unreadable -- 631 were a missing mapping
+      // and 106 were a label the scraper had leaked into the value slot, and
+      // nothing said so. An unmapped key reports only the key, never both:
+      // mapping it is what unblocks the value, so the value is not yet a
+      // finding.
+      if mapped.is_none() {
         issues.push(issue(
-          "UNMAPPED_OR_UNPARSEABLE_COST",
+          "UNMAPPED_COST_KEY",
           IssueSeverity::Warning,
           &format!("ownership_costs.{key}"),
-          "cost is preserved for curation and excluded from canonical totals",
+          "no cost item type matches this key; the cost is preserved for curation \
+           and excluded from canonical totals",
+          Some(value),
+        ));
+      } else if numeric && amount.is_none() {
+        issues.push(issue(
+          "UNPARSEABLE_COST_VALUE",
+          IssueSeverity::Warning,
+          &format!("ownership_costs.{key}"),
+          "the key is mapped but its value is not a number; the cost is preserved \
+           for curation and excluded from canonical totals",
           Some(value),
         ));
       }
@@ -910,8 +928,15 @@ fn cost_code(key: &str) -> (Option<&'static str>, bool, bool) {
   {
     return (Some("TOTAL_COST_ANNUAL"), true, true);
   }
+  // Before the substring table, whose "training" entry would otherwise claim
+  // `pilot_salary_taxes_and_benefits`. Both keys appear on the same aircraft in
+  // this corpus, and while they shared `PILOT_TRAINING` the line-item writer's
+  // ON CONFLICT(snapshot_id,cost_item_type_code) DO NOTHING
+  // (`crates/aircraft_db/src/repositories/ingestion_repository.rs`) silently
+  // discarded whichever arrived second. `PILOT_SALARY`
+  // (`database/seeds/002_lookup_seed_data.sql`) keeps both.
   if key.contains("pilot_salary") {
-    return (Some("PILOT_TRAINING"), true, false);
+    return (Some("PILOT_SALARY"), true, false);
   }
   let mappings = [
     ("miscellaneous", "MISC_VARIABLE"),
@@ -940,10 +965,21 @@ fn cost_code(key: &str) -> (Option<&'static str>, bool, bool) {
   if key.contains("prop") && ["reserve", "overhaul", "fund"].iter().any(|part| key.contains(part)) {
     return (Some("PROP_RESERVE"), true, false);
   }
-  mappings
-    .iter()
-    .find(|(part, _)| key.contains(part))
-    .map_or((None, true, false), |(_, code)| (Some(*code), true, false))
+  if let Some((_, code)) = mappings.iter().find(|(part, _)| key.contains(part)) {
+    return (Some(*code), true, false);
+  }
+  // Last, so that every key naming a specific part has already been claimed:
+  // `engine` and `prop` above, and `avionics` in the table, all contain
+  // "reserve" and would be swallowed by this arm if it ran first. What reaches
+  // here names an accrual and no part, which is what `OVERHAUL_RESERVE`
+  // (`database/seeds/002_lookup_seed_data.sql`, which names this function) means.
+  // PlanePHD publishes one `overhaul_reserves` figure and no engine- or
+  // propeller-specific key anywhere in the corpus, so splitting it would invent
+  // a division the source never made.
+  if ["reserve", "overhaul"].iter().any(|part| key.contains(part)) {
+    return (Some("OVERHAUL_RESERVE"), true, false);
+  }
+  (None, true, false)
 }
 
 fn parse_engine_count(raw: &str) -> Option<i16> {
@@ -1129,12 +1165,15 @@ mod tests {
     assert!(coded.contains(&("maximum_payload", Some("WEIGHT_PAYLOAD"), Some("LBS"))), "{coded:?}");
   }
 
-  /// 727 of the unmapped-cost flags are these two keys. `overhaul_reserves` is
-  /// deliberately not mapped here: the vocabulary distinguishes `ENGINE_RESERVE`
-  /// from `PROP_RESERVE` and the bare key says which is meant, so it stays
-  /// evidence.
+  /// `overhaul_reserves` was withheld here while the vocabulary offered only
+  /// `ENGINE_RESERVE` and `PROP_RESERVE`, because the bare key says neither and
+  /// picking one would have been an invention. Counting the corpus settled it:
+  /// the key appears 631 times and is the *only* reserve or overhaul key in all
+  /// 1,005 records, so the source is not withholding a split, it does not make
+  /// one. `OVERHAUL_RESERVE` now says that, and the 631 values -- all clean
+  /// per-hour dollars -- are canonical rather than evidence.
   #[test]
-  fn the_two_named_ownership_totals_map_to_their_cost_codes() {
+  fn the_named_ownership_cost_keys_map_to_their_cost_codes() {
     let record = normalize_record(
       "CESSNA",
       "172S",
@@ -1155,9 +1194,102 @@ mod tests {
     assert!(coded.contains(&("total_cost_of_ownership", Some("TOTAL_COST_ANNUAL"))), "{coded:?}");
     assert!(coded.contains(&("miscellaneous_expenses", Some("MISC_VARIABLE"))), "{coded:?}");
     assert!(
-      coded.contains(&("overhaul_reserves", None)),
-      "an ambiguous reserve stays evidence: {coded:?}"
+      coded.contains(&("overhaul_reserves", Some("OVERHAUL_RESERVE"))),
+      "a reserve naming no part is the undifferentiated one: {coded:?}"
     );
+  }
+
+  /// The undifferentiated reserve runs last precisely because it would otherwise
+  /// swallow the specific ones: `engine`, `prop` and `avionics` reserve keys all
+  /// contain "reserve". Moving the `OVERHAUL_RESERVE` arm above any of them
+  /// makes this fail, which is the only thing holding that order in place.
+  #[test]
+  fn a_reserve_that_names_its_part_keeps_its_own_code() {
+    let record = normalize_record(
+      "CESSNA",
+      "172S",
+      json!({"ownership_costs": {
+        "engine_overhaul_fund": "$40.00",
+        "prop_reserve": "$5.00",
+        "avionics_reserve": "$7.00",
+        "overhaul_reserves": "$31.42"
+      }}),
+    );
+
+    let coded: Vec<(&str, Option<&str>)> = record
+      .operating_costs
+      .items
+      .iter()
+      .map(|item| (item.source_key.as_str(), item.mapped_code.as_deref()))
+      .collect();
+
+    assert!(coded.contains(&("engine_overhaul_fund", Some("ENGINE_RESERVE"))), "{coded:?}");
+    assert!(coded.contains(&("prop_reserve", Some("PROP_RESERVE"))), "{coded:?}");
+    assert!(coded.contains(&("avionics_reserve", Some("AVIONICS_RESERVE"))), "{coded:?}");
+    assert!(coded.contains(&("overhaul_reserves", Some("OVERHAUL_RESERVE"))), "{coded:?}");
+  }
+
+  /// Both shapes are taken from the real corpus. `pilot_salary_taxes_and_benefits`
+  /// maps to `PILOT_SALARY` and carries the literal string `"Pilot training"`
+  /// in 106 of its 173 occurrences -- a label the scraper put in the value slot,
+  /// next to the sibling `pilot_training` key it belongs to. There is no number
+  /// to recover, so the flag's job is to say the value was the problem.
+  /// `mystery_surcharge` stands for the other cause: a key the vocabulary has no
+  /// code for, whose value is fine.
+  #[test]
+  fn an_unmapped_cost_key_and_an_unparseable_cost_value_are_flagged_apart() {
+    let record = normalize_record(
+      "AERO VODOCHODY",
+      "L-39 Albatross",
+      json!({"ownership_costs": {
+        "pilot_salary_taxes_and_benefits": "Pilot training",
+        "mystery_surcharge": "$250"
+      }}),
+    );
+
+    let flagged: Vec<(&str, &str)> =
+      record.issues.iter().map(|issue| (issue.field_path.as_str(), issue.code.as_str())).collect();
+
+    assert!(
+      flagged
+        .contains(&("ownership_costs.pilot_salary_taxes_and_benefits", "UNPARSEABLE_COST_VALUE")),
+      "a mapped key with a non-numeric value is a value problem: {flagged:?}"
+    );
+    assert!(
+      flagged.contains(&("ownership_costs.mystery_surcharge", "UNMAPPED_COST_KEY")),
+      "a key with no cost item type is a vocabulary problem: {flagged:?}"
+    );
+  }
+
+  /// Employment and training are separate costs and `PlanePHD` states both on the
+  /// same aircraft. While they shared one code the second one written was dropped
+  /// by the line-item writer's `ON CONFLICT ... DO NOTHING`, with no flag: the
+  /// import looked clean and a figure was simply gone. Mapping them apart is what
+  /// makes the two rows survive, so this asserts the codes differ rather than
+  /// asserting either one in isolation.
+  #[test]
+  fn pilot_employment_and_pilot_training_do_not_share_a_cost_code() {
+    let record = normalize_record(
+      "BOMBARDIER",
+      "CHALLENGER 350",
+      json!({"ownership_costs": {
+        "pilot_salary_taxes_and_benefits": "$250,425.00",
+        "pilot_training": "$53,993.24"
+      }}),
+    );
+
+    let coded: Vec<(&str, Option<&str>)> = record
+      .operating_costs
+      .items
+      .iter()
+      .map(|item| (item.source_key.as_str(), item.mapped_code.as_deref()))
+      .collect();
+
+    assert!(
+      coded.contains(&("pilot_salary_taxes_and_benefits", Some("PILOT_SALARY"))),
+      "{coded:?}"
+    );
+    assert!(coded.contains(&("pilot_training", Some("PILOT_TRAINING"))), "{coded:?}");
   }
 
   /// The real `PlanePHD` file carries `manufacturer_name` and `aircraft_name` in
@@ -1386,12 +1518,17 @@ mod tests {
       normalize_record("CESSNA", "172S", json!({"ownership_costs": {"pilot_salary": "$12,000"}}));
 
     let item = &record.operating_costs.items[0];
-    assert_eq!(item.mapped_code.as_deref(), Some("PILOT_TRAINING"));
+    assert_eq!(item.mapped_code.as_deref(), Some("PILOT_SALARY"));
     assert_eq!(
       item.numeric_value.as_deref(),
       Some("12000"),
       "a mapped cost must carry its amount into the canonical line item"
     );
-    assert!(!record.issues.iter().any(|issue| issue.code == "UNMAPPED_OR_UNPARSEABLE_COST"));
+    assert!(
+      !record
+        .issues
+        .iter()
+        .any(|issue| issue.code.ends_with("_COST_KEY") || issue.code.ends_with("_COST_VALUE"))
+    );
   }
 }

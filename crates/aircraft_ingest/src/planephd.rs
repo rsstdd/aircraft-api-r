@@ -33,7 +33,7 @@ pub struct PlanePhdAdapter;
 
 impl PlanePhdAdapter {
   pub const PARSER_NAME: &'static str = "planephd-json";
-  pub const PARSER_VERSION: &'static str = "1.6.0";
+  pub const PARSER_VERSION: &'static str = "1.7.0";
 }
 
 impl SourceAdapter for PlanePhdAdapter {

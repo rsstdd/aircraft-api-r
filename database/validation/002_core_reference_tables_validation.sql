@@ -40,7 +40,7 @@ BEGIN
             ('hardpoint_position_types', 7),
             ('stores_types', 12),
             ('currencies', 6),
-            ('cost_item_types', 21),
+            ('cost_item_types', 23),
             ('aircraft_condition_grades', 5),
             ('ad_types', 5),
             ('sb_compliance_statuses', 6),
