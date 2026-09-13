@@ -407,7 +407,7 @@ aircraft-ingest validate --source planephd --input FILE_OR_DASH [--format human|
 aircraft-ingest import --source planephd --input FILE_OR_DASH [--format human|json] [--report PATH]
 aircraft-ingest status [--run-id ID | --sha256 HASH] [--limit N] [--format human|json]
 aircraft-ingest curate list [--entity-id ID] [--field FIELD] [--limit N] [--format human|json]
-aircraft-ingest curate accept --assertion-id ID [--format human|json]
+aircraft-ingest curate accept --assertion-id ID [--defer-refresh] [--format human|json]
 aircraft-ingest curate reject --assertion-id ID [--format human|json]
 aircraft-ingest curate refresh [--format human|json]
 ```
