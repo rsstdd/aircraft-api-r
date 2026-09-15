@@ -53,7 +53,9 @@ aircraft_auth   ──▶  standalone; depends only on aircraft_ref domains and 
 
 **Purpose.** Stores every extensible enumeration used across the schema as a proper lookup table rather than a `TEXT CHECK` constraint. Adding a new value requires only an `INSERT` into the relevant table, not a schema migration. Also houses the five cross-cutting domains, the `to_canonical()` unit-conversion function, and the three utility functions (`set_updated_at`, `slugify`, `normalize_lookup_code`).
 
-**Key design choices.** Lookup tables follow a common structural pattern: a `code aircraft_ref.lookup_code PRIMARY KEY` column (uppercase snake-case, e.g. `RETRACTABLE_TRICYCLE`), a human-readable `label TEXT NOT NULL`, an optional `description`, and `sort_order / is_active` flags. The `code` column is always the FK target, never the surrogate integer `id`, so FK values are self-documenting in query results.
+**Key design choices.** Lookup tables follow a common structural pattern: a `code aircraft_ref.lookup_code PRIMARY KEY` column (uppercase snake-case, e.g. `RETRACTABLE_TRICYCLE`), a human-readable `label TEXT NOT NULL`, a `description`, and `sort_order / is_active` flags. The `code` column is always the FK target, never the surrogate integer `id`, so FK values are self-documenting in query results.
+
+`description` is `TEXT` and nullable in the DDL, but seeded canonical rows must carry one: `validation/002_core_reference_tables_validation.sql` requires it non-blank for all 33 lookup tables that have the column, and rejects text uniformly derived from the row's own `label`. `database/README.md` § *Canonical seed audit policy* owns that content rule. The nullability is for rows a curator adds later, not a licence to leave the canonical vocabulary undescribed.
 
 Four of the 36 tables deviate, and migration `002` rather than this paragraph is
 the authority on each. `unit_categories` has no `is_active`. `measurement_units`
@@ -109,7 +111,7 @@ name-ordered page would be a change to the port before it is a change to the
 statement. The runtime role's access to `aircraft_core` and `aircraft_org` is the
 column-level `SELECT` in `database/roles/app_grants.sql` -- no write, and no
 column a statement does not read -- and
-`the_runtime_role_reads_families_and_writes_none` is the only test that connects
+`the_runtime_role_reads_the_catalog_and_writes_none` is the only test that connects
 as that role and can therefore fail for `42501`.
 
 `aircraft_domain::reference::Catalog` is the allowlist behind
@@ -312,7 +314,7 @@ unreachable over HTTP; those three tests are what say so.
 | `crew_count` | `smallint` | nullable | &mdash; | &mdash; |  |
 | `landing_gear_type_code` | `aircraft_ref.lookup_code` | nullable | &mdash; | aircraft_ref.landing_gear_types(code) ON DELETE NO ACTION | Denormalized for faceted search |
 | `propulsion_category_code` | `aircraft_ref.lookup_code` | nullable | &mdash; | aircraft_ref.propulsion_categories(code) ON DELETE NO ACTION | Denormalized for faceted search |
-| `engine_count` | `smallint` | nullable | &mdash; | &mdash; | Denormalized from the primary `aircraft_power.variant_powerplants` row. Rust ingestion writes both projections; migration 023 backfills earlier Rust imports. |
+| `engine_count` | `smallint` | nullable | &mdash; | &mdash; | Denormalized from the primary `aircraft_power.variant_powerplants` row, which is the authority. Rust ingestion writes both; migration 023 backfills earlier Rust imports and migration 028 repaired thirteen rows where the two had drifted apart. Must equal the powerplant's count, NULL included. |
 | `is_in_production` | `boolean` | nullable | &mdash; | &mdash; |  |
 | `ingest_key` | `text` | nullable | &mdash; | &mdash; | Opaque ingestion deduplication key. The legacy SQL loader writes concatenated raw names, e.g. "AERONCA::11AC Chief"; the Rust adapter writes SHA-256 over "planephd\0<manufacturer>\0<aircraft>". Prevents duplicate variant rows. Not a semantic business key; superseded by aircraft_prov.source_documents once Phase 14 is populated. |
 | `source_path` | `text` | nullable | &mdash; | &mdash; | URI path from the originating source system used during Phase 17 ingestion. Canonical source URL lives in aircraft_prov.source_documents.source_url. |
@@ -543,7 +545,7 @@ M:N junction — multiple engine options per variant.
 | `id` | `bigint` | NOT NULL | identity | PK |  |
 | `variant_id` | `bigint` | NOT NULL | &mdash; | aircraft_core.variants(id) ON DELETE CASCADE; UNIQUE (composite) |  |
 | `engine_variant_id` | `bigint` | NOT NULL | &mdash; | aircraft_power.engine_variants(id) ON DELETE RESTRICT; UNIQUE (composite) |  |
-| `engine_count` | `smallint` | NOT NULL | `1` | &mdash; | Number of installed engines of this engine_variant type. For a twin with identical engines: engine_count = 2. For a tandem helicopter with different power sections: two rows, each engine_count = 1. |
+| `engine_count` | `smallint` | nullable | &mdash; | &mdash; | Number of installed engines of this engine_variant type, as the source states it. For a twin with identical engines: 2. For a tandem helicopter with different power sections: two rows, each 1. NULL means the source does not say, which migration 028 made representable — it was NOT NULL DEFAULT 1, so ingestion had to invent a count and "one engine" could not be told from "nobody counted". `aircraft_core.variants.engine_count` projects this column and must agree with it, including when both are NULL; `validation/023_backfill_ingestion_identity_projections_validation.sql` enforces that. |
 | `is_standard` | `boolean` | NOT NULL | `false` | &mdash; | Factory standard fitment |
 | `is_optional` | `boolean` | NOT NULL | `false` | &mdash; | Factory option (non-exclusive with `is_standard` for conversions) |
 | `is_primary` | `boolean` | NOT NULL | `false` | &mdash; | The engine used for performance comparisons; partial UNIQUE ensures one per variant |
@@ -829,7 +831,7 @@ items.
 | `source_type_code` | `aircraft_ref.lookup_code` | nullable | &mdash; | aircraft_ref.source_types(code) ON DELETE NO ACTION | e.g. `OFFICIAL_TC`, `MARKETPLACE_DB`, `MANUFACTURER_SPEC` |
 | `reliability_grade_code` | `aircraft_ref.lookup_code` | nullable | &mdash; | aircraft_ref.source_reliability_grades(code) ON DELETE NO ACTION | e.g. `AUTHORITATIVE`, `VERIFIED`, `UNVERIFIED` |
 | `base_url` | `text` | nullable | &mdash; | &mdash; |  |
-| `license_notes` | `text` | nullable | &mdash; | &mdash; |  |
+| `license_notes` | `text` | nullable | &mdash; | &mdash; | What the source publishes about how its data may be used, recorded verbatim. Migration 026 fills it for `planephd` from that site's terms and robots.txt; `validation/026_source_license_terms_validation.sql` fails the install if it goes missing. Ingestion never writes this column, so a source row created by `promote_document` starts NULL. |
 | `default_confidence` | `aircraft_ref.confidence_score` | nullable | &mdash; | &mdash; | Baseline confidence for assertions from this source (0.00–1.00). Derived from reliability_grade_code.numeric_score / 5 at creation. Curators may override per-assertion in source_assertions.confidence. |
 | `refresh_interval_days` | `smallint` | nullable | &mdash; | &mdash; |  |
 | `is_active` | `boolean` | NOT NULL | `true` | &mdash; |  |

@@ -82,6 +82,9 @@ pub const SCHEMA_STEPS: &[&str] = &[
   include_str!("../../../database/migrations/024_promote_existing_manufacturer_links.sql"),
   include_str!("../../../database/migrations/025_authentication_schema.sql"),
   include_str!("../../../database/seeds/004_authentication_seed_data.sql"),
+  include_str!("../../../database/migrations/026_source_license_terms.sql"),
+  include_str!("../../../database/migrations/027_ownership_cost_summary_fuel_code.sql"),
+  include_str!("../../../database/migrations/028_variant_powerplant_engine_count_optional.sql"),
   include_str!("../../../database/validation/017_rust_ingestion_adapter_validation.sql"),
   include_str!("../../../database/validation/018_staged_aircraft_variant_fk_validation.sql"),
   include_str!("../../../database/validation/019_weight_metrics_curation_gate_validation.sql"),
@@ -97,6 +100,11 @@ pub const SCHEMA_STEPS: &[&str] = &[
     "../../../database/validation/024_promote_existing_manufacturer_links_validation.sql"
   ),
   include_str!("../../../database/validation/025_authentication_schema_validation.sql"),
+  include_str!("../../../database/validation/026_source_license_terms_validation.sql"),
+  include_str!("../../../database/validation/027_ownership_cost_summary_fuel_code_validation.sql"),
+  include_str!(
+    "../../../database/validation/028_variant_powerplant_engine_count_optional_validation.sql"
+  ),
 ];
 
 /// Filenames of the migrations covered by [`SCHEMA_STEPS`], in apply order.
@@ -129,6 +137,9 @@ pub const COVERED_MIGRATIONS: &[&str] = &[
   "023_backfill_ingestion_identity_projections.sql",
   "024_promote_existing_manufacturer_links.sql",
   "025_authentication_schema.sql",
+  "026_source_license_terms.sql",
+  "027_ownership_cost_summary_fuel_code.sql",
+  "028_variant_powerplant_engine_count_optional.sql",
 ];
 
 /// A disposable `PostgreSQL` container, force-removed when the guard drops.

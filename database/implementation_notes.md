@@ -31,7 +31,7 @@ MIGRATION_DATABASE_URL='postgresql://migration-role@db.example/aircraft' \
   just db-prod-bootstrap
 ```
 
-`just db-seed` and `just db-prod-seed` reapply only the three canonical seed
+`just db-seed` and `just db-prod-seed` reapply only the four canonical seed
 files. They do not execute transient ingestion or validation scripts.
 
 The Rust ingestion adapter is the primary operational path. It captures a local
@@ -70,6 +70,9 @@ deployment.
 | Phase 14 before Phase 17 promotion | Promotion writes provenance documents and assertions |
 | Phase 16 before ingestion refresh | The search materialized views must exist before refresh |
 | Phase 25 before `004_authentication_seed_data.sql` | The scope seed fills a table migration 025 creates |
+| Phase 14 before Phase 26 | The licence update targets the `aircraft_prov.sources` row migration 014 seeds, and raises if it finds none |
+| Phase 16 before Phase 27 | The read-model replacement drops and recreates the two views migration 016 creates, and refreshes them in its own transaction |
+| Phase 23 before Phase 28 | The engine-count repair reads the variant projection migration 023 backfills, and its validation companion is strengthened in the same change |
 
 Do not run the migration glob directly; its lexical order cannot express the
 required Phase 2 seed boundary.
@@ -161,18 +164,28 @@ Phase reference: Phase 14.
 
 ### 2.7 Ownership-Cost Read Model
 
-**Current state.** Migration 016 identifies fuel with
-`FUEL_COST_PER_HOUR`, while the Phase 2 seed and Phase 17 mapper use the
-canonical code `FUEL`. As a result, `hourly_fuel_cost_usd` is NULL and fuel is
-included in `hourly_maintenance_reserve_usd`. The computed annual-total
-expression also uses aggregate-level `COALESCE`, which can omit hourly-only
-variable items when another variable item supplies `amount_annual`.
+**Fixed, in part.** Migration 016 identified fuel with `FUEL_COST_PER_HOUR`
+while the Phase 2 seed and the Phase 17 mapper use the canonical code `FUEL`, so
+`hourly_fuel_cost_usd` was structurally NULL and every fuel figure was reported
+inside `hourly_maintenance_reserve_usd`. Migration 027 replaces both views with
+definitions naming `FUEL`, and
+`validation/027_ownership_cost_summary_fuel_code_validation.sql` asserts the
+view's definition references no cost code absent from
+`aircraft_ref.cost_item_types` — a check on the definition rather than on rows,
+because an empty database cannot tell the two states apart. On the reference
+import, `hourly_fuel_cost_usd` went from 0 of 737 rows populated to 630, and
+`total_hourly_variable_usd` now equals fuel plus reserve for all 631 rows that
+carry both.
 
-**Required fix.** Change the read model to use the seeded `FUEL` code and
-compute the annual contribution per line item before summing. Add behavioral
-validation containing fuel plus a mix of annual and hourly variable items.
-Until that SQL fix is deployed and validated, treat the affected read-model
-columns as unreliable.
+**Still open.** The computed annual-total expression uses aggregate-level
+`COALESCE`, so a variable item supplying `amount_annual` suppresses the hourly
+branch for every other variable item on that snapshot. Ingestion cannot produce
+that state — it writes `amount_annual` only for `is_fixed` codes — so the defect
+is latent for imported data and reachable by hand-entered rows. The fix is to
+compute each line item's annual contribution before summing, with validation
+covering fuel alongside a mix of annual and hourly variable items. Treat
+`computed_total_annual_usd` as unreliable for hand-entered cost snapshots until
+then.
 
 
 ---

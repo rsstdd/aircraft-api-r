@@ -13,7 +13,7 @@
 
 use aircraft_app::curation::{
   CurationError, CurationOutcome, CurationStore, Decision, PendingAssertion, PendingFilter,
-  RefreshOutcome,
+  RefreshOutcome, RefreshPolicy,
 };
 use aircraft_app::ingestion::PersistenceError;
 use async_trait::async_trait;
@@ -162,10 +162,11 @@ impl CurationStore for SqlxCurationStore {
       .map_err(database_error)
   }
 
-  async fn decide(
+  async fn decide_with(
     &self,
     assertion_id: i64,
     decision: Decision,
+    refresh: RefreshPolicy,
   ) -> Result<CurationOutcome, CurationError> {
     let mut transaction = self.pool.begin().await.map_err(database_error)?;
 
@@ -262,7 +263,14 @@ impl CurationStore for SqlxCurationStore {
     }
     transaction.commit().await.map_err(database_error)?;
 
-    if refreshed {
+    // A deferred refresh leaves the enqueued request standing rather than
+    // running the rebuild, so a bulk pass pays for one rebuild at the end
+    // instead of one per decision. It is reported the same way a failed refresh
+    // is, because the read model is in the same state either way: committed
+    // decision, stale view, outstanding request.
+    if refreshed && refresh == RefreshPolicy::Deferred {
+      outcome.read_model_refresh_pending = true;
+    } else if refreshed {
       match refresh_and_settle(&self.pool).await {
         Ok(_) => outcome.read_model_refreshed = true,
         Err(error) => {

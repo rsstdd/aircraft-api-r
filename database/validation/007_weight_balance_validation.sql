@@ -22,8 +22,11 @@ SELECT
     round(aircraft_ref.to_canonical(500,  'KG'),  4) AS kg_to_lbs,        -- 1102.3113
     round(aircraft_ref.to_canonical(100,  'US_GAL'),4) AS gal_passthrough,-- 100.0
     round(aircraft_ref.to_canonical(100,  'LITERS'),4) AS l_to_gal,       -- 26.4172
-    -- PPH → GPH (approximate avgas conversion, ~6.02 lbs/gal)
-    round(aircraft_ref.to_canonical(60.2, 'PPH'),  4) AS pph_to_gph;      -- ~10.0
+    -- PPH is deliberately unconvertible: mass-per-hour becomes volume-per-hour
+    -- only through a fuel density, so seeds/001_reference_units.sql leaves its
+    -- canonical pair NULL and to_canonical returns the input unchanged. Asserted
+    -- as identity so this file states the policy rather than a stale factor.
+    round(aircraft_ref.to_canonical(60.2, 'PPH'),  4) AS pph_unconverted;  -- 60.2
 
 -- -----------------------------------------------------------------------------
 -- 3. WEIGHT METRIC TYPES COVERAGE

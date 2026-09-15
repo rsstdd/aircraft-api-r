@@ -4,7 +4,7 @@ AIRCRAFT_VARIANT|piper-pa-46-malibu-v1|||images[0].dimensions|INVALID_IMAGE_DIME
 AIRCRAFT_VARIANT|piper-pa-46-malibu-v1|||images[1]|IMAGE_NOT_OBJECT|image metadata must be an object|3
 AIRCRAFT_VARIANT|piper-pa-46-malibu-v1|||images[2].href|IMAGE_HREF_MISSING|image metadata has no usable href|3
 AIRCRAFT_VARIANT|piper-pa-46-malibu-v1|||in_production|INVALID_BOOLEAN_FIELD|field is not a boolean|3
-AIRCRAFT_VARIANT|piper-pa-46-malibu-v1|||ownership_costs.mystery_surcharge|UNMAPPED_OR_UNPARSEABLE_COST|cost is preserved for curation and excluded from canonical totals|3
+AIRCRAFT_VARIANT|piper-pa-46-malibu-v1|||ownership_costs.mystery_surcharge|UNMAPPED_COST_KEY|no cost item type matches this key; the cost is preserved for curation and excluded from canonical totals|3
 AIRCRAFT_VARIANT|piper-pa-46-malibu-v1|||page_url|INVALID_URL|URL is invalid or uses an unsupported scheme|3
 AIRCRAFT_VARIANT|piper-pa-46-malibu-v1|||papi_price_estimate|INVALID_NUMERIC_FIELD|field has no valid numeric prefix|3
 AIRCRAFT_VARIANT|piper-pa-46-malibu-v1|||performance.best_cruise_speed|UNKNOWN_MEASUREMENT_UNIT|unit is not mapped and will not be canonicalized|3

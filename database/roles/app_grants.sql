@@ -184,10 +184,36 @@ GRANT SELECT (code, label, description, sort_order, is_active)
 GRANT USAGE ON SCHEMA aircraft_core TO :"app_role";
 GRANT USAGE ON SCHEMA aircraft_org TO :"app_role";
 
-GRANT SELECT (slug, name, common_name, manufacturer_org_id, country_of_origin_code,
+-- id is granted because a model statement joins models.family_id back to it for
+-- the family's public slug.
+GRANT SELECT (id, slug, name, common_name, manufacturer_org_id, country_of_origin_code,
               first_flight_year, name_aliases, description)
     ON aircraft_core.families TO :"app_role";
 -- id is the join key, slug the manufacturer's public identifier; nothing else
 -- on this table is read by a family statement.
 GRANT SELECT (id, slug)
     ON aircraft_org.organizations TO :"app_role";
+
+-- Models and variants, for the readers issues #40 and #42 add. The projections
+-- are aircraft_app::catalog's ModelSummary/ModelDetail and
+-- VariantSummary/VariantDetail, which name this file in turn; granting ahead of
+-- those statements is deliberate, because every test connects as the container
+-- owner and cannot see a missing grant -- the route would pass its whole suite
+-- and answer 503 in production, as happened for aircraft_ref in #145 and for
+-- families in #38.
+--
+-- id is granted on both: variants join models.id, and #42 requires the variant id
+-- as the sort tiebreaker, which PostgreSQL checks as an ORDER BY column
+-- privilege. The generated tsvectors, extra_attributes, the row timestamps, and
+-- the ingest_key and source_path staging columns are not published and stay
+-- ungranted.
+GRANT SELECT (id, slug, name, display_name, family_id, series, generation,
+              first_flight_year, certification_year, name_aliases, description)
+    ON aircraft_core.models TO :"app_role";
+
+GRANT SELECT (id, slug, name, popular_name, model_id, variant_type_code,
+              service_status_code, country_of_origin_code, first_flight_year,
+              certification_year, production_start_year, production_end_year,
+              passenger_capacity, crew_count, engine_count, landing_gear_type_code,
+              propulsion_category_code, is_in_production, description)
+    ON aircraft_core.variants TO :"app_role";
