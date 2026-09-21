@@ -224,32 +224,84 @@ pub async fn start_postgres(
   let database_url = format!("postgres://postgres:postgres@127.0.0.1:{port}/postgres");
   let container = DockerPostgres { container_id, database_url: database_url.clone() };
 
-  // The budget covers container start plus initdb, not the image pull, which
-  // `docker run` has already blocked on. A ready container needs a second or
-  // two; the cost that matters is contention, because the suite runs one
-  // container per test and nextest fans out across every core. Thirty seconds
-  // was reached twice on a cold eight-core run, so the ceiling sat inside the
-  // range of ordinary load rather than above it. Two minutes stays a bound --
-  // nothing else ends the loop below, and nextest is configured with no
-  // terminate-after, so an unbounded wait would hang the run rather than fail
-  // it -- while leaving room for a machine under real load.
-  let pool = tokio::time::timeout(Duration::from_secs(120), async {
+  // Readiness is probed inside the container, not through the pool. The host
+  // port is bound by docker-proxy about 8 ms after `docker run` returns, more
+  // than a second before postgres accepts a connection, so a TCP connect
+  // succeeds and the startup handshake then stalls for the full
+  // `acquire_timeout` -- thirty seconds in thirty of the suites. Four such
+  // attempts is the whole two-minute budget, which is how a suite that starts
+  // ninety-six containers on eight cores spent it on stalled handshakes rather
+  // than on postgres, and failed a different test each run. `pg_isready`
+  // answers in milliseconds and cannot stall, so the budget below is spent on
+  // genuine startup time and nothing else.
+  //
+  // Two minutes stays a bound: nothing else ends the loop, and nextest is
+  // configured with no terminate-after, so an unbounded wait would hang the
+  // run rather than fail it.
+  //
+  // The probe goes over TCP, not the socket. The image's entrypoint runs a
+  // temporary socket-only postgres for its init scripts, stops it, and only
+  // then starts the real one that listens on 5432; `pg_isready` on the socket
+  // says yes to the temporary instance, and a connection made on that answer
+  // reaches a server mid-restart and reads a stray 0x00 where the SSL reply
+  // should be. Asking over TCP can only succeed against the final instance.
+  tokio::time::timeout(Duration::from_secs(120), async {
     loop {
-      match PgPoolOptions::new()
-        .max_connections(max_connections)
-        .acquire_timeout(acquire_timeout)
-        .connect(&database_url)
+      let ready = tokio::process::Command::new("docker")
+        .args([
+          "exec",
+          &container.container_id,
+          "pg_isready",
+          "-q",
+          "-h",
+          "127.0.0.1",
+          "-p",
+          "5432",
+          "-U",
+          "postgres",
+        ])
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .status()
         .await
-      {
-        Ok(pool) => break pool,
-        Err(_) => tokio::time::sleep(Duration::from_millis(250)).await,
+        .is_ok_and(|status| status.success());
+      if ready {
+        break;
       }
+      tokio::time::sleep(Duration::from_millis(100)).await;
     }
   })
   .await
   .map_err(|_| std::io::Error::other("PostgreSQL container did not become ready"))?;
 
-  Ok((container, pool))
+  // A short retry, each attempt bounded well under the caller's
+  // acquire_timeout, absorbs the handshake that the readiness probe itself
+  // cannot see. This is the only place a stall can still cost time, and it is
+  // capped at a few seconds rather than at the budget above.
+  let mut last_error = None;
+  for _ in 0..10 {
+    match tokio::time::timeout(
+      Duration::from_secs(2),
+      PgPoolOptions::new()
+        .max_connections(max_connections)
+        .acquire_timeout(acquire_timeout)
+        .connect(&database_url),
+    )
+    .await
+    {
+      Ok(Ok(pool)) => return Ok((container, pool)),
+      Ok(Err(error)) => last_error = Some(error.to_string()),
+      Err(_) => last_error = Some(String::from("connect timed out")),
+    }
+    tokio::time::sleep(Duration::from_millis(250)).await;
+  }
+  Err(
+    std::io::Error::other(format!(
+      "PostgreSQL container answered pg_isready but refused a connection: {}",
+      last_error.unwrap_or_default()
+    ))
+    .into(),
+  )
 }
 
 /// Applies [`SCHEMA_STEPS`] in order, reporting which step failed.
