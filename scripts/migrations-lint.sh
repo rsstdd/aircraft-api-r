@@ -22,7 +22,8 @@ squawk=(npm exec --yes --package squawk-cli@2.51.0 -- squawk)
   --exclude=adding-foreign-key-constraint,constraint-missing-not-valid,require-concurrent-index-creation,require-timeout-settings \
   database/migrations/018_staged_aircraft_variant_fk.sql
 
-# 027 replaces two materialized views and must recreate their 23 indexes. Every
+# 027 and 031 each replace two materialized views and must recreate their 23
+# indexes. Every
 # finding is require-concurrent-index-creation, and neither half of that advice
 # can apply: CREATE INDEX CONCURRENTLY cannot run inside a transaction block,
 # and `cargo xtask migrations` requires every migration to be transactional --
@@ -32,7 +33,8 @@ squawk=(npm exec --yes --package squawk-cli@2.51.0 -- squawk)
 # builds an index on a real table is still caught.
 "${squawk[@]}" \
   --exclude=require-concurrent-index-creation \
-  database/migrations/027_ownership_cost_summary_fuel_code.sql
+  database/migrations/027_ownership_cost_summary_fuel_code.sql \
+  database/migrations/031_ownership_cost_annual_contribution.sql
 
 # 028 drops a NOT NULL on purpose: while the column could not be NULL,
 # ingestion had to invent an engine count for every source that states none, and
@@ -49,7 +51,7 @@ current_migrations=()
 for migration in database/migrations/*.sql; do
   filename="${migration##*/}"
   version="${filename%%_*}"
-  if ((10#$version >= 19)) && [[ "$filename" != 027_* && "$filename" != 028_* ]]; then
+  if ((10#$version >= 19)) && [[ "$filename" != 027_* && "$filename" != 028_* && "$filename" != 031_* ]]; then
     current_migrations+=("$migration")
   fi
 done
