@@ -151,44 +151,68 @@ forbids inventing one, and nothing in the source states them.
 
 | Column | Populated | Why |
 |---|---|---|
-| `variants.service_status_code` | 1,005/1,005 | derived from the production range |
-| `variants.production_start_year` | 1,005/1,005 | parsed from the aircraft name |
-| `variants.is_in_production` | 1,005/1,005 | `(1997 - present)` versus a closed range |
-| `variants.propulsion_category_code` | 855/1,005 | stated in prose; turbofan stays unstated |
-| `variants.landing_gear_type_code` | 832/1,005 | fixed or retractable only; no tricycle/tailwheel wording |
-| `variants.variant_type_code` | 1,005/1,005, one code | every row is `PRODUCTION_STANDARD`; no source distinguishes a second |
-| `variants.country_of_origin_code` | 0/1,005 | PlanePHD states no country |
-| `families.country_of_origin_code` | 0/75 | the same |
-| `variants.first_flight_year` | 0/1,005 | PlanePHD states no first-flight date |
-| `models.first_flight_year`, `models.certification_year` | 0/1,005 | the same |
-| `aircraft_core.variant_manufacturers.production_country_code` | 0/1,005 | no per-variant manufacturing country in the source |
+| `variants.service_status_code` | 1,079/1,079 | derived from the production range |
+| `variants.production_start_year` | 1,079/1,079 | parsed from the aircraft name |
+| `variants.is_in_production` | 1,079/1,079 | `(1997 - present)` versus a closed range |
+| `variants.propulsion_category_code` | 855/1,079 | stated in prose; turbofan stays unstated |
+| `variants.landing_gear_type_code` | 832/1,079 | fixed or retractable only; no tricycle/tailwheel wording |
+| `variants.variant_type_code` | 1,079/1,079, one code | every row is `PRODUCTION_STANDARD`; no source distinguishes a second |
+| `variants.country_of_origin_code` | 688/1,079 | filled by migration 029 from Wikidata, for the 13 manufacturers whose aircraft agree |
+| `families.country_of_origin_code` | 13/84 | the same 13 |
+| `models.first_flight_year` | 30/1,075 | migration 030, for the models whose designation matches a Wikidata aircraft exactly |
+| `variants.first_flight_year`, `models.certification_year` | 0/1,079 | PlanePHD states neither, and no exact Wikidata match exists for a variant |
+| `aircraft_core.variant_manufacturers.production_country_code` | 0/1,079 | no per-variant manufacturing country in the source |
 
-Country of origin and first flight are obtainable, and were verified against live
-Wikidata (CC0): `P495` → `P298` gives an ISO alpha-3, `P606` gives a first-flight
-year. Matching is the work — Wikidata models notable types where this catalog
-models year-range variants — so the usable join is at the manufacturer, assigning
-the country its aircraft agree on when that agreement covers at least 90% of at
-least 10 Wikidata aircraft. Ten manufacturers qualify, covering 537 of the 1,005
-variants. The threshold is load-bearing: relaxing it to 80%/5 admits
-`Learjet → CAN`, which reflects Bombardier's ownership rather than where the
-aircraft were designed.
+**Country of origin is filled; first flight is not.** Both come from Wikidata
+(CC0), where `P495` → `P298` gives an ISO alpha-3 and `P606` a first-flight year.
+The difference between them is matching. Wikidata models notable types where this
+catalog models year-range variants, so aircraft-to-aircraft matching finds almost
+nothing, and the join that works is at the manufacturer: take the country a
+manufacturer's Wikidata aircraft agree on, where that agreement covers at least
+90% of at least 10 of them. That is a manufacturer-level aggregate and migration
+029 records it as one — thirteen manufacturers qualify, covering 688 variants,
+each with an accepted `aircraft_prov.source_assertions` row whose notes say the
+value was derived rather than read off an aircraft.
 
-That work belongs behind a Wikidata source of its own, with its own
-`aircraft_prov.sources` row and its own provenance, not inside the PlanePHD
-parser — a second source's facts must not reach the catalog under the first
-source's identity. It is planned, not built.
+The threshold is the whole control. At 80% of 5 the rule admits `Learjet → CAN`
+on 5 of 6, which is Bombardier's ownership rather than where the aircraft were
+designed; at 90/10 Learjet is refused, and so are Dassault at 85% and Bombardier
+at 88%. A manufacturer resolved to the wrong Wikidata entity returns no aircraft
+at all and is refused the same way, which is why the rule needs no separate
+identity check.
+
+First flight admits no such aggregate, because it is a property of one specific
+type. The only honest join is a match on the designation itself, and it must be
+exact: Wikidata's `Cessna 172 Skyhawk` first flew in 1955 and this catalog's
+`172S Skyhawk SP` in 1998, so a prefix or fuzzy match would be wrong by
+forty-three years. Migration 030 fills the 30 models that match exactly, out of
+the 688 under the manufacturers 029 qualified, and leaves the rest NULL.
+
+A second rule decides which of those matches are safe: a first flight may not
+postdate the production start the catalog records. It is not decoration — it
+rejected the 737-100 and 737-600, whose PlanePHD ranges begin in 1965 and 1995
+against first flights of 1967 and 1998. Whichever side is wrong there, writing
+the pair would publish a contradiction, and
+`validation/030_wikidata_model_first_flight_validation.sql` keeps that rule over
+any first-flight year arriving later by any route.
+
+The known limitation of the manufacturer aggregate is licence-built airframes:
+Reims-built Cessnas would carry `USA` here. This catalog holds no Reims
+designation — `F150`, `F172` and `FR172` return no rows — so none is currently
+misstated, and migration 029 leaves a non-NULL variant value alone so a curator
+correcting one is not overwritten.
 
 Landing-gear class beyond fixed-versus-retractable and variant type are
 obtainable from **neither** source: `Q15896132`'s complete claim set carries no
 landing-gear and no variant-class property. Their emptiness is the correct state.
 
-Two consequences for the catalog read routes. The `country_of_origin` filter on
-families and variants binds correctly and returns nothing, because no row carries
-a code — a data gap, not a query defect, and
+One consequence remains for the catalog read routes. The `variant_type` filter
+matches every row or none, because every variant is `PRODUCTION_STANDARD` and no
+source distinguishes a second.
 `every_catalog_filter_vocabulary_offers_more_than_one_code` in
-`crates/aircraft_testsupport/tests/seed_data.rs` proves the vocabulary behind it
-is seeded and able to discriminate. The `variant_type` filter matches every row
-or none until a second code has a source.
+`crates/aircraft_testsupport/tests/seed_data.rs` proves the vocabulary behind
+each filter is seeded and able to discriminate; what that test cannot prove is
+that the rows use more than one of the codes.
 
 ## Local workflow
 

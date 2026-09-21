@@ -112,6 +112,18 @@
     {
       "file": "028_variant_powerplant_engine_count_optional.sql",
       "sha256": "0331c7deda86e2d17ed75b429c2e770e8fe6a65900543462ee664cac1ef5d061"
+    },
+    {
+      "file": "029_wikidata_country_of_origin.sql",
+      "sha256": "8da1bb609e6d499027c3c9a750ef967aeb9157fbbd4306658049fa356ad24a9f"
+    },
+    {
+      "file": "030_wikidata_model_first_flight.sql",
+      "sha256": "888f0b6e8835fcf9507f17a1fa5dc3be272a098055499bfcbb789583b27a557a"
+    },
+    {
+      "file": "031_ownership_cost_annual_contribution.sql",
+      "sha256": "5d0969514914a35861e5e29c4517ac051da3bf28d687542af62c34464740bd1a"
     }
   ]
 }

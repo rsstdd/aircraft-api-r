@@ -73,6 +73,9 @@ deployment.
 | Phase 14 before Phase 26 | The licence update targets the `aircraft_prov.sources` row migration 014 seeds, and raises if it finds none |
 | Phase 16 before Phase 27 | The read-model replacement drops and recreates the two views migration 016 creates, and refreshes them in its own transaction |
 | Phase 23 before Phase 28 | The engine-count repair reads the variant projection migration 023 backfills, and its validation companion is strengthened in the same change |
+| Phase 4 before Phase 29 | The country assignment matches families and variants by the slug shape `promote_identity` creates, and refreshes the read model migration 016 defines |
+| Phase 29 before Phase 30 | The first-flight match is scoped to the manufacturers migration 029 established a country for, and reuses the `wikidata` source row it creates |
+| Phase 20 before Phase 31 | The read-model replacement carries forward the `is_canonical` filter migration 020's curation gate added, which is why its validation probe must mark its fixture canonical |
 
 Do not run the migration glob directly; its lexical order cannot express the
 required Phase 2 seed boundary.
@@ -164,7 +167,7 @@ Phase reference: Phase 14.
 
 ### 2.7 Ownership-Cost Read Model
 
-**Fixed, in part.** Migration 016 identified fuel with `FUEL_COST_PER_HOUR`
+**Both halves fixed.** Migration 016 identified fuel with `FUEL_COST_PER_HOUR`
 while the Phase 2 seed and the Phase 17 mapper use the canonical code `FUEL`, so
 `hourly_fuel_cost_usd` was structurally NULL and every fuel figure was reported
 inside `hourly_maintenance_reserve_usd`. Migration 027 replaces both views with
@@ -177,15 +180,27 @@ import, `hourly_fuel_cost_usd` went from 0 of 737 rows populated to 630, and
 `total_hourly_variable_usd` now equals fuel plus reserve for all 631 rows that
 carry both.
 
-**Still open.** The computed annual-total expression uses aggregate-level
-`COALESCE`, so a variable item supplying `amount_annual` suppresses the hourly
-branch for every other variable item on that snapshot. Ingestion cannot produce
-that state — it writes `amount_annual` only for `is_fixed` codes — so the defect
-is latent for imported data and reachable by hand-entered rows. The fix is to
-compute each line item's annual contribution before summing, with validation
-covering fuel alongside a mix of annual and hourly variable items. Treat
-`computed_total_annual_usd` as unreliable for hand-entered cost snapshots until
-then.
+**The other half, also fixed.** The computed annual total added the fixed items
+to a `COALESCE` whose first arm was `sum(amount_annual) FILTER (is_fixed =
+false)`. That arm is non-NULL as soon as *any* variable item carries an annual
+amount, so the hourly arm was never evaluated and one variable item quoted
+annually suppressed every hourly item on the same snapshot. Migration 031 sums
+each item's own annual contribution instead — its annual figure where it has
+one, its hourly rate times the assumed hours where it does not.
+
+Ingestion cannot reach that state, because it writes `amount_annual` only for
+`is_fixed` codes, so no imported total was ever wrong. A curator entering a mixed
+snapshot by hand could, and
+`validation/031_ownership_cost_annual_contribution_validation.sql` builds exactly
+that snapshot in a rolled-back block and asserts the total is 2000.00 rather than
+the 1000.00 the old expression returned. Checking the definition would not have
+worked: the broken and fixed forms are both valid SQL over the same columns and
+differ only in where the `COALESCE` sits. The probe marks its snapshot canonical
+because migration 020's curation gate put `WHERE cost_snapshots.is_canonical` in
+the view, so a non-canonical fixture yields no row and the check would pass for
+the wrong reason.
+
+Section 2.7 is closed.
 
 
 ---

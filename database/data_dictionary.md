@@ -267,7 +267,7 @@ unreachable over HTTP; those three tests are what say so.
 | `common_name` | `text` | nullable | &mdash; | &mdash; |  |
 | `name_aliases` | `text[]` | nullable | &mdash; | &mdash; | Alternative, former, or local-language family names. GIN-indexed for alias resolution during Phase 17 ingestion (manufacturer string matching). |
 | `manufacturer_org_id` | `bigint` | nullable | &mdash; | aircraft_org.organizations(id) ON DELETE SET NULL | Primary manufacturer; NULL for design bureaux |
-| `country_of_origin_code` | `character varying(3)` | nullable | &mdash; | aircraft_geo.countries(code) ON DELETE RESTRICT |  |
+| `country_of_origin_code` | `character varying(3)` | nullable | &mdash; | aircraft_geo.countries(code) ON DELETE RESTRICT | State of design for the family. Migration 029 fills it from a manufacturer-level Wikidata aggregate — the country a manufacturer's aircraft agree on, at ≥90% of ≥10 — so it is derived rather than read off an individual aircraft, and each value carries an accepted `aircraft_prov.source_assertions` row saying so. A licence-built airframe may legitimately differ; 029 leaves a non-NULL value alone so a correction survives. |
 | `first_flight_year` | `aircraft_ref.year_value` | nullable | &mdash; | &mdash; |  |
 | `description` | `text` | nullable | &mdash; | &mdash; |  |
 | `name_tsv` | `tsvector` | nullable | generated | &mdash; | Generated stored tsvector over name + common_name + name_aliases. Backed by a GIN index for full-text family search in Phase 16. |
@@ -287,7 +287,7 @@ unreachable over HTTP; those three tests are what say so.
 | `name_aliases` | `text[]` | nullable | &mdash; | &mdash; |  |
 | `series` | `text` | nullable | &mdash; | &mdash; |  |
 | `generation` | `smallint` | nullable | &mdash; | &mdash; |  |
-| `first_flight_year` | `aircraft_ref.year_value` | nullable | &mdash; | &mdash; |  |
+| `first_flight_year` | `aircraft_ref.year_value` | nullable | &mdash; | &mdash; | Year the type first flew. Migration 030 fills it where a model's designation matches a Wikidata aircraft exactly — never by prefix, since `172 Skyhawk` and `172S Skyhawk SP` first flew forty-three years apart — and only where the year precedes the production start this catalogue records. `validation/030_wikidata_model_first_flight_validation.sql` holds that second rule over any value, whatever its source. |
 | `certification_year` | `aircraft_ref.year_value` | nullable | &mdash; | &mdash; |  |
 | `description` | `text` | nullable | &mdash; | &mdash; |  |
 | `extra_attributes` | `jsonb` | NOT NULL | `'{}'::jsonb` | &mdash; |  |
@@ -305,7 +305,7 @@ unreachable over HTTP; those three tests are what say so.
 | `popular_name` | `text` | nullable | &mdash; | &mdash; |  |
 | `variant_type_code` | `aircraft_ref.lookup_code` | nullable | &mdash; | aircraft_ref.variant_types(code) ON DELETE NO ACTION | e.g. `PRODUCTION`, `PROTOTYPE`, `EXPERIMENTAL` |
 | `service_status_code` | `aircraft_ref.lookup_code` | nullable | &mdash; | aircraft_ref.service_statuses(code) ON DELETE NO ACTION | e.g. `IN_SERVICE`, `RETIRED`, `PROTOTYPE` |
-| `country_of_origin_code` | `character varying(3)` | nullable | &mdash; | aircraft_geo.countries(code) ON DELETE RESTRICT | May reference inactive historical states |
+| `country_of_origin_code` | `character varying(3)` | nullable | &mdash; | aircraft_geo.countries(code) ON DELETE RESTRICT | May reference inactive historical states. Migration 029 fills it from a manufacturer-level Wikidata aggregate — the country a manufacturer's aircraft agree on, at ≥90% of ≥10 — so it is derived rather than read off an individual aircraft, and each value carries an accepted `aircraft_prov.source_assertions` row saying so. A licence-built airframe may legitimately differ; 029 leaves a non-NULL value alone so a correction survives. |
 | `first_flight_year` | `aircraft_ref.year_value` | nullable | &mdash; | &mdash; |  |
 | `certification_year` | `aircraft_ref.year_value` | nullable | &mdash; | &mdash; |  |
 | `production_start_year` | `aircraft_ref.year_value` | nullable | &mdash; | &mdash; |  |
