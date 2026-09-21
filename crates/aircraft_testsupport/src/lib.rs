@@ -82,6 +82,12 @@ pub const SCHEMA_STEPS: &[&str] = &[
   include_str!("../../../database/migrations/024_promote_existing_manufacturer_links.sql"),
   include_str!("../../../database/migrations/025_authentication_schema.sql"),
   include_str!("../../../database/seeds/004_authentication_seed_data.sql"),
+  include_str!("../../../database/migrations/026_source_license_terms.sql"),
+  include_str!("../../../database/migrations/027_ownership_cost_summary_fuel_code.sql"),
+  include_str!("../../../database/migrations/028_variant_powerplant_engine_count_optional.sql"),
+  include_str!("../../../database/migrations/029_wikidata_country_of_origin.sql"),
+  include_str!("../../../database/migrations/030_wikidata_model_first_flight.sql"),
+  include_str!("../../../database/migrations/031_ownership_cost_annual_contribution.sql"),
   include_str!("../../../database/validation/017_rust_ingestion_adapter_validation.sql"),
   include_str!("../../../database/validation/018_staged_aircraft_variant_fk_validation.sql"),
   include_str!("../../../database/validation/019_weight_metrics_curation_gate_validation.sql"),
@@ -97,6 +103,16 @@ pub const SCHEMA_STEPS: &[&str] = &[
     "../../../database/validation/024_promote_existing_manufacturer_links_validation.sql"
   ),
   include_str!("../../../database/validation/025_authentication_schema_validation.sql"),
+  include_str!("../../../database/validation/026_source_license_terms_validation.sql"),
+  include_str!("../../../database/validation/027_ownership_cost_summary_fuel_code_validation.sql"),
+  include_str!(
+    "../../../database/validation/028_variant_powerplant_engine_count_optional_validation.sql"
+  ),
+  include_str!("../../../database/validation/029_wikidata_country_of_origin_validation.sql"),
+  include_str!("../../../database/validation/030_wikidata_model_first_flight_validation.sql"),
+  include_str!(
+    "../../../database/validation/031_ownership_cost_annual_contribution_validation.sql"
+  ),
 ];
 
 /// Filenames of the migrations covered by [`SCHEMA_STEPS`], in apply order.
@@ -129,6 +145,12 @@ pub const COVERED_MIGRATIONS: &[&str] = &[
   "023_backfill_ingestion_identity_projections.sql",
   "024_promote_existing_manufacturer_links.sql",
   "025_authentication_schema.sql",
+  "026_source_license_terms.sql",
+  "027_ownership_cost_summary_fuel_code.sql",
+  "028_variant_powerplant_engine_count_optional.sql",
+  "029_wikidata_country_of_origin.sql",
+  "030_wikidata_model_first_flight.sql",
+  "031_ownership_cost_annual_contribution.sql",
 ];
 
 /// A disposable `PostgreSQL` container, force-removed when the guard drops.
@@ -202,32 +224,84 @@ pub async fn start_postgres(
   let database_url = format!("postgres://postgres:postgres@127.0.0.1:{port}/postgres");
   let container = DockerPostgres { container_id, database_url: database_url.clone() };
 
-  // The budget covers container start plus initdb, not the image pull, which
-  // `docker run` has already blocked on. A ready container needs a second or
-  // two; the cost that matters is contention, because the suite runs one
-  // container per test and nextest fans out across every core. Thirty seconds
-  // was reached twice on a cold eight-core run, so the ceiling sat inside the
-  // range of ordinary load rather than above it. Two minutes stays a bound --
-  // nothing else ends the loop below, and nextest is configured with no
-  // terminate-after, so an unbounded wait would hang the run rather than fail
-  // it -- while leaving room for a machine under real load.
-  let pool = tokio::time::timeout(Duration::from_secs(120), async {
+  // Readiness is probed inside the container, not through the pool. The host
+  // port is bound by docker-proxy about 8 ms after `docker run` returns, more
+  // than a second before postgres accepts a connection, so a TCP connect
+  // succeeds and the startup handshake then stalls for the full
+  // `acquire_timeout` -- thirty seconds in thirty of the suites. Four such
+  // attempts is the whole two-minute budget, which is how a suite that starts
+  // ninety-six containers on eight cores spent it on stalled handshakes rather
+  // than on postgres, and failed a different test each run. `pg_isready`
+  // answers in milliseconds and cannot stall, so the budget below is spent on
+  // genuine startup time and nothing else.
+  //
+  // Two minutes stays a bound: nothing else ends the loop, and nextest is
+  // configured with no terminate-after, so an unbounded wait would hang the
+  // run rather than fail it.
+  //
+  // The probe goes over TCP, not the socket. The image's entrypoint runs a
+  // temporary socket-only postgres for its init scripts, stops it, and only
+  // then starts the real one that listens on 5432; `pg_isready` on the socket
+  // says yes to the temporary instance, and a connection made on that answer
+  // reaches a server mid-restart and reads a stray 0x00 where the SSL reply
+  // should be. Asking over TCP can only succeed against the final instance.
+  tokio::time::timeout(Duration::from_secs(120), async {
     loop {
-      match PgPoolOptions::new()
-        .max_connections(max_connections)
-        .acquire_timeout(acquire_timeout)
-        .connect(&database_url)
+      let ready = tokio::process::Command::new("docker")
+        .args([
+          "exec",
+          &container.container_id,
+          "pg_isready",
+          "-q",
+          "-h",
+          "127.0.0.1",
+          "-p",
+          "5432",
+          "-U",
+          "postgres",
+        ])
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .status()
         .await
-      {
-        Ok(pool) => break pool,
-        Err(_) => tokio::time::sleep(Duration::from_millis(250)).await,
+        .is_ok_and(|status| status.success());
+      if ready {
+        break;
       }
+      tokio::time::sleep(Duration::from_millis(100)).await;
     }
   })
   .await
   .map_err(|_| std::io::Error::other("PostgreSQL container did not become ready"))?;
 
-  Ok((container, pool))
+  // A short retry, each attempt bounded well under the caller's
+  // acquire_timeout, absorbs the handshake that the readiness probe itself
+  // cannot see. This is the only place a stall can still cost time, and it is
+  // capped at a few seconds rather than at the budget above.
+  let mut last_error = None;
+  for _ in 0..10 {
+    match tokio::time::timeout(
+      Duration::from_secs(2),
+      PgPoolOptions::new()
+        .max_connections(max_connections)
+        .acquire_timeout(acquire_timeout)
+        .connect(&database_url),
+    )
+    .await
+    {
+      Ok(Ok(pool)) => return Ok((container, pool)),
+      Ok(Err(error)) => last_error = Some(error.to_string()),
+      Err(_) => last_error = Some(String::from("connect timed out")),
+    }
+    tokio::time::sleep(Duration::from_millis(250)).await;
+  }
+  Err(
+    std::io::Error::other(format!(
+      "PostgreSQL container answered pg_isready but refused a connection: {}",
+      last_error.unwrap_or_default()
+    ))
+    .into(),
+  )
 }
 
 /// Applies [`SCHEMA_STEPS`] in order, reporting which step failed.

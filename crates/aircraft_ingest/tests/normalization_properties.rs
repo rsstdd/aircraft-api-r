@@ -29,17 +29,20 @@ const SENTINELS: &[&str] = &["none", "None", "NONE", "n/a", "N/A", "-", "--", ""
 
 /// Every unit `unit_code` maps. Anything else must not reach a canonical unit.
 const MAPPED_UNITS: &[&str] = &[
-  "KIAS", "KCAS", "KTAS", "NM", "FT", "FPM", "GPH", "LBS", "LB", "KG", "GAL", "HP", "KW", "N",
-  "LBF", "HRS", "HR", "PPH",
+  "KIAS", "KCAS", "KTAS", "KT", "KTS", "KNOTS", "NM", "FT", "FPM", "GPH", "LBS", "LB", "KG", "GAL",
+  "HP", "KW", "N", "LBF", "HRS", "HR", "PPH",
 ];
 
 /// Real aviation units this adapter does *not* map. A purely random `[A-Z]{2,6}`
 /// generator will never produce one of these by chance, so a regression that
 /// quietly started mapping `MPH` would go unnoticed. Drawing from this list is
 /// what gives the unmapped-unit property its teeth.
+/// `KTS` left this list when `PlanePHD`'s `/research` layout began writing speeds
+/// as "192 kt": it is now mapped, and a unit cannot be in both lists without the
+/// property contradicting itself.
 const PLAUSIBLE_UNMAPPED_UNITS: &[&str] = &[
-  "MPH", "KMH", "KTS", "SM", "MI", "KM", "LTR", "USG", "PSI", "RPM", "TONS", "OZ", "DEG", "MB",
-  "INHG", "SEC", "MIN", "NMI",
+  "MPH", "KMH", "SM", "MI", "KM", "LTR", "USG", "PSI", "RPM", "TONS", "OZ", "DEG", "MB", "INHG",
+  "SEC", "MIN", "NMI",
 ];
 
 /// Units drawn from both the plausible list and the random space, so the

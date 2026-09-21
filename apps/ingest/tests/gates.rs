@@ -16,6 +16,7 @@ use std::{
   time::Duration,
 };
 
+use aircraft_ingest::planephd::PlanePhdAdapter;
 use aircraft_testsupport::{TestResult, install_schema, start_postgres};
 use serde_json::Value;
 use sqlx_core::{query::query, query_scalar::query_scalar, raw_sql::raw_sql, row::Row};
@@ -338,11 +339,17 @@ async fn a_retry_closes_a_stale_importing_attempt() -> TestResult {
     "INSERT INTO aircraft_ingest.ingest_runs(
             run_label,source_name,source_slug,content_sha256,parser_name,parser_version,
             input_byte_length,input_locator,status)
-         VALUES('planephd_interrupted','PlanePHD','planephd',$1,'planephd-json','1.0.0',
+         VALUES('planephd_interrupted','PlanePHD','planephd',$1,$2,$3,
             1,'interrupted.json','IMPORTING')
          RETURNING id",
   )
   .bind(&content_sha256)
+  // Bound from the adapter, not spelled out: the retry only reuses this run
+  // when the logical identity matches, so a literal here would silently stop
+  // testing reuse the moment the parser version moved -- which is exactly what
+  // it did.
+  .bind(PlanePhdAdapter::PARSER_NAME)
+  .bind(PlanePhdAdapter::PARSER_VERSION)
   .fetch_one(&pool)
   .await?;
   query(
@@ -989,5 +996,95 @@ async fn a_failed_refresh_after_a_committed_decision_stays_retryable() -> TestRe
   let again = run_cli(Some(&container.database_url), &["curate", "refresh", "--format", "json"])?;
   assert!(again.status.success(), "{}", describe(&again));
   assert_eq!(stdout_json(&again)?["read_model_refreshed"], false, "{}", describe(&again));
+  Ok(())
+}
+
+/// Deferring the rebuild must leave the decision durable and the read model
+/// stale, not quietly skip the refresh.
+///
+/// The eager path is what a single decision uses and
+/// `curating_an_assertion_publishes_only_that_value` pins it. This is the other
+/// half: a bulk pass pays for one rebuild at the end rather than one per
+/// acceptance, and the only thing that makes that safe is the refresh request
+/// the decision transaction already enqueues. If deferring dropped the request,
+/// the value below would never reach the read model at all.
+#[tokio::test]
+async fn a_deferred_acceptance_publishes_only_once_the_refresh_runs() -> TestResult {
+  let (container, pool) = start_postgres(5, Duration::from_secs(5)).await?;
+  install_schema(&pool).await?;
+
+  let imported = run_cli(Some(&container.database_url), &as_args(&import_args(&fixture())))?;
+  assert!(imported.status.success(), "{}", describe(&imported));
+
+  let listed = run_cli(
+    Some(&container.database_url),
+    &["curate", "list", "--limit", "50", "--format", "json"],
+  )?;
+  assert!(listed.status.success(), "{}", describe(&listed));
+  let pending = stdout_json(&listed)?;
+  let cruise = pending["pending"]
+    .as_array()
+    .expect("curate list must report an array")
+    .iter()
+    .find(|row| row["field_name"] == "performance.SPEED_CRUISE_BEST")
+    .expect("the fixture asserts a cruise speed")
+    .clone();
+  let assertion_id = cruise["assertion_id"].as_i64().expect("assertion id");
+
+  let accepted = run_cli(
+    Some(&container.database_url),
+    &[
+      "curate",
+      "accept",
+      "--assertion-id",
+      &assertion_id.to_string(),
+      "--defer-refresh",
+      "--format",
+      "json",
+    ],
+  )?;
+  assert!(accepted.status.success(), "{}", describe(&accepted));
+  let outcome = stdout_json(&accepted)?;
+  assert_eq!(outcome["decision"], "ACCEPTED", "{outcome:#}");
+  assert_eq!(
+    outcome["measurement_canonicalized"], true,
+    "the decision itself must be unaffected: {outcome:#}"
+  );
+  assert_eq!(
+    outcome["read_model_refreshed"], false,
+    "deferring must not rebuild the read model: {outcome:#}"
+  );
+  assert_eq!(
+    outcome["read_model_refresh_pending"], true,
+    "and must say the read model is now stale: {outcome:#}"
+  );
+
+  let outstanding: i64 = query_scalar(
+    "SELECT count(*) FROM aircraft_read.read_model_refresh_requests WHERE status_code = 'PENDING'",
+  )
+  .fetch_one(&pool)
+  .await?;
+  assert_eq!(outstanding, 1, "the request the refresh will settle must still be recorded");
+
+  let refreshed =
+    run_cli(Some(&container.database_url), &["curate", "refresh", "--format", "json"])?;
+  assert!(refreshed.status.success(), "{}", describe(&refreshed));
+
+  let settled: i64 = query_scalar(
+    "SELECT count(*) FROM aircraft_read.read_model_refresh_requests WHERE status_code = 'PENDING'",
+  )
+  .fetch_one(&pool)
+  .await?;
+  assert_eq!(settled, 0, "one refresh must settle every request it saw");
+
+  let published: Option<String> =
+    query_scalar("SELECT cruise_speed_kias::text FROM aircraft_read.mv_variant_search LIMIT 1")
+      .fetch_one(&pool)
+      .await?;
+  assert!(
+    published.is_some(),
+    "the deferred value must reach the read model once the refresh runs"
+  );
+
   Ok(())
 }

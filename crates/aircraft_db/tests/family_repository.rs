@@ -171,7 +171,7 @@ async fn families_sharing_a_name_are_still_totally_ordered() -> TestResult {
 /// are NULL and the two optional predicates are never evaluated. Two wrong
 /// implementations passed the whole suite that way: swapping the two `.bind()`
 /// calls, and joining on `o.slug = f.slug`. A third -- joining on `f.id` -- was
-/// caught, but by `the_runtime_role_reads_families_and_writes_none` for reading
+/// caught, but by `the_runtime_role_reads_the_catalog_and_writes_none` for reading
 /// an ungranted column, which says nothing about whether the join is right.
 /// Each filter is asserted against a different column, so a swap cannot satisfy
 /// both.
@@ -332,7 +332,7 @@ async fn a_stored_country_code_the_domain_refuses_is_an_invariant_failure() -> T
 /// `database/roles/app_grants.sql` is what the server connects with. This is the
 /// only test that can fail for `42501`.
 #[tokio::test]
-async fn the_runtime_role_reads_families_and_writes_none() -> TestResult {
+async fn the_runtime_role_reads_the_catalog_and_writes_none() -> TestResult {
   let (container, admin) = start_postgres(2, Duration::from_secs(30)).await?;
   install_schema(&admin).await?;
   insert_family(&admin, "cessna-172", "Cessna 172").await?;
@@ -353,7 +353,31 @@ async fn the_runtime_role_reads_families_and_writes_none() -> TestResult {
   assert_eq!(page.items().len(), 1, "the runtime role must read families");
   assert!(reader.family(&slug("cessna-172")).await?.is_some(), "and read one by slug");
 
+  // Models and variants are granted ahead of the readers issues #40 and #42 add,
+  // so the grant is proven before a statement depends on it rather than after a
+  // route answers 503. Every published column is named explicitly: PostgreSQL
+  // checks column privileges per column, so `SELECT *` would pass against a grant
+  // missing exactly the column a projection needs.
+  for projection in [
+    "SELECT id, slug, name, display_name, family_id, series, generation, first_flight_year,
+            certification_year, name_aliases, description
+       FROM aircraft_core.models ORDER BY slug LIMIT 1",
+    "SELECT id, slug, name, popular_name, model_id, variant_type_code, service_status_code,
+            country_of_origin_code, first_flight_year, certification_year,
+            production_start_year, production_end_year, passenger_capacity, crew_count,
+            engine_count, landing_gear_type_code, propulsion_category_code,
+            is_in_production, description
+       FROM aircraft_core.variants ORDER BY slug, id LIMIT 1",
+  ] {
+    query(projection)
+      .execute(&runtime)
+      .await
+      .unwrap_or_else(|error| panic!("the runtime role must read the catalog: {error}"));
+  }
+
   for statement in [
+    "UPDATE aircraft_core.models SET name = 'x'",
+    "UPDATE aircraft_core.variants SET name = 'x'",
     "UPDATE aircraft_core.families SET name = 'x'",
     "INSERT INTO aircraft_core.families (slug, name) VALUES ('x', 'x')",
     "DELETE FROM aircraft_core.families",
