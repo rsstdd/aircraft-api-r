@@ -194,13 +194,13 @@ GRANT SELECT (id, slug, name, common_name, manufacturer_org_id, country_of_origi
 GRANT SELECT (id, slug)
     ON aircraft_org.organizations TO :"app_role";
 
--- Models and variants, for the readers issues #40 and #42 add. The projections
--- are aircraft_app::catalog's ModelSummary/ModelDetail and
--- VariantSummary/VariantDetail, which name this file in turn; granting ahead of
--- those statements is deliberate, because every test connects as the container
--- owner and cannot see a missing grant -- the route would pass its whole suite
--- and answer 503 in production, as happened for aircraft_ref in #145 and for
--- families in #38.
+-- Models, read by crates/aircraft_db/src/repositories/model_repository.rs, which
+-- names this file in turn; and variants, for the reader issue #42 adds. The
+-- projections are aircraft_app::catalog's ModelSummary/ModelDetail and
+-- VariantSummary/VariantDetail. Granting variants ahead of their statements is
+-- deliberate, because every test connects as the container owner and cannot see
+-- a missing grant -- the route would pass its whole suite and answer 503 in
+-- production, as happened for aircraft_ref in #145 and for families in #38.
 --
 -- id is granted on both: variants join models.id, and #42 requires the variant id
 -- as the sort tiebreaker, which PostgreSQL checks as an ORDER BY column

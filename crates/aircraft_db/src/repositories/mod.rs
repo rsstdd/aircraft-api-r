@@ -5,4 +5,5 @@ pub mod credential_repository;
 pub mod curation_repository;
 pub mod family_repository;
 pub mod ingestion_repository;
+pub mod model_repository;
 pub mod reference_repository;

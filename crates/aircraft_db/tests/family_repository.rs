@@ -15,12 +15,12 @@
 use std::time::Duration;
 
 use aircraft_app::{
-  catalog::{FamilyFilter, FamilyReader as _},
+  catalog::{FamilyFilter, FamilyReader as _, ModelFilter, ModelReader as _},
   ingestion::PersistenceError,
   pagination::PageLimit,
 };
-use aircraft_db::{SqlxFamilyReader, pool::connect};
-use aircraft_domain::catalog::{CountryCode, Slug};
+use aircraft_db::{SqlxFamilyReader, SqlxModelReader, pool::connect};
+use aircraft_domain::catalog::{CountryCode, FamilyId, Slug};
 use aircraft_testsupport::{TestResult, install_schema, run_psql, sqlstate, start_postgres};
 use sqlx_core::{query::query, query_scalar::query_scalar};
 use sqlx_postgres::PgPool;
@@ -336,6 +336,9 @@ async fn the_runtime_role_reads_the_catalog_and_writes_none() -> TestResult {
   let (container, admin) = start_postgres(2, Duration::from_secs(30)).await?;
   install_schema(&admin).await?;
   insert_family(&admin, "cessna-172", "Cessna 172").await?;
+  let family: i64 = query_scalar("SELECT id FROM aircraft_core.families WHERE slug = 'cessna-172'")
+    .fetch_one(&admin)
+    .await?;
   run_psql(
     &container,
     CREATE_APP_ROLE_SQL,
@@ -353,22 +356,32 @@ async fn the_runtime_role_reads_the_catalog_and_writes_none() -> TestResult {
   assert_eq!(page.items().len(), 1, "the runtime role must read families");
   assert!(reader.family(&slug("cessna-172")).await?.is_some(), "and read one by slug");
 
-  // Models and variants are granted ahead of the readers issues #40 and #42 add,
-  // so the grant is proven before a statement depends on it rather than after a
-  // route answers 503. Every published column is named explicitly: PostgreSQL
-  // checks column privileges per column, so `SELECT *` would pass against a grant
-  // missing exactly the column a projection needs.
-  for projection in [
-    "SELECT id, slug, name, display_name, family_id, series, generation, first_flight_year,
-            certification_year, name_aliases, description
-       FROM aircraft_core.models ORDER BY slug LIMIT 1",
-    "SELECT id, slug, name, popular_name, model_id, variant_type_code, service_status_code,
+  // The model reader's own statements, as the role runs them: a filtered list,
+  // because the filter reads `family_id`, which the unfiltered list never
+  // touches and PostgreSQL checks as a `WHERE` column privilege.
+  let models = SqlxModelReader::new(runtime.clone());
+  query("INSERT INTO aircraft_core.models (family_id, slug, name) VALUES ($1, 'c-172', '172')")
+    .bind(family)
+    .execute(&admin)
+    .await?;
+  let filter = ModelFilter { family: Some(FamilyId::new(family)) };
+  let page = models.list_models(&filter, limit(50), None).await?;
+  assert_eq!(page.items().len(), 1, "the runtime role must read models");
+  assert!(models.model(&slug("c-172")).await?.is_some(), "and read one by slug");
+
+  // Variants are granted ahead of the reader issue #42 adds, so the grant is
+  // proven before a statement depends on it rather than after a route answers
+  // 503. Every published column is named explicitly: PostgreSQL checks column
+  // privileges per column, so `SELECT *` would pass against a grant missing
+  // exactly the column a projection needs.
+  for projection in
+    ["SELECT id, slug, name, popular_name, model_id, variant_type_code, service_status_code,
             country_of_origin_code, first_flight_year, certification_year,
             production_start_year, production_end_year, passenger_capacity, crew_count,
             engine_count, landing_gear_type_code, propulsion_category_code,
             is_in_production, description
-       FROM aircraft_core.variants ORDER BY slug, id LIMIT 1",
-  ] {
+       FROM aircraft_core.variants ORDER BY slug, id LIMIT 1"]
+  {
     query(projection)
       .execute(&runtime)
       .await

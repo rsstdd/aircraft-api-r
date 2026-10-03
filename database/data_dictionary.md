@@ -100,7 +100,10 @@ installed database instead. For families it is
 it reads `information_schema` and requires the installed column list to equal the
 union of what the family statements read and what the contract withholds, so a
 column a later migration adds and nobody classifies fails the gate rather than
-passing unnoticed. The model and variant readers owe the same when they land.
+passing unnoticed. For models it is
+`every_model_column_is_read_or_deliberately_withheld` in
+`crates/aircraft_db/tests/model_repository.rs`. The variant reader owes the same
+when it lands.
 
 `aircraft_db::repositories::family_repository` is what reads
 `aircraft_core.families`, joining `aircraft_org.organizations` for the
@@ -113,6 +116,15 @@ column-level `SELECT` in `database/roles/app_grants.sql` -- no write, and no
 column a statement does not read -- and
 `the_runtime_role_reads_the_catalog_and_writes_none` is the only test that connects
 as that role and can therefore fail for `42501`.
+
+`aircraft_db::repositories::model_repository` reads `aircraft_core.models` the
+same way, joining `aircraft_core.families` for the parent's slug and paging by
+the model's own `slug`. `ModelFilter::family` is a resolved `FamilyId`, so the
+filter predicate is on `family_id` and the family join is only for the published
+slug. That join is an outer join on purpose: `family_id` is `NOT NULL` with
+`ON DELETE RESTRICT`, so a model without a family is a broken invariant, and the
+reader reports it as one -- naming `family_id` -- rather than letting an inner
+join drop the row unseen.
 
 `aircraft_domain::reference::Catalog` is the allowlist behind
 `GET /v1/reference/{catalog}`: one variant per catalog, in this migration's
