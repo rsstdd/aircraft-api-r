@@ -80,6 +80,86 @@ Each names its migration in turn; this paragraph is the return half, because an
 applied migration is immutable once hashed in `database/migrations.lock.json`
 and cannot carry a pointer added later.
 
+<<<<<<< Updated upstream
+||||||| Stash base
+`aircraft_domain::catalog::{Slug, LookupCode, CountryCode}` mirror the `slug_text`
+and `lookup_code` domains above and the `VARCHAR(3)` ISO 3166-1 alpha-3 key of
+`aircraft_geo.countries`, and `aircraft_domain::catalog::{FamilyId, ModelId,
+VariantId}` are the three `aircraft_core` surrogate keys as separate types, so one
+aggregate's key cannot be passed for another's. `LookupCode` and
+`measurement::UnitCode` validate the same rule for different vocabularies and are
+deliberately not one type. What a catalog read publishes from `aircraft_core.families`,
+`aircraft_core.models`, and `aircraft_core.variants`, and what it withholds --
+the surrogate `id`, the generated `tsvector` columns, `extra_attributes`, the row
+timestamps, and the `ingest_key` and `source_path` staging columns -- is
+`aircraft_app::catalog`. No test holds that list against a migration *file*: a
+column added later arrives in a later migration, so the check belongs against the
+installed database instead. For families it is
+`every_family_column_is_read_or_deliberately_withheld` in
+`crates/aircraft_db/tests/family_repository.rs`, which names this file in turn:
+it reads `information_schema` and requires the installed column list to equal the
+union of what the family statements read and what the contract withholds, so a
+column a later migration adds and nobody classifies fails the gate rather than
+passing unnoticed. The model and variant readers owe the same when they land.
+
+`aircraft_db::repositories::family_repository` is what reads
+`aircraft_core.families`, joining `aircraft_org.organizations` for the
+manufacturer's slug because a surrogate key is not a public identifier. It pages
+by `slug`, which is `NOT NULL UNIQUE` on the table and therefore a total order;
+`aircraft_app`'s `FamilyReader` resumes from that slug and nothing else, so a
+name-ordered page would be a change to the port before it is a change to the
+statement. The runtime role's access to `aircraft_core` and `aircraft_org` is the
+column-level `SELECT` in `database/roles/app_grants.sql` -- no write, and no
+column a statement does not read -- and
+`the_runtime_role_reads_the_catalog_and_writes_none` is the only test that connects
+as that role and can therefore fail for `42501`.
+
+=======
+`aircraft_domain::catalog::{Slug, LookupCode, CountryCode}` mirror the `slug_text`
+and `lookup_code` domains above and the `VARCHAR(3)` ISO 3166-1 alpha-3 key of
+`aircraft_geo.countries`, and `aircraft_domain::catalog::{FamilyId, ModelId,
+VariantId}` are the three `aircraft_core` surrogate keys as separate types, so one
+aggregate's key cannot be passed for another's. `LookupCode` and
+`measurement::UnitCode` validate the same rule for different vocabularies and are
+deliberately not one type. What a catalog read publishes from `aircraft_core.families`,
+`aircraft_core.models`, and `aircraft_core.variants`, and what it withholds --
+the surrogate `id`, the generated `tsvector` columns, `extra_attributes`, the row
+timestamps, and the `ingest_key` and `source_path` staging columns -- is
+`aircraft_app::catalog`. No test holds that list against a migration *file*: a
+column added later arrives in a later migration, so the check belongs against the
+installed database instead. For families it is
+`every_family_column_is_read_or_deliberately_withheld` in
+`crates/aircraft_db/tests/family_repository.rs`, which names this file in turn:
+it reads `information_schema` and requires the installed column list to equal the
+union of what the family statements read and what the contract withholds, so a
+column a later migration adds and nobody classifies fails the gate rather than
+passing unnoticed. For models it is
+`every_model_column_is_read_or_deliberately_withheld` in
+`crates/aircraft_db/tests/model_repository.rs`. The variant reader owes the same
+when it lands.
+
+`aircraft_db::repositories::family_repository` is what reads
+`aircraft_core.families`, joining `aircraft_org.organizations` for the
+manufacturer's slug because a surrogate key is not a public identifier. It pages
+by `slug`, which is `NOT NULL UNIQUE` on the table and therefore a total order;
+`aircraft_app`'s `FamilyReader` resumes from that slug and nothing else, so a
+name-ordered page would be a change to the port before it is a change to the
+statement. The runtime role's access to `aircraft_core` and `aircraft_org` is the
+column-level `SELECT` in `database/roles/app_grants.sql` -- no write, and no
+column a statement does not read -- and
+`the_runtime_role_reads_the_catalog_and_writes_none` is the only test that connects
+as that role and can therefore fail for `42501`.
+
+`aircraft_db::repositories::model_repository` reads `aircraft_core.models` the
+same way, joining `aircraft_core.families` for the parent's slug and paging by
+the model's own `slug`. `ModelFilter::family` is a resolved `FamilyId`, so the
+filter predicate is on `family_id` and the family join is only for the published
+slug. That join is an outer join on purpose: `family_id` is `NOT NULL` with
+`ON DELETE RESTRICT`, so a model without a family is a broken invariant, and the
+reader reports it as one -- naming `family_id` -- rather than letting an inner
+join drop the row unseen.
+
+>>>>>>> Stashed changes
 `aircraft_domain::reference::Catalog` is the allowlist behind
 `GET /v1/reference/{catalog}`: one variant per catalog, in this migration's
 declaration order, each carrying only the URL slug. No relation name appears in
