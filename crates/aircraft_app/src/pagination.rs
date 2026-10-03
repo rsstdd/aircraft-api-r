@@ -88,6 +88,17 @@ impl<T, K> Page<T, K> {
   pub const fn next(&self) -> Option<&K> {
     self.next.as_ref()
   }
+
+  /// The rows and the resume key, by value.
+  ///
+  /// A transport layer renders both and keeps neither, and the borrowing
+  /// accessors above would make it clone every row to do that. The key comes
+  /// first because a caller that needs only one needs that one: the rows become
+  /// the response body, and the key becomes the cursor beside it.
+  #[must_use]
+  pub fn into_parts(self) -> (Option<K>, Vec<T>) {
+    (self.next, self.items)
+  }
 }
 
 #[cfg(test)]

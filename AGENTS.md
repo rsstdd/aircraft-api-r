@@ -18,7 +18,8 @@ the migrations under `database/migrations/`, a checksum lock, ordered seeds, and
 SQL validation. The API crate implements Axum health, readiness, and version
 contracts, bearer authentication with route-scope enforcement, RFC 9457 problem
 documents, validated list queries and cursors, and the scoped
-`GET /v1/reference/{catalog}` catalog route, with OpenAPI generation.
+`GET /v1/reference/{catalog}` catalog route, and the scoped
+`GET /v1/models` and `GET /v1/models/{model}` routes, with OpenAPI generation.
 `apps/server`
 boots: it loads HTTP and database settings, initializes tracing, builds a
 bounded database pool, binds a listener, and serves that router, with
@@ -319,7 +320,7 @@ server -> composes adapters and runtime infrastructure
 | `apps/server/` | HTTP runtime composition | Boots, builds a verified database pool, serves health, readiness, version, and the reference catalogs, correlates and traces every request, enforces perimeter limits, per-principal rate limits, and CORS, and drains on signal |
 | `crates/aircraft_domain/` | Pure entities, values, units, invariants | Ingestion invariants implemented; broader domain mostly scaffolded |
 | `crates/aircraft_app/` | Use cases and ports | Ingestion orchestration implemented; broader application incomplete |
-| `crates/aircraft_api/` | Axum DTOs, routes, middleware, OpenAPI | Health, readiness, and version routes, the scoped reference-catalog route, bearer authentication and route-scope enforcement, RFC 9457 problem documents, per-principal rate limiting, pagination and measurement representations, and the OpenAPI contract |
+| `crates/aircraft_api/` | Axum DTOs, routes, middleware, OpenAPI | Health, readiness, and version routes, the scoped reference-catalog route, the scoped model collection and detail routes with keyset paging and a family filter, bearer authentication and route-scope enforcement, RFC 9457 problem documents, per-principal rate limiting, pagination and measurement representations, and the OpenAPI contract |
 | `crates/aircraft_db/` | SQLx repositories and schema mappings | Ingestion, curation, credential, authentication, reference-catalog, family, and model repositories implemented; `aircraft_repository` and `comparison_repository` remain empty scaffolds |
 | `crates/aircraft_ingest/` | Source capture, parsing, normalization | PlanePHD adapter implemented |
 | `crates/aircraft_config/` | Typed runtime configuration | Ingestion, HTTP, database-URL, database pool, perimeter limit and CORS, and rate-limit quota settings implemented |

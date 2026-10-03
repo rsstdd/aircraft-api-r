@@ -30,6 +30,14 @@ use aircraft_app::{
   readiness::ReadinessProbe,
   reference::{CatalogEntry, CatalogReader},
 };
+use aircraft_app::{
+  catalog::{
+    FamilyDetail, FamilyFilter, FamilyReader, FamilySummary, ModelDetail, ModelFilter, ModelReader,
+    ModelSummary,
+  },
+  pagination::{Page, PageLimit},
+};
+use aircraft_domain::catalog::{FamilyId, Slug};
 use aircraft_domain::reference::Catalog;
 use anyhow::{Context, Result, anyhow};
 use async_trait::async_trait;
@@ -156,6 +164,8 @@ async fn start(grace: Duration, dispatch: tracing::Dispatch) -> Result<Harness> 
   let state = ApiState {
     readiness: Arc::new(BlockingProbe { entered: entered_tx, release: Arc::clone(&release) }),
     catalogs: Arc::new(NoCatalogs),
+    families: Arc::new(NoCatalogs),
+    models: Arc::new(NoCatalogs),
     authentication: Arc::new(AuthenticationService::new(Arc::new(NeverLooksUp))),
     version: "9.9.9-test",
     build_commit: None,
@@ -324,4 +334,43 @@ async fn a_request_still_running_at_expiry_is_cancelled_and_counted() -> Result<
   );
 
   Ok(())
+}
+
+/// The model routes are registered on every router, so the state must carry
+/// their ports. This file drives shutdown, not the catalog, and a panic is a
+/// clearer failure than an empty page if a request ever reaches one.
+#[async_trait]
+impl FamilyReader for NoCatalogs {
+  async fn list_families(
+    &self,
+    _filter: &FamilyFilter,
+    _limit: PageLimit,
+    _after: Option<&Slug>,
+  ) -> Result<Page<FamilySummary, Slug>, PersistenceError> {
+    panic!("no test in this file lists families")
+  }
+
+  async fn family(&self, _slug: &Slug) -> Result<Option<FamilyDetail>, PersistenceError> {
+    panic!("no test in this file reads a family")
+  }
+
+  async fn family_id(&self, _slug: &Slug) -> Result<Option<FamilyId>, PersistenceError> {
+    panic!("no test in this file resolves a family")
+  }
+}
+
+#[async_trait]
+impl ModelReader for NoCatalogs {
+  async fn list_models(
+    &self,
+    _filter: &ModelFilter,
+    _limit: PageLimit,
+    _after: Option<&Slug>,
+  ) -> Result<Page<ModelSummary, Slug>, PersistenceError> {
+    panic!("no test in this file lists models")
+  }
+
+  async fn model(&self, _slug: &Slug) -> Result<Option<ModelDetail>, PersistenceError> {
+    panic!("no test in this file reads a model")
+  }
 }

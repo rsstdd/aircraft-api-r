@@ -10,7 +10,10 @@ use std::{sync::Arc, time::Duration};
 use aircraft_api::{ApiState, shutdown::ShutdownState};
 use aircraft_app::authentication::AuthenticationService;
 use aircraft_config::{DatabaseSettings, Settings};
-use aircraft_db::{SqlxCatalogReader, SqlxCredentialLookup, readiness::PoolReadiness};
+use aircraft_db::{
+  SqlxCatalogReader, SqlxCredentialLookup, SqlxFamilyReader, SqlxModelReader,
+  readiness::PoolReadiness,
+};
 use anyhow::{Context, Result};
 use secrecy::ExposeSecret as _;
 use tokio::{
@@ -98,6 +101,8 @@ async fn main() -> Result<()> {
     // operator configured are the process's, and a catalog read is one more
     // bounded acquisition from it.
     catalogs: Arc::new(SqlxCatalogReader::new(pool.clone())),
+    families: Arc::new(SqlxFamilyReader::new(pool.clone())),
+    models: Arc::new(SqlxModelReader::new(pool.clone())),
     readiness: Arc::new(PoolReadiness::new(pool)),
     authentication,
     version: env!("CARGO_PKG_VERSION"),

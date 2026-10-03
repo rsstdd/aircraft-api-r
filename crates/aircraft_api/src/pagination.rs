@@ -247,18 +247,36 @@ impl ListQuery {
   }
 }
 
-/// One page on the wire.
+/// Holds [`PageResponse`] alone, so the lint allowance below covers the
+/// `ToSchema` derive's expansion and nothing hand-written.
 ///
-/// `next_cursor` is serialized as `null` on a final page rather than omitted,
-/// because the accepted decision says "Empty and final pages return a null next
-/// cursor" — the opposite of the omit-when-absent rule the measurement
-/// representation follows, and deliberate: a client polling for more pages
-/// reads the member rather than testing for its presence.
-#[derive(Debug, Serialize)]
-pub struct PageResponse<T> {
-  pub items: Vec<T>,
-  pub next_cursor: Option<String>,
+/// The expansion trips `clippy::option_if_let_else` on the generic parameter --
+/// its own suggestion, `T.map_or_else(|| T, |composed| T)`, is the tell -- and
+/// the diagnostic is raised in a context no item- or field-level attribute
+/// reaches, which is why the allowance is a module inner attribute rather than
+/// one on the struct. The module exists only to keep that attribute from
+/// covering the hand-written `Option` code in the rest of this file.
+mod envelope {
+  #![allow(clippy::option_if_let_else, reason = "emitted by the ToSchema derive")]
+
+  use serde::Serialize;
+  use utoipa::ToSchema;
+
+  /// One page on the wire.
+  ///
+  /// `next_cursor` is serialized as `null` on a final page rather than omitted,
+  /// because the accepted decision says "Empty and final pages return a null next
+  /// cursor" -- the opposite of the omit-when-absent rule the measurement
+  /// representation follows, and deliberate: a client polling for more pages
+  /// reads the member rather than testing for its presence.
+  #[derive(Debug, Serialize, ToSchema)]
+  pub struct PageResponse<T> {
+    pub items: Vec<T>,
+    pub next_cursor: Option<String>,
+  }
 }
+
+pub use envelope::PageResponse;
 
 #[cfg(test)]
 mod tests {

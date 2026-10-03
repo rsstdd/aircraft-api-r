@@ -18,7 +18,10 @@ use std::{
 };
 
 use aircraft_app::{
-  authentication::AuthenticationService, readiness::ReadinessProbe, reference::CatalogReader,
+  authentication::AuthenticationService,
+  catalog::{FamilyReader, ModelReader},
+  readiness::ReadinessProbe,
+  reference::CatalogReader,
 };
 use aircraft_domain::reference::Catalog;
 use axum::{
@@ -63,6 +66,11 @@ use crate::shutdown::ShutdownState;
 pub struct ApiState {
   pub readiness: Arc<dyn ReadinessProbe>,
   pub catalogs: Arc<dyn CatalogReader>,
+  /// Reads families. The model collection holds it only to resolve its
+  /// `family` filter to the `FamilyId` that `ModelFilter` takes; the family
+  /// routes that will read it for its own sake are not in this build.
+  pub families: Arc<dyn FamilyReader>,
+  pub models: Arc<dyn ModelReader>,
   pub authentication: Arc<AuthenticationService>,
   pub version: &'static str,
   pub build_commit: Option<&'static str>,
@@ -108,7 +116,9 @@ impl std::fmt::Debug for ApiState {
       routes::health::health,
       routes::ready::ready,
       routes::version::version,
-      routes::reference::catalog
+      routes::reference::catalog,
+      routes::models::list_models,
+      routes::models::model
     ),
     components(
       schemas(
@@ -116,6 +126,10 @@ impl std::fmt::Debug for ApiState {
         routes::ready::ReadyResponse,
         routes::version::VersionResponse,
         routes::reference::CatalogEntryResponse,
+        routes::models::ModelSort,
+        routes::models::ModelSummaryResponse,
+        pagination::PageResponse<routes::models::ModelSummaryResponse>,
+        routes::models::ModelDetailResponse,
         measurement::MeasurementResponse,
         measurement::MeasurementConditionsResponse,
         measurement::DecimalStringResponse,
@@ -144,7 +158,8 @@ impl std::fmt::Debug for ApiState {
     ),
     tags(
       (name = "health", description = "Service health checks"),
-      (name = "reference", description = "Seeded reference catalogs")
+      (name = "reference", description = "Seeded reference catalogs"),
+      (name = "catalog", description = "Aircraft models")
     )
 )]
 struct ApiDoc;
@@ -308,6 +323,8 @@ fn declared_routes() -> Routes {
     .route(RouteMethod::Get, "/ready", RoutePolicy::Public, routes::ready::ready)
     .route(RouteMethod::Get, "/version", RoutePolicy::Public, routes::version::version)
     .route(RouteMethod::Get, CATALOG_PATH, RoutePolicy::CatalogRead, routes::reference::catalog)
+    .route(RouteMethod::Get, MODELS_PATH, RoutePolicy::CatalogRead, routes::models::list_models)
+    .route(RouteMethod::Get, MODEL_PATH, RoutePolicy::CatalogRead, routes::models::model)
 }
 
 /// `OriginalUri` rather than `Uri`: a fallback runs with the router's own
@@ -327,6 +344,14 @@ async fn method_not_allowed(OriginalUri(uri): OriginalUri) -> ApiProblem {
 /// published under. One spelling, read by `declared_routes` and by
 /// [`publish_catalog_slugs`], so a rename cannot leave the two disagreeing.
 const CATALOG_PATH: &str = "/v1/reference/{catalog}";
+
+/// The served paths of the model routes.
+///
+/// `{model}` and not `{model_id}`: the segment is the model's slug, because
+/// `aircraft_core.models.id` is withheld from every catalog projection.
+/// `crates/aircraft_api/src/routes/models.rs` records that reading.
+const MODELS_PATH: &str = "/v1/models";
+const MODEL_PATH: &str = "/v1/models/{model}";
 
 const API_CREDENTIAL_SCHEME: &str = "apiCredential";
 
@@ -449,6 +474,14 @@ mod tests {
     ingestion::PersistenceError,
     reference::CatalogEntry,
   };
+  use aircraft_app::{
+    catalog::{
+      FamilyDetail, FamilyFilter, FamilyReader, FamilySummary, ModelDetail, ModelFilter,
+      ModelReader, ModelSummary,
+    },
+    pagination::{Page, PageLimit},
+  };
+  use aircraft_domain::catalog::{FamilyId, Slug};
   use anyhow::{Context, Result};
   use async_trait::async_trait;
   use axum::{
@@ -594,6 +627,10 @@ mod tests {
       ApiState {
         readiness,
         catalogs,
+        // The model routes are registered on every router this module builds,
+        // so the state carries their ports. No test here requests them.
+        families: Arc::new(FakeCatalogs::default()),
+        models: Arc::new(FakeCatalogs::default()),
         authentication: Arc::new(AuthenticationService::new(Arc::new(NeverLooksUp))),
         version: "9.9.9-test",
         build_commit: None,
@@ -666,6 +703,43 @@ mod tests {
 
     fn reads(&self) -> usize {
       self.reads.load(Ordering::SeqCst)
+    }
+  }
+
+  #[async_trait]
+  #[async_trait]
+  impl FamilyReader for FakeCatalogs {
+    async fn list_families(
+      &self,
+      _filter: &FamilyFilter,
+      _limit: PageLimit,
+      _after: Option<&Slug>,
+    ) -> Result<Page<FamilySummary, Slug>, PersistenceError> {
+      panic!("no test in this module lists families")
+    }
+
+    async fn family(&self, _slug: &Slug) -> Result<Option<FamilyDetail>, PersistenceError> {
+      panic!("no test in this module reads a family")
+    }
+
+    async fn family_id(&self, _slug: &Slug) -> Result<Option<FamilyId>, PersistenceError> {
+      panic!("no test in this module resolves a family")
+    }
+  }
+
+  #[async_trait]
+  impl ModelReader for FakeCatalogs {
+    async fn list_models(
+      &self,
+      _filter: &ModelFilter,
+      _limit: PageLimit,
+      _after: Option<&Slug>,
+    ) -> Result<Page<ModelSummary, Slug>, PersistenceError> {
+      panic!("no test in this module lists models")
+    }
+
+    async fn model(&self, _slug: &Slug) -> Result<Option<ModelDetail>, PersistenceError> {
+      panic!("no test in this module reads a model")
     }
   }
 
@@ -2042,11 +2116,13 @@ mod tests {
   /// operational routes, each `Public`, and nothing else. A route added to
   /// `declared_routes` without a row here is a decision the tests reading
   /// this table refuse to make by default.
-  const DECLARED: [(RouteMethod, &str, RoutePolicy); 4] = [
+  const DECLARED: [(RouteMethod, &str, RoutePolicy); 6] = [
     (RouteMethod::Get, "/health", RoutePolicy::Public),
     (RouteMethod::Get, "/ready", RoutePolicy::Public),
     (RouteMethod::Get, "/version", RoutePolicy::Public),
     (RouteMethod::Get, CATALOG_PATH, RoutePolicy::CatalogRead),
+    (RouteMethod::Get, MODELS_PATH, RoutePolicy::CatalogRead),
+    (RouteMethod::Get, MODEL_PATH, RoutePolicy::CatalogRead),
   ];
 
   #[test]
