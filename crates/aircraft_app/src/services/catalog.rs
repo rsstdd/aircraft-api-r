@@ -202,6 +202,21 @@ pub trait FamilyReader: Send + Sync {
   ) -> Result<Page<FamilySummary, Slug>, PersistenceError>;
 
   async fn family(&self, slug: &Slug) -> Result<Option<FamilyDetail>, PersistenceError>;
+
+  /// The id a family's public slug names, for a caller that must build a
+  /// [`ModelFilter`] or [`VariantFilter`] from a request.
+  ///
+  /// Both of those carry a resolved [`FamilyId`] rather than a slug, on the
+  /// reasoning recorded on [`ModelFilter::family`]: the adapter should not run a
+  /// second lookup per list. That reasoning assumed a caller with an id in hand,
+  /// and the HTTP boundary never has one -- a request carries the slug. This is
+  /// the one lookup that assumption owes, kept here rather than inside the model
+  /// adapter so the cost is one query the caller can see and cache against, not
+  /// one hidden in every page.
+  ///
+  /// `Ok(None)` for a slug no family carries, as [`Self::family`] does, so the
+  /// boundary decides whether that is a `404` or an empty collection.
+  async fn family_id(&self, slug: &Slug) -> Result<Option<FamilyId>, PersistenceError>;
 }
 
 /// Reads models. See [`FamilyReader`] for the error and absence contract.
@@ -383,6 +398,10 @@ mod tests {
     }
 
     async fn family(&self, _slug: &Slug) -> Result<Option<FamilyDetail>, PersistenceError> {
+      self.failure().map_or_else(|| Ok(None), Err)
+    }
+
+    async fn family_id(&self, _slug: &Slug) -> Result<Option<FamilyId>, PersistenceError> {
       self.failure().map_or_else(|| Ok(None), Err)
     }
   }

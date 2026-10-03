@@ -22,7 +22,7 @@ use aircraft_app::{
 use aircraft_db::{SqlxFamilyReader, SqlxModelReader, pool::connect};
 use aircraft_domain::catalog::{CountryCode, FamilyId, Slug};
 use aircraft_testsupport::{TestResult, install_schema, run_psql, sqlstate, start_postgres};
-use sqlx_core::{query::query, query_scalar::query_scalar};
+use sqlx_core::{query::query, query_scalar::query_scalar, row::Row};
 use sqlx_postgres::PgPool;
 
 /// The grant files, read rather than restated, so the gate runs what
@@ -355,6 +355,14 @@ async fn the_runtime_role_reads_the_catalog_and_writes_none() -> TestResult {
   let page = reader.list_families(&FamilyFilter::default(), limit(50), None).await?;
   assert_eq!(page.items().len(), 1, "the runtime role must read families");
   assert!(reader.family(&slug("cessna-172")).await?.is_some(), "and read one by slug");
+  // The filter-resolution statement, which reads `id` -- the one column no
+  // projection publishes, and therefore the one a future grant narrowing would
+  // most plausibly drop.
+  assert_eq!(
+    reader.family_id(&slug("cessna-172")).await?.map(FamilyId::get),
+    Some(family),
+    "and resolve a slug to the id the model filter takes"
+  );
 
   // The model reader's own statements, as the role runs them: a filtered list,
   // because the filter reads `family_id`, which the unfiltered list never
@@ -460,6 +468,55 @@ async fn every_family_column_is_read_or_deliberately_withheld() -> TestResult {
     installed, classified,
     "every column of aircraft_core.families must be read by a family statement or listed as \
      deliberately withheld"
+  );
+  Ok(())
+}
+
+/// What `GET /v1/models?family=<slug>` needs and nothing else could give it.
+///
+/// `ModelFilter::family` is a resolved [`FamilyId`] by deliberate design --
+/// `aircraft_app::catalog` says the caller "has already looked it up" -- while
+/// the wire carries a slug, and until this method existed nothing in the
+/// workspace could construct a `FamilyId` outside a test fixture.
+///
+/// The expected ids are read back from the table rather than assumed, and the
+/// two families are asserted against *each other's* ids: a resolver that
+/// returned the first row, or any row, for every slug would satisfy a
+/// single-family assertion. Absence is `Ok(None)` and not an error, matching
+/// `FamilyReader::family`, because whether a missing family is a `404` or an
+/// empty page is the HTTP boundary's decision.
+#[tokio::test]
+async fn a_family_slug_resolves_to_the_id_the_model_filter_takes() -> TestResult {
+  let (_container, pool) = start_postgres(5, Duration::from_secs(30)).await?;
+  install_schema(&pool).await?;
+  let reader = SqlxFamilyReader::new(pool.clone());
+  insert_family(&pool, "cessna", "Cessna").await?;
+  insert_family(&pool, "piper", "Piper").await?;
+
+  let stored: Vec<(String, i64)> =
+    query("SELECT slug, id FROM aircraft_core.families WHERE slug IN ('cessna', 'piper')")
+      .fetch_all(&pool)
+      .await?
+      .iter()
+      .map(|row| (row.get::<String, _>("slug"), row.get::<i64, _>("id")))
+      .collect();
+  assert_eq!(stored.len(), 2, "both families are stored");
+
+  for (expected_slug, expected_id) in stored {
+    let resolved = reader
+      .family_id(&slug(&expected_slug))
+      .await?
+      .unwrap_or_else(|| panic!("{expected_slug} is stored and must resolve"));
+    assert_eq!(
+      resolved.get(),
+      expected_id,
+      "{expected_slug} resolves to its own id, not another family's"
+    );
+  }
+
+  assert!(
+    reader.family_id(&slug("no-such-family")).await?.is_none(),
+    "a slug no family carries is absence, not a failure"
   );
   Ok(())
 }

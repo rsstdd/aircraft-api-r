@@ -124,7 +124,10 @@ filter predicate is on `family_id` and the family join is only for the published
 slug. That join is an outer join on purpose: `family_id` is `NOT NULL` with
 `ON DELETE RESTRICT`, so a model without a family is a broken invariant, and the
 reader reports it as one -- naming `family_id` -- rather than letting an inner
-join drop the row unseen.
+join drop the row unseen. The slug a request carries is turned into that
+`FamilyId` by `FamilyReader::family_id`, a statement of its own in the family
+repository rather than a column on either projection: `id` stays withheld from
+everything a client reads, and resolving a filter is not reading a family.
 
 `aircraft_domain::reference::Catalog` is the allowlist behind
 `GET /v1/reference/{catalog}`: one variant per catalog, in this migration's
