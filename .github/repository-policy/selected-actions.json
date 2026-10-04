@@ -4,13 +4,13 @@
   "patterns_allowed": [
     "actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1",
     "actions/dependency-review-action@a1d282b36b6f3519aa1f3fc636f609c47dddb294",
-    "github/codeql-action/analyze@cdf488f595d80d6e07e03d4674febd5ab45fa938",
-    "github/codeql-action/init@cdf488f595d80d6e07e03d4674febd5ab45fa938",
-    "github/codeql-action/upload-sarif@7188fc363630916deb702c7fdcf4e481b751f97a",
-    "oasdiff/oasdiff-action/breaking@2649ebe137aeb72a95707671204e829f86e091fc",
+    "github/codeql-action/analyze@b96794f015dfd88f77b49b1c93e0fa7110f94c63",
+    "github/codeql-action/init@b96794f015dfd88f77b49b1c93e0fa7110f94c63",
+    "github/codeql-action/upload-sarif@cdf488f595d80d6e07e03d4674febd5ab45fa938",
+    "oasdiff/oasdiff-action/breaking@9c0494cfee8b8fcc9fb383ed2d5d3fbdae169b93",
     "stoplightio/spectral-action@6416fd018ae38e60136775066eb3e98172143141",
     "Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6",
-    "taiki-e/install-action@37f7c5781271959fb65b6b35224e28652ff2b63d",
-    "zizmorcore/zizmor-action@3dc1ecc9bcb9e94e9b2c709687979e1298497054"
+    "taiki-e/install-action@fa23953489c080190314742a9b907f8e97c6767c",
+    "zizmorcore/zizmor-action@cc914d7f3750a2d13d75c7f184a1060aa0e9d482"
   ]
 }

@@ -12,7 +12,7 @@ readonly API_VERSION="2022-11-28"
 # GitHub resolves composite-action dependencies before evaluating their step conditions.
 # Keep this list aligned with the pinned actions' manifests.
 readonly -a TRANSITIVE_WORKFLOW_ACTIONS=(
-  "github/codeql-action/upload-sarif@7188fc363630916deb702c7fdcf4e481b751f97a"
+  "github/codeql-action/upload-sarif@cdf488f595d80d6e07e03d4674febd5ab45fa938"
 )
 
 usage() {
