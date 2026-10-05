@@ -10,7 +10,7 @@
 //! The runtime role's access to `aircraft_core` and `aircraft_org` is the
 //! column-level `SELECT` in `database/roles/app_grants.sql`, which names this
 //! file in turn. A column added to a statement here without a grant there fails
-//! with `42501`, and `the_runtime_role_reads_families_and_writes_none` in
+//! with `42501`, and `the_runtime_role_reads_the_catalog_and_writes_none` in
 //! `crates/aircraft_db/tests/family_repository.rs` is what catches it: every
 //! other test connects as the container owner and cannot see a missing grant.
 
@@ -19,9 +19,9 @@ use aircraft_app::{
   ingestion::PersistenceError,
   pagination::{Page, PageLimit},
 };
-use aircraft_domain::catalog::{CountryCode, Slug};
+use aircraft_domain::catalog::{CountryCode, FamilyId, Slug};
 use async_trait::async_trait;
-use sqlx_core::{query::query, row::Row};
+use sqlx_core::{query::query, query_scalar::query_scalar, row::Row};
 use sqlx_postgres::{PgPool, PgRow};
 
 use crate::repositories::ingestion_repository::database_error;
@@ -61,6 +61,14 @@ SELECT f.slug, f.name, f.common_name, o.slug AS manufacturer, \
   FROM aircraft_core.families f \
   LEFT JOIN aircraft_org.organizations o ON o.id = f.manufacturer_org_id \
  WHERE f.slug = $1";
+
+/// The id behind a family's public slug.
+///
+/// Its own statement rather than a column added to [`DETAIL`]: the caller is
+/// resolving a filter, not reading a family, and `id` is the one column the
+/// catalog contract deliberately withholds from every projection. Keeping it in
+/// a statement of its own is what lets `FamilySummary` stay free of it.
+const FAMILY_ID: &str = "SELECT id FROM aircraft_core.families WHERE slug = $1";
 
 /// A stored value the catalog contract cannot represent.
 ///
@@ -172,5 +180,21 @@ impl FamilyReader for SqlxFamilyReader {
       name_aliases: aliases.unwrap_or_default(),
       description: row.try_get("description").map_err(database_error)?,
     }))
+  }
+
+  /// # Errors
+  ///
+  /// [`PersistenceError::Database`] carrying the sanitized `SQLx` failure. No
+  /// [`PersistenceError::Invariant`] is reachable here: the column is the
+  /// table's `BIGINT` primary key, so there is no stored value a [`FamilyId`]
+  /// cannot hold.
+  async fn family_id(&self, slug: &Slug) -> Result<Option<FamilyId>, PersistenceError> {
+    let id: Option<i64> = query_scalar(FAMILY_ID)
+      .bind(slug.as_str())
+      .fetch_optional(&self.pool)
+      .await
+      .map_err(database_error)?;
+
+    Ok(id.map(FamilyId::new))
   }
 }

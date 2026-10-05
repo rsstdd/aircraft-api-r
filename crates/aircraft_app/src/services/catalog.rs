@@ -33,6 +33,14 @@
 //! `crates/aircraft_db/tests/reference_catalogs.rs` already does for the lookup
 //! catalogs -- and arrives with the repository that first maps these rows.
 
+//! **The published set is also a grant.** `database/roles/app_grants.sql` gives
+//! the runtime role column-level `SELECT` on exactly the columns these
+//! projections name, and nothing else, so a field added to a summary without a
+//! grant answers `42501` in production while every owner-connected test passes.
+//! That file names this module in turn;
+//! `the_runtime_role_reads_the_catalog_and_writes_none` in
+//! `crates/aircraft_db/tests/family_repository.rs` is what can fail for it.
+
 use aircraft_domain::catalog::{CountryCode, FamilyId, LookupCode, ModelId, Slug};
 use async_trait::async_trait;
 
@@ -146,12 +154,27 @@ pub struct ModelFilter {
 #[derive(Clone, Debug, Default, Eq, PartialEq)]
 pub struct VariantFilter {
   pub model: Option<ModelId>,
+  /// A resolved grandparent, for the same reason [`ModelFilter::family`] is
+  /// resolved. A variant reaches its family only through its model, so this is
+  /// a two-step join and not an alternative spelling of `model`.
+  pub family: Option<FamilyId>,
   pub variant_type: Option<LookupCode>,
   pub service_status: Option<LookupCode>,
   pub landing_gear_type: Option<LookupCode>,
   pub propulsion_category: Option<LookupCode>,
   pub country_of_origin: Option<CountryCode>,
   pub is_in_production: Option<bool>,
+  /// Variants whose production run covered this year:
+  /// `production_start_year <= year AND (production_end_year IS NULL OR
+  /// production_end_year >= year)`.
+  ///
+  /// The open-ended arm is not a convenience. A run with no end year is one
+  /// still in production -- 83 of the 1,005 rows the catalogue holds today
+  /// -- so excluding NULL would drop exactly the aircraft a caller asking about
+  /// a recent year most wants, and `aircraft_core.variants`'
+  /// `chk_variant_production_years` already guarantees a NULL end never means
+  /// "ended before it started".
+  pub produced_in_year: Option<i16>,
 }
 
 /// Reads families.
@@ -179,6 +202,21 @@ pub trait FamilyReader: Send + Sync {
   ) -> Result<Page<FamilySummary, Slug>, PersistenceError>;
 
   async fn family(&self, slug: &Slug) -> Result<Option<FamilyDetail>, PersistenceError>;
+
+  /// The id a family's public slug names, for a caller that must build a
+  /// [`ModelFilter`] or [`VariantFilter`] from a request.
+  ///
+  /// Both of those carry a resolved [`FamilyId`] rather than a slug, on the
+  /// reasoning recorded on [`ModelFilter::family`]: the adapter should not run a
+  /// second lookup per list. That reasoning assumed a caller with an id in hand,
+  /// and the HTTP boundary never has one -- a request carries the slug. This is
+  /// the one lookup that assumption owes, kept here rather than inside the model
+  /// adapter so the cost is one query the caller can see and cache against, not
+  /// one hidden in every page.
+  ///
+  /// `Ok(None)` for a slug no family carries, as [`Self::family`] does, so the
+  /// boundary decides whether that is a `404` or an empty collection.
+  async fn family_id(&self, slug: &Slug) -> Result<Option<FamilyId>, PersistenceError>;
 }
 
 /// Reads models. See [`FamilyReader`] for the error and absence contract.
@@ -360,6 +398,10 @@ mod tests {
     }
 
     async fn family(&self, _slug: &Slug) -> Result<Option<FamilyDetail>, PersistenceError> {
+      self.failure().map_or_else(|| Ok(None), Err)
+    }
+
+    async fn family_id(&self, _slug: &Slug) -> Result<Option<FamilyId>, PersistenceError> {
       self.failure().map_or_else(|| Ok(None), Err)
     }
   }

@@ -644,6 +644,21 @@ impl SqlxIngestionUnitOfWork {
     .fetch_one(&mut *self.transaction)
     .await
     .map_err(database_error)?;
+    self.promote_variant(model, organization, record).await
+  }
+
+  /// Inserts or refreshes the variant, links its primary manufacturer, and
+  /// records a slug collision when the insert had to disambiguate.
+  ///
+  /// Split from [`Self::promote_identity`], which promotes four levels and had
+  /// no room left: `clippy::too_many_lines` fires at 100 and it was already at
+  /// 98 before this clause grew a rationale.
+  async fn promote_variant(
+    &mut self,
+    model: i64,
+    organization: i64,
+    record: &PreparedAircraftRecord,
+  ) -> Result<i64, PersistenceError> {
     // variants.slug is UNIQUE while the record's identity is ingest_key, so two
     // distinct source records whose names slugify identically ("A/B" and "A B")
     // would collide on a constraint the ON CONFLICT clause does not cover and
@@ -654,7 +669,9 @@ impl SqlxIngestionUnitOfWork {
     let row = query(
       "INSERT INTO aircraft_core.variants(
                 model_id,name,slug,description,production_start_year,production_end_year,
-                is_in_production,passenger_capacity,crew_count,engine_count,source_path,ingest_key)
+                is_in_production,passenger_capacity,crew_count,engine_count,source_path,ingest_key,
+                propulsion_category_code,service_status_code,landing_gear_type_code,
+                variant_type_code)
              VALUES($1,$2,
                 (SELECT CASE
                     WHEN EXISTS (
@@ -666,10 +683,47 @@ impl SqlxIngestionUnitOfWork {
                  END
                  FROM (SELECT aircraft_ref.slugify($3 || '-' || $2 || '-v1') AS slug)
                     AS candidate),
-                $4,$5,$6,$7,$8,$9,$10,$11,$12)
+                $4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16)
+             -- Omitted columns keep the first import's value forever. Ingestion is the
+             -- only writer here, so the hazard is staleness, not a clobbered curated
+             -- value: COALESCE(EXCLUDED, existing) prefers the source and falls back
+             -- only when a parse produced nothing. engine_count keeps the opposite
+             -- order because an engine count never changes for a type.
              ON CONFLICT(ingest_key) WHERE ingest_key IS NOT NULL DO UPDATE SET
                 description=EXCLUDED.description,
-                engine_count=COALESCE(aircraft_core.variants.engine_count,EXCLUDED.engine_count)
+                engine_count=COALESCE(aircraft_core.variants.engine_count,EXCLUDED.engine_count),
+                -- The production range moves as one value, never column by column.
+                -- Merging independently lets a later start (1985) sit beside a
+                -- retained older end (1980), which chk_variant_production_years
+                -- rejects -- aborting the promote transaction and losing every
+                -- later record in the run. The incoming record's own pair is
+                -- always valid, so the parser cannot catch this; only the merge
+                -- can. A record that states a start therefore defines the whole
+                -- lifecycle, including an open end; one that states nothing keeps
+                -- what is already stored.
+                production_start_year=COALESCE(EXCLUDED.production_start_year,
+                    aircraft_core.variants.production_start_year),
+                production_end_year=CASE
+                    WHEN EXCLUDED.production_start_year IS NOT NULL
+                        THEN EXCLUDED.production_end_year
+                    ELSE aircraft_core.variants.production_end_year END,
+                is_in_production=CASE
+                    WHEN EXCLUDED.production_start_year IS NOT NULL
+                        THEN EXCLUDED.is_in_production
+                    ELSE COALESCE(EXCLUDED.is_in_production,
+                        aircraft_core.variants.is_in_production) END,
+                propulsion_category_code=COALESCE(EXCLUDED.propulsion_category_code,
+                    aircraft_core.variants.propulsion_category_code),
+                -- Derived from the range, so it travels with it.
+                service_status_code=CASE
+                    WHEN EXCLUDED.production_start_year IS NOT NULL
+                        THEN EXCLUDED.service_status_code
+                    ELSE COALESCE(EXCLUDED.service_status_code,
+                        aircraft_core.variants.service_status_code) END,
+                landing_gear_type_code=COALESCE(EXCLUDED.landing_gear_type_code,
+                    aircraft_core.variants.landing_gear_type_code),
+                variant_type_code=COALESCE(EXCLUDED.variant_type_code,
+                    aircraft_core.variants.variant_type_code)
              RETURNING id,
                 slug <> aircraft_ref.slugify($3 || '-' || $2 || '-v1') AS disambiguated,
                 slug",
@@ -686,6 +740,13 @@ impl SqlxIngestionUnitOfWork {
     .bind(record.propulsion.engine_count)
     .bind(&record.identity.source_link)
     .bind(&record.source_record_key)
+    // FK to aircraft_ref.propulsion_categories, so only a code the parser could
+    // map unambiguously arrives here; an ambiguous one is None and the column
+    // stays empty rather than carrying a guess.
+    .bind(&record.propulsion.category)
+    .bind(&record.lifecycle.service_status)
+    .bind(&record.lifecycle.landing_gear)
+    .bind(&record.lifecycle.variant_type)
     .fetch_one(&mut *self.transaction)
     .await
     .map_err(database_error)?;
@@ -766,6 +827,11 @@ impl SqlxIngestionUnitOfWork {
     record: &PreparedAircraftRecord,
     variant_id: i64,
   ) -> Result<i64, PersistenceError> {
+    // The ON CONFLICT clause names `base_url` and nothing else on purpose:
+    // `database/migrations/026_source_license_terms.sql` writes `license_notes`
+    // for this row and every import would otherwise erase it. Adding a column
+    // here means changing that migration's assumption too; it names this
+    // function in turn.
     let source_id: i64 = query_scalar(
       "INSERT INTO aircraft_prov.sources(name,slug,source_type_code,
                 reliability_grade_code,base_url,default_confidence,notes)
@@ -833,7 +899,24 @@ impl SqlxIngestionUnitOfWork {
                         variant_id,metric_type_code,raw_value,raw_unit_code,canonical_value,
                         is_canonical,confidence,source_assertion_id)
                      SELECT $1,$2,$3::numeric,$4,
-                        trim_scale(aircraft_ref.to_canonical($3::numeric,$4)),
+                        -- Only canonicalise when the unit can actually reach the
+                        -- metric's canonical unit. A unit with no conversion is its
+                        -- own canonical (seeds/001_reference_units.sql), so PPH --
+                        -- mass per hour, convertible to GPH only through a fuel
+                        -- density -- is self-canonical while FUEL_BURN_CRUISE
+                        -- declares GPH. Without this, to_canonical returns the raw
+                        -- PPH figure and it is stored in a column every consumer
+                        -- reads as GPH: a ~6x error that mission scoring would read
+                        -- verbatim. An unconvertible pairing stores NULL and stays
+                        -- raw evidence.
+                        CASE WHEN (SELECT COALESCE(u.canonical_unit_code,u.code)
+                                     FROM aircraft_ref.measurement_units u
+                                    WHERE u.code = $4)
+                                = (SELECT t.canonical_unit_code
+                                     FROM aircraft_ref.performance_metric_types t
+                                    WHERE t.code = $2)
+                             THEN trim_scale(aircraft_ref.to_canonical($3::numeric,$4))
+                        END,
                         FALSE,$5::numeric,$6",
         )
         .bind(variant_id)
@@ -847,6 +930,18 @@ impl SqlxIngestionUnitOfWork {
         .map_err(database_error)?;
       }
     }
+    self.promote_weight_metrics(record, variant_id, document_id).await
+  }
+
+  /// The weight half of [`Self::promote_measurements`], split out because that
+  /// function promotes two metric families and `clippy::too_many_lines` fires at
+  /// 100; it was at 98 before the canonicalisation guard grew a rationale.
+  async fn promote_weight_metrics(
+    &mut self,
+    record: &PreparedAircraftRecord,
+    variant_id: i64,
+    document_id: i64,
+  ) -> Result<(), PersistenceError> {
     for metric in &record.weights.measurements {
       let field =
         format!("weight.{}", metric.metric_code.as_deref().unwrap_or(&metric.source_field));
@@ -868,8 +963,19 @@ impl SqlxIngestionUnitOfWork {
           "INSERT INTO aircraft_specs.weight_metrics(
                         variant_id,metric_type_code,raw_value,raw_unit_code,canonical_value,
                         confidence,source_assertion_id)
-                     VALUES($1,$2,$3::numeric,$4,
-                        trim_scale(aircraft_ref.to_canonical($3::numeric,$4)),$5::numeric,$6)",
+                     SELECT $1,$2,$3::numeric,$4,
+                        -- Same guard as the performance insert: no weight unit
+                        -- diverges today, but the rule belongs with the write, not
+                        -- with today's vocabulary.
+                        CASE WHEN (SELECT COALESCE(u.canonical_unit_code,u.code)
+                                     FROM aircraft_ref.measurement_units u
+                                    WHERE u.code = $4)
+                                = (SELECT t.canonical_unit_code
+                                     FROM aircraft_ref.weight_metric_types t
+                                    WHERE t.code = $2)
+                             THEN trim_scale(aircraft_ref.to_canonical($3::numeric,$4))
+                        END,
+                        $5::numeric,$6",
         )
         .bind(variant_id)
         .bind(code)
@@ -920,15 +1026,30 @@ impl SqlxIngestionUnitOfWork {
     .await
     .map_err(database_error)?;
     query(
+      // The count is bound as stated, never defaulted. It was
+      // `unwrap_or(1)` while the column was NOT NULL, which made "the source
+      // does not say" indistinguishable from "one engine" -- and DO NOTHING
+      // then froze that fiction, so a later run that did state a count could
+      // not correct it. Thirteen variants carried the result: ten whose
+      // powerplant said one engine while the variant column, fed from the same
+      // parse a run later, correctly said two or four.
+      //
+      // COALESCE(EXCLUDED, existing) is the same direction
+      // `promote_variant` uses: a run that states a count wins, a run that
+      // does not leaves the stored one alone. `aircraft_power.variant_powerplants`
+      // allows NULL from `database/migrations/028_variant_powerplant_engine_count_optional.sql`,
+      // which names this statement in turn.
       "INSERT INTO aircraft_power.variant_powerplants(
                 variant_id,engine_variant_id,engine_count,is_standard,is_optional,is_primary,
                 source_document_id)
              VALUES($1,$2,$3,TRUE,FALSE,TRUE,$4)
-             ON CONFLICT(variant_id,engine_variant_id) DO NOTHING",
+             ON CONFLICT(variant_id,engine_variant_id) DO UPDATE SET
+                engine_count=COALESCE(EXCLUDED.engine_count,
+                    aircraft_power.variant_powerplants.engine_count)",
     )
     .bind(variant_id)
     .bind(engine_id)
-    .bind(engine.engine_count.unwrap_or(1))
+    .bind(engine.engine_count)
     .bind(document_id)
     .execute(&mut *self.transaction)
     .await

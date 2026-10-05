@@ -4,7 +4,7 @@
 --
 -- Closed protected-policy vocabulary from the accepted HTTP v1 decision.
 -- Public needs no scope. Rate tiers are operational and remain unseeded.
--- DO NOTHING makes this safe for the independently repeatable seed workflow.
+-- The upsert makes the independently repeatable seed workflow repair drift.
 --
 -- The `code` values below are mirrored twice: by `RequiredScope` in
 -- `crates/aircraft_api/src/problem.rs`, which publishes them as the closed
@@ -29,6 +29,9 @@ VALUES ('CATALOG_READ', 'Catalog read',
         'Accept or reject assertions and record curation decisions.', 40),
        ('ADMIN', 'Administration',
         'Credential lifecycle and other administrative operations.', 50)
-ON CONFLICT (code) DO NOTHING;
+ON CONFLICT (code) DO UPDATE SET
+    label = EXCLUDED.label,
+    description = EXCLUDED.description,
+    sort_order = EXCLUDED.sort_order;
 
 COMMIT;

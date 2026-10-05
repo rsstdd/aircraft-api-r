@@ -114,6 +114,25 @@ pub enum Decision {
   Rejected,
 }
 
+/// When the read model catches up with a decision.
+///
+/// `Immediate` is the default everywhere and the only behaviour a single
+/// decision should use. `Deferred` exists for a bulk pass: the refresh is a
+/// non-concurrent rebuild of both search materialized views and their indexes,
+/// so running one per decision turns a few thousand acceptances into a few
+/// thousand rebuilds holding `ACCESS EXCLUSIVE`.
+///
+/// Deferring is safe because the decision transaction still enqueues its
+/// request into `aircraft_read.read_model_refresh_requests`; a later
+/// [`CurationService::refresh_read_models`] satisfies every request it sees at
+/// once. It is not a way to skip the refresh -- the read model is stale until
+/// one runs, which the outcome reports as `read_model_refresh_pending`.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum RefreshPolicy {
+  Immediate,
+  Deferred,
+}
+
 impl Decision {
   /// The `aircraft_ref.assertion_statuses` code this decision writes.
   #[must_use]
@@ -155,11 +174,21 @@ pub trait CurationStore: Send + Sync {
   /// durable, so it is reported as a successful outcome carrying
   /// `read_model_refresh_pending`, and the enqueued request keeps the stale
   /// read model recoverable through [`CurationStore::refresh_read_models`].
+  async fn decide_with(
+    &self,
+    assertion_id: i64,
+    decision: Decision,
+    refresh: RefreshPolicy,
+  ) -> Result<CurationOutcome, CurationError>;
+
+  /// Decides and refreshes, which is what a single decision should do.
   async fn decide(
     &self,
     assertion_id: i64,
     decision: Decision,
-  ) -> Result<CurationOutcome, CurationError>;
+  ) -> Result<CurationOutcome, CurationError> {
+    self.decide_with(assertion_id, decision, RefreshPolicy::Immediate).await
+  }
 
   /// Rebuilds the read model if any refresh request is outstanding, closing the
   /// requests the rebuild satisfied. Idempotent, and safe to call when nothing
@@ -244,6 +273,17 @@ impl CurationService {
 
   pub async fn accept(&self, assertion_id: i64) -> Result<CurationOutcome, CurationError> {
     self.store.decide(assertion_id, Decision::Accepted).await
+  }
+
+  /// Accepts without rebuilding the read model, for a caller working through
+  /// many assertions. The outcome reports `read_model_refresh_pending`, and the
+  /// caller owes exactly one [`CurationService::refresh_read_models`] at the
+  /// end -- not one per decision.
+  pub async fn accept_deferring_refresh(
+    &self,
+    assertion_id: i64,
+  ) -> Result<CurationOutcome, CurationError> {
+    self.store.decide_with(assertion_id, Decision::Accepted, RefreshPolicy::Deferred).await
   }
 
   pub async fn reject(&self, assertion_id: i64) -> Result<CurationOutcome, CurationError> {

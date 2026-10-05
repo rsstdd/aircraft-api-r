@@ -295,6 +295,72 @@ INSERT INTO public.aircraft_schema_migrations(version) VALUES ('025');
 \echo 'Skipping applied migration 025'
 \endif
 
+SELECT NOT EXISTS (
+    SELECT 1 FROM public.aircraft_schema_migrations WHERE version = '026'
+) AS apply_migration \gset
+\if :apply_migration
+\echo 'Applying migration 026: 026_source_license_terms.sql'
+\ir migrations/026_source_license_terms.sql
+INSERT INTO public.aircraft_schema_migrations(version) VALUES ('026');
+\else
+\echo 'Skipping applied migration 026'
+\endif
+
+SELECT NOT EXISTS (
+    SELECT 1 FROM public.aircraft_schema_migrations WHERE version = '027'
+) AS apply_migration \gset
+\if :apply_migration
+\echo 'Applying migration 027: 027_ownership_cost_summary_fuel_code.sql'
+\ir migrations/027_ownership_cost_summary_fuel_code.sql
+INSERT INTO public.aircraft_schema_migrations(version) VALUES ('027');
+\else
+\echo 'Skipping applied migration 027'
+\endif
+
+SELECT NOT EXISTS (
+    SELECT 1 FROM public.aircraft_schema_migrations WHERE version = '028'
+) AS apply_migration \gset
+\if :apply_migration
+\echo 'Applying migration 028: 028_variant_powerplant_engine_count_optional.sql'
+\ir migrations/028_variant_powerplant_engine_count_optional.sql
+INSERT INTO public.aircraft_schema_migrations(version) VALUES ('028');
+\else
+\echo 'Skipping applied migration 028'
+\endif
+
+SELECT NOT EXISTS (
+    SELECT 1 FROM public.aircraft_schema_migrations WHERE version = '029'
+) AS apply_migration \gset
+\if :apply_migration
+\echo 'Applying migration 029: 029_wikidata_country_of_origin.sql'
+\ir migrations/029_wikidata_country_of_origin.sql
+INSERT INTO public.aircraft_schema_migrations(version) VALUES ('029');
+\else
+\echo 'Skipping applied migration 029'
+\endif
+
+SELECT NOT EXISTS (
+    SELECT 1 FROM public.aircraft_schema_migrations WHERE version = '030'
+) AS apply_migration \gset
+\if :apply_migration
+\echo 'Applying migration 030: 030_wikidata_model_first_flight.sql'
+\ir migrations/030_wikidata_model_first_flight.sql
+INSERT INTO public.aircraft_schema_migrations(version) VALUES ('030');
+\else
+\echo 'Skipping applied migration 030'
+\endif
+
+SELECT NOT EXISTS (
+    SELECT 1 FROM public.aircraft_schema_migrations WHERE version = '031'
+) AS apply_migration \gset
+\if :apply_migration
+\echo 'Applying migration 031: 031_ownership_cost_annual_contribution.sql'
+\ir migrations/031_ownership_cost_annual_contribution.sql
+INSERT INTO public.aircraft_schema_migrations(version) VALUES ('031');
+\else
+\echo 'Skipping applied migration 031'
+\endif
+
 -- The authentication scope vocabulary, seeded after the migration that creates
 -- the table it fills.
 \ir seeds/004_authentication_seed_data.sql

@@ -102,6 +102,233 @@ async fn import_publishes_the_source_manufacturer_and_engine_count() -> TestResu
   Ok(())
 }
 
+/// Stated retraction and a documented production run both reach their columns.
+///
+/// Two filter columns in one fixture deliberately: each disposable `PostgreSQL`
+/// container costs real time, and `just test` already saturates Docker on an
+/// eight-core machine.
+///
+/// The four wheeled codes each bundle retraction with configuration, so before
+/// `FIXED_UNSPECIFIED` and `RETRACTABLE_UNSPECIFIED` existed a source saying only
+/// "fixed landing gear" lost the fact entirely. This pins that the half-fact
+/// survives *and* that a stated configuration still reaches the specific code --
+/// otherwise the new codes would be swallowing information rather than keeping it.
+#[tokio::test]
+async fn stated_retraction_and_a_documented_production_run_are_published() -> TestResult {
+  let (_container, pool) = start_postgres(5, Duration::from_secs(30)).await?;
+  install_schema(&pool).await?;
+  let store = SqlxIngestionStore::from_pool(pool.clone());
+
+  // Distinct digests, so each is its own logical run rather than a replay.
+  // The first two carry a production range, the third does not, so the same
+  // fixture proves the variant type is evidenced rather than assumed.
+  for (digest, name, prose) in [
+    ('a', "310R (1975 - 1980)", "Twin engine piston aircraft with retractable landing gear."),
+    ('b', "172S (1998 - present)", "Single engine piston aircraft with fixed landing gear."),
+    ('c', "180K", "Single engine piston taildragger with fixed landing gear."),
+  ] {
+    let record = normalize_record("CESSNA", name, json!({"description": prose}));
+    import_record(&store, request(digest, "1.0.0"), &record).await?;
+  }
+
+  let published: Vec<(String, Option<String>, Option<String>)> = query(
+    "SELECT name, landing_gear_type_code, variant_type_code
+       FROM aircraft_core.variants ORDER BY name",
+  )
+  .fetch_all(&pool)
+  .await?
+  .into_iter()
+  .map(|row| (row.get("name"), row.get("landing_gear_type_code"), row.get("variant_type_code")))
+  .collect();
+
+  let standard = Some("PRODUCTION_STANDARD".to_owned());
+  assert_eq!(
+    published,
+    vec![
+      ("172S (1998 - present)".to_owned(), Some("FIXED_UNSPECIFIED".to_owned()), standard.clone()),
+      ("180K".to_owned(), Some("FIXED_TAILWHEEL".to_owned()), None),
+      ("310R (1975 - 1980)".to_owned(), Some("RETRACTABLE_UNSPECIFIED".to_owned()), standard),
+    ],
+    "retraction survives without configuration, a stated configuration narrows it, \
+     and a variant type appears only where a production run evidences one"
+  );
+  Ok(())
+}
+
+/// The propulsion category reaches the column `VariantFilter` filters on, and an
+/// ambiguous one leaves it empty.
+///
+/// `aircraft_core.variants.propulsion_category_code` is a foreign key into
+/// `aircraft_ref.propulsion_categories`, so a wrong spelling aborts the import
+/// rather than storing a bad row -- but a *guess* would be a valid code, which is
+/// why `turbofan` must arrive as NULL: the vocabulary splits low- and high-bypass
+/// and `PlanePHD` never says which.
+#[tokio::test]
+async fn a_stated_propulsion_category_is_published_and_an_ambiguous_one_is_not() -> TestResult {
+  let (_container, pool) = start_postgres(5, Duration::from_secs(30)).await?;
+  install_schema(&pool).await?;
+  let store = SqlxIngestionStore::from_pool(pool.clone());
+
+  let piston = normalize_record(
+    "CESSNA",
+    "310R",
+    json!({"description": "Twin engine piston aircraft with retractable landing gear."}),
+  );
+  let turbofan =
+    normalize_record("CESSNA", "525", json!({"description": "Twin engine turbofan aircraft."}));
+  import_record(&store, request('a', "1.0.0"), &piston).await?;
+  import_record(&store, request('b', "1.0.0"), &turbofan).await?;
+
+  let published: Vec<(String, Option<String>)> =
+    query("SELECT name, propulsion_category_code FROM aircraft_core.variants ORDER BY name")
+      .fetch_all(&pool)
+      .await?
+      .into_iter()
+      .map(|row| (row.get("name"), row.get("propulsion_category_code")))
+      .collect();
+
+  assert_eq!(
+    published,
+    vec![("310R".to_owned(), Some("PISTON_RECIPROCATING".to_owned())), ("525".to_owned(), None),],
+    "a stated category is published; an ambiguous one stays absent"
+  );
+  Ok(())
+}
+
+/// A later run fills an empty column, corrects a wrong one, and loses neither to
+/// a parse that produced nothing.
+///
+/// `ON CONFLICT(ingest_key) DO UPDATE` refreshes only the columns it names, so an
+/// existing variant keeps whatever the first import wrote for every column left
+/// off that list. That is why re-importing the shipped `PlanePHD` file under an
+/// improved parser left all 1005 `production_start_year` values NULL: the parser
+/// produced them and the upsert discarded them.
+///
+/// Ingestion is the only writer of these columns -- nothing in curation updates
+/// `aircraft_core.variants` -- so the hazard is a stale value, not a clobbered
+/// curated one. `COALESCE(EXCLUDED, existing)` prefers the source and falls back
+/// only when the source produced nothing, and all three phases below pin one of
+/// those behaviours.
+#[tokio::test]
+async fn a_later_run_corrects_an_engine_count_the_first_one_could_not_state() -> TestResult {
+  const STORED_COUNT: &str = "SELECT powerplant.engine_count
+         FROM aircraft_power.variant_powerplants AS powerplant
+         JOIN aircraft_core.variants AS variant ON variant.id = powerplant.variant_id
+        WHERE variant.name = '800XP' AND powerplant.is_primary";
+  let (_container, pool) = start_postgres(5, Duration::from_secs(30)).await?;
+  install_schema(&pool).await?;
+  let store = SqlxIngestionStore::from_pool(pool.clone());
+
+  // The engine section names a powerplant either way; only the thrust string
+  // says how many. PlanePHD's `/research` layout omits it for some aircraft and
+  // the retired one stated it, so the same variant is genuinely read both ways.
+  let counted = |thrust: Option<&str>| {
+    let mut performance = serde_json::Map::new();
+    if let Some(thrust) = thrust {
+      performance.insert("thrust".to_owned(), json!(thrust));
+    }
+    normalize_record(
+      "HAWKER",
+      "800XP",
+      json!({
+        "engine": {"manufacturer": "Honeywell", "model": "TFE731-5BR"},
+        "performance": performance,
+      }),
+    )
+  };
+
+  import_record(&store, request('a', "1.0.0"), &counted(None)).await?;
+  assert_eq!(
+    query_scalar::<_, Option<i16>>(STORED_COUNT).fetch_one(&pool).await?,
+    None,
+    "a source that states no count must leave the powerplant saying so, not claim one engine"
+  );
+
+  import_record(&store, request('b', "1.0.0"), &counted(Some("2 x 4,660 LBF"))).await?;
+  assert_eq!(
+    query_scalar::<_, Option<i16>>(STORED_COUNT).fetch_one(&pool).await?,
+    Some(2),
+    "a later run that does state the count must correct the stored row, not be discarded"
+  );
+
+  import_record(&store, request('c', "1.0.0"), &counted(None)).await?;
+  assert_eq!(
+    query_scalar::<_, Option<i16>>(STORED_COUNT).fetch_one(&pool).await?,
+    Some(2),
+    "and a run that says nothing again must not take the known count back"
+  );
+
+  Ok(())
+}
+
+#[tokio::test]
+async fn a_reimport_fills_corrects_and_never_loses_production_years() -> TestResult {
+  let (_container, pool) = start_postgres(5, Duration::from_secs(30)).await?;
+  install_schema(&pool).await?;
+  let store = SqlxIngestionStore::from_pool(pool.clone());
+
+  // The manufacturer and aircraft name are identical in every run, so
+  // `ingest_key` -- the SHA-256 of `planephd\0<manufacturer>\0<aircraft>` -- is
+  // the same and each later import lands on the conflict path. Only the artifact
+  // digest differs, which is what makes each one its own logical run.
+  let dated = |start: &str, end: &str| {
+    normalize_record(
+      "CESSNA",
+      "310R",
+      json!({"description": "dated", "start_year": start, "end_year": end}),
+    )
+  };
+  let undated = || normalize_record("CESSNA", "310R", json!({"description": "undated"}));
+
+  import_record(&store, request('a', "1.0.0"), &undated()).await?;
+  let after_first: Option<i16> =
+    query_scalar("SELECT production_start_year FROM aircraft_core.variants WHERE name = '310R'")
+      .fetch_one(&pool)
+      .await?;
+  assert_eq!(after_first, None, "the first run carried no year information");
+
+  import_record(&store, request('b', "1.0.0"), &dated("1975", "1979")).await?;
+  let filled = years(&pool).await?;
+  assert_eq!(filled, (Some(1975), Some(1979)), "an empty column is backfilled by a later run");
+
+  // The correction a `COALESCE(existing, EXCLUDED)` clause would silently ignore,
+  // freezing the first non-null value forever.
+  import_record(&store, request('c', "1.0.0"), &dated("1976", "1980")).await?;
+  let corrected = years(&pool).await?;
+  assert_eq!(corrected, (Some(1976), Some(1980)), "a changed source value must win");
+
+  import_record(&store, request('d', "1.0.0"), &undated()).await?;
+  let survived = years(&pool).await?;
+  assert_eq!(survived, (Some(1976), Some(1980)), "a run that parsed no year must lose nothing");
+
+  // A range that reopens: the source now gives a later start and no end. Merged
+  // per-column that is start 1985 against a retained end 1980, which
+  // chk_variant_production_years (migration 004) rejects -- aborting the whole
+  // promote transaction and losing every later record in the run. The incoming
+  // record's own pair is valid, so the parser's ProductionYears guard cannot see
+  // it; only the merge can.
+  let reopened =
+    normalize_record("CESSNA", "310R", json!({"description": "reopened", "start_year": "1985"}));
+  import_record(&store, request('e', "1.0.0"), &reopened).await?;
+  assert_eq!(
+    years(&pool).await?,
+    (Some(1985), None),
+    "a later start with no end must replace the pair, never straddle two runs"
+  );
+  Ok(())
+}
+
+/// The production years of the single `310R` variant.
+async fn years(pool: &sqlx_postgres::PgPool) -> TestResult<(Option<i16>, Option<i16>)> {
+  let row = query(
+    "SELECT production_start_year, production_end_year
+       FROM aircraft_core.variants WHERE name = '310R'",
+  )
+  .fetch_one(pool)
+  .await?;
+  Ok((row.get("production_start_year"), row.get("production_end_year")))
+}
+
 #[tokio::test]
 #[allow(clippy::too_many_lines)]
 async fn repository_preserves_ingestion_semantics_and_attempt_history() -> TestResult {
@@ -116,7 +343,13 @@ async fn repository_preserves_ingestion_semantics_and_attempt_history() -> TestR
         "description": "first raw document",
         "performance": {
             "best_cruise_speed": "124 FURLONGS",
-            "ceiling": "14000 FT"
+            "ceiling": "14000 FT",
+            // Both map to FUEL_BURN_CRUISE, whose canonical unit is GPH. GPH
+            // canonicalises; PPH is mass per hour and reaches GPH only through a
+            // fuel density, so seeds/001_reference_units.sql leaves it its own
+            // canonical and this row must store no canonical value at all.
+            "fuel_burn_75": "10 GPH",
+            "fuel_burn": "60.2 PPH"
         },
         "ownership_costs": {
             "annual_inspection_cost": "$2,200",
@@ -135,6 +368,22 @@ async fn repository_preserves_ingestion_semantics_and_attempt_history() -> TestR
   .fetch_one(&pool)
   .await?;
   assert_eq!(canonical_speed_count, 0);
+
+  let fuel_burn: Vec<(String, Option<String>)> = query(
+    "SELECT raw_unit_code, canonical_value::text
+       FROM aircraft_specs.performance_metrics
+      WHERE metric_type_code = 'FUEL_BURN_CRUISE' ORDER BY raw_unit_code",
+  )
+  .fetch_all(&pool)
+  .await?
+  .into_iter()
+  .map(|row| (row.get("raw_unit_code"), row.get("canonical_value")))
+  .collect();
+  assert_eq!(
+    fuel_burn,
+    vec![("GPH".to_owned(), Some("10".to_owned())), ("PPH".to_owned(), None)],
+    "a unit that cannot reach the metric's canonical unit stores no canonical value"
+  );
 
   let unsafe_assertion_is_pending: bool = query_scalar(
     "SELECT status_code = 'PENDING' AND NOT is_accepted

@@ -25,12 +25,36 @@ ORDER BY table_schema, table_name;
 -- -----------------------------------------------------------------------------
 -- 2. SEED DATA — operating_approval_types count and coverage
 -- -----------------------------------------------------------------------------
+-- `is_positive` is broadening-versus-restricting, not binary-versus-graduated:
+-- migration 002 defines it as "TRUE = this approval broadens operations (IFR,
+-- RVSM, ETOPS); FALSE = this approval restricts or prohibits an operation
+-- (NOT_AEROBATIC)". CAT III broadens operations whatever its IIIa/b/c subtype,
+-- so it is TRUE, and no restricting approval is seeded yet.
 SELECT count(*) AS total_approval_types,
-       count(*) FILTER (WHERE is_positive)     AS binary_types,
-       count(*) FILTER (WHERE NOT is_positive) AS graduated_types
+       count(*) FILTER (WHERE is_positive)     AS broadening_types,
+       count(*) FILTER (WHERE NOT is_positive) AS restricting_types
 FROM aircraft_ref.operating_approval_types
 WHERE is_active;
--- Expect: 14 total; 13 binary (TRUE); 1 graduated (CAT_III_ILS).
+-- Expect: 14 total; 14 broadening (TRUE); 0 restricting.
+
+-- Enforced, because the expectation above is a comment and cannot fail. The row
+-- count itself is already asserted by 002_core_reference_tables_validation.sql;
+-- this covers the split, which nothing else does.
+DO $approvals$
+DECLARE
+    restricting_count BIGINT;
+BEGIN
+    SELECT count(*) INTO restricting_count
+    FROM aircraft_ref.operating_approval_types
+    WHERE is_active AND NOT is_positive;
+
+    IF restricting_count <> 0 THEN
+        RAISE EXCEPTION
+            'operating_approval_types has % restricting rows; every seeded approval broadens operations',
+            restricting_count;
+    END IF;
+END
+$approvals$;
 
 -- Spot-check key approval codes:
 SELECT code, label, is_positive, sort_order

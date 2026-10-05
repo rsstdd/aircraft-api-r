@@ -255,20 +255,39 @@ BEGIN
 END
 $validation$;
 
--- Pin the closed protected-policy set from the accepted HTTP decision.
+-- Pin the complete closed protected-policy set from the accepted HTTP decision
+-- and database/seeds/004_authentication_seed_data.sql. Convergence is exercised
+-- by crates/aircraft_testsupport/tests/seed_data.rs.
 DO $validation$
-DECLARE
-    expected_scopes CONSTANT TEXT[] := ARRAY[
-        'ADMIN', 'CATALOG_READ', 'CURATION_READ', 'CURATION_WRITE', 'MILITARY_READ'
-    ];
-    actual_scopes TEXT[];
 BEGIN
-    SELECT array_agg(code::TEXT ORDER BY code) INTO actual_scopes FROM aircraft_auth.scopes;
-
-    IF actual_scopes IS DISTINCT FROM expected_scopes THEN
-        RAISE EXCEPTION
-            'aircraft_auth.scopes holds %, expected the protected policies %',
-            actual_scopes, expected_scopes;
+    IF EXISTS (
+        (SELECT code, label, description, sort_order FROM aircraft_auth.scopes
+         EXCEPT VALUES
+            ('CATALOG_READ'::aircraft_ref.lookup_code, 'Catalog read'::TEXT,
+             'Read ordinary aircraft catalog data.'::TEXT, 10::SMALLINT),
+            ('MILITARY_READ', 'Military reference read',
+             'Read military platform capabilities and public loadout metadata.', 20),
+            ('CURATION_READ', 'Curation read',
+             'Read pending source evidence, assertions, and curation flags.', 30),
+            ('CURATION_WRITE', 'Curation write',
+             'Accept or reject assertions and record curation decisions.', 40),
+            ('ADMIN', 'Administration',
+             'Credential lifecycle and other administrative operations.', 50))
+        UNION ALL
+        (VALUES
+            ('CATALOG_READ'::aircraft_ref.lookup_code, 'Catalog read'::TEXT,
+             'Read ordinary aircraft catalog data.'::TEXT, 10::SMALLINT),
+            ('MILITARY_READ', 'Military reference read',
+             'Read military platform capabilities and public loadout metadata.', 20),
+            ('CURATION_READ', 'Curation read',
+             'Read pending source evidence, assertions, and curation flags.', 30),
+            ('CURATION_WRITE', 'Curation write',
+             'Accept or reject assertions and record curation decisions.', 40),
+            ('ADMIN', 'Administration',
+             'Credential lifecycle and other administrative operations.', 50)
+         EXCEPT SELECT code, label, description, sort_order FROM aircraft_auth.scopes)
+    ) THEN
+        RAISE EXCEPTION 'aircraft_auth.scopes differs from the canonical protected policies';
     END IF;
 END
 $validation$;

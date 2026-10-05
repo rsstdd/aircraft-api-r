@@ -22,9 +22,11 @@
 //! `crate::openapi` publishes each scoped operation's security requirement
 //! from, and what the tests read against the generated `OpenAPI` document
 //! operation by operation. `/health`, `/ready`,
-//! and `/version` are `Public`; `/v1/reference/{catalog}` is `CatalogRead`.
+//! and `/version` are `Public`; `/v1/reference/{catalog}`, `/v1/models`, and
+//! `/v1/models/{model}` are `CatalogRead`.
 
 pub mod health;
+pub mod models;
 pub mod ready;
 pub mod reference;
 pub mod version;

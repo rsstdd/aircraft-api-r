@@ -192,8 +192,19 @@ pub fn decode(
 /// There is deliberately no `sort` member. The accepted decision gives each
 /// endpoint its own allowlist of sort orders, so their legal values differ and
 /// a shared type could only accept the parameter and ignore it. An endpoint
-/// with more than one order declares its own typed member and flattens this
-/// struct beside it, then compares that member with [`CursorPosition::sort`].
+/// with a sort member declares it on its own query type, together with its own
+/// `limit` and `cursor` members, and reaches the shared cursor path through
+/// [`ListQuery::new`]; it then compares its sort with [`CursorPosition::sort`].
+///
+/// It does **not** `#[serde(flatten)]` this struct beside that member, which is
+/// what this comment prescribed until an endpoint first tried it. `axum`'s
+/// `Query` deserializes through `serde_urlencoded`, and under `flatten` that
+/// crate takes an untyped path on which every value stays a string: the
+/// `NonZeroU16` below then fails with `invalid type: string "2", expected u16`,
+/// so every request carrying `limit` would be a `400`.
+/// `a_flat_endpoint_query_reaches_the_shared_cursor_path` is the regression
+/// guard, and it drives the real extractor rather than `serde_urlencoded`
+/// directly, so a future `axum` that changes deserializer is still covered.
 #[derive(Debug, Deserialize)]
 pub struct ListQuery {
   limit: Option<NonZeroU16>,
@@ -201,6 +212,17 @@ pub struct ListQuery {
 }
 
 impl ListQuery {
+  /// The shared cursor path, for an endpoint whose own query type carries the
+  /// `limit` and `cursor` members because it also carries a sort.
+  ///
+  /// Exists so that the decode-and-bound logic in [`Self::into_page_request`]
+  /// has one implementation rather than one per endpoint. The members are named
+  /// on the calling struct, so nothing here can transpose them.
+  #[must_use]
+  pub const fn new(limit: Option<NonZeroU16>, cursor: Option<String>) -> Self {
+    Self { limit, cursor }
+  }
+
   /// Turns validated query parameters into the page bound and, if one was sent,
   /// the cursor to resume from.
   ///
@@ -225,24 +247,43 @@ impl ListQuery {
   }
 }
 
-/// One page on the wire.
+/// Holds [`PageResponse`] alone, so the lint allowance below covers the
+/// `ToSchema` derive's expansion and nothing hand-written.
 ///
-/// `next_cursor` is serialized as `null` on a final page rather than omitted,
-/// because the accepted decision says "Empty and final pages return a null next
-/// cursor" — the opposite of the omit-when-absent rule the measurement
-/// representation follows, and deliberate: a client polling for more pages
-/// reads the member rather than testing for its presence.
-#[derive(Debug, Serialize)]
-pub struct PageResponse<T> {
-  pub items: Vec<T>,
-  pub next_cursor: Option<String>,
+/// The expansion trips `clippy::option_if_let_else` on the generic parameter --
+/// its own suggestion, `T.map_or_else(|| T, |composed| T)`, is the tell -- and
+/// the diagnostic is raised in a context no item- or field-level attribute
+/// reaches, which is why the allowance is a module inner attribute rather than
+/// one on the struct. The module exists only to keep that attribute from
+/// covering the hand-written `Option` code in the rest of this file.
+mod envelope {
+  #![allow(clippy::option_if_let_else, reason = "emitted by the ToSchema derive")]
+
+  use serde::Serialize;
+  use utoipa::ToSchema;
+
+  /// One page on the wire.
+  ///
+  /// `next_cursor` is serialized as `null` on a final page rather than omitted,
+  /// because the accepted decision says "Empty and final pages return a null next
+  /// cursor" -- the opposite of the omit-when-absent rule the measurement
+  /// representation follows, and deliberate: a client polling for more pages
+  /// reads the member rather than testing for its presence.
+  #[derive(Debug, Serialize, ToSchema)]
+  pub struct PageResponse<T> {
+    pub items: Vec<T>,
+    pub next_cursor: Option<String>,
+  }
 }
+
+pub use envelope::PageResponse;
 
 #[cfg(test)]
 mod tests {
   // A failing assertion is the point of a test.
   #![allow(clippy::expect_used)]
 
+  use axum::extract::Query;
   use serde_json::json;
 
   use super::*;
@@ -374,6 +415,70 @@ mod tests {
       FilterFingerprint::of("category=SPEED"),
       FilterFingerprint::of("category=SPEED"),
       "the same normalized filters fingerprint identically"
+    );
+  }
+
+  /// The shape an endpoint with a sort member must use, driven through the real
+  /// extractor.
+  ///
+  /// Two things are proven together because they fail apart. The flat members
+  /// parse at their declared types, which `#[serde(flatten)]` of [`ListQuery`]
+  /// does not -- the assertion below pins the exact failure, so a dependency
+  /// that gains flatten support makes this test fail and the comment above gets
+  /// corrected rather than quietly outliving its reason. And the parsed parts
+  /// reach [`ListQuery::new`] and come back as the same page request a
+  /// `ListQuery` would have produced, so the sharing is real and not two copies
+  /// of the cursor logic.
+  #[test]
+  fn a_flat_endpoint_query_reaches_the_shared_cursor_path() {
+    #[derive(Debug, Deserialize)]
+    struct EndpointQuery {
+      sort: Option<String>,
+      family: Option<String>,
+      limit: Option<NonZeroU16>,
+      cursor: Option<String>,
+    }
+
+    // Deserialized into and then discarded: the point is that this shape
+    // cannot be deserialized at all, so neither member is ever read.
+    #[derive(Debug, Deserialize)]
+    #[expect(dead_code, reason = "the assertion is that this shape fails to parse")]
+    struct FlattenedQuery {
+      sort: Option<String>,
+      #[serde(flatten)]
+      page: ListQuery,
+    }
+
+    let fingerprint = filters("family=cessna");
+    let issued = encode(&position("slug_asc", "c-172", "c-172"), fingerprint);
+    let uri: axum::http::Uri =
+      format!("/v1/models?sort=slug_asc&family=cessna&limit=2&cursor={issued}")
+        .parse()
+        .expect("the test URI is valid");
+
+    let Query(query) =
+      Query::<EndpointQuery>::try_from_uri(&uri).expect("flat members parse at their own types");
+    assert_eq!(query.sort.as_deref(), Some("slug_asc"));
+    assert_eq!(query.family.as_deref(), Some("cessna"));
+
+    let (limit, resume) = ListQuery::new(query.limit, query.cursor)
+      .into_page_request(fingerprint, "/v1/models")
+      .expect("a cursor this build issued is accepted through the shared path");
+    assert_eq!(limit.get(), 2, "the flat limit bounds the page");
+    assert_eq!(
+      resume,
+      Some(position("slug_asc", "c-172", "c-172")),
+      "the flat cursor decodes to the position it was issued for"
+    );
+
+    // The mechanism this crate's own guidance used to prescribe, and why it was
+    // withdrawn: `limit` never reaches `NonZeroU16` under `flatten`.
+    let rejection = Query::<FlattenedQuery>::try_from_uri(&uri)
+      .expect_err("flatten must still be the broken path this comment describes");
+    assert!(
+      rejection.body_text().contains("invalid type: string"),
+      "the flatten failure is a type error on a non-string member: {}",
+      rejection.body_text()
     );
   }
 

@@ -245,6 +245,347 @@
         }
       }
     },
+    "/v1/models": {
+      "get": {
+        "tags": [
+          "catalog"
+        ],
+        "summary": "List models",
+        "description": "One keyset-paginated page of models, optionally filtered to a parent family. A family slug that names no family is a 404; a family that exists with no models is a successful empty collection. The only sort is slug_asc.",
+        "operationId": "list_models",
+        "parameters": [
+          {
+            "name": "family",
+            "in": "query",
+            "description": "Parent family slug. A value that is not a slug is a 400; one that names no family is a 404.",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "sort",
+            "in": "query",
+            "description": "Sort order. slug_asc is the only supported value.",
+            "required": false,
+            "schema": {
+              "$ref": "#/components/schemas/ModelSort"
+            }
+          },
+          {
+            "name": "limit",
+            "in": "query",
+            "description": "Rows per page. Defaults to 50; values above 200 are capped to 200. A limit of 0 is refused.",
+            "required": false,
+            "schema": {
+              "type": "integer",
+              "format": "int32",
+              "minimum": 1
+            }
+          },
+          {
+            "name": "cursor",
+            "in": "query",
+            "description": "Opaque continuation token from a previous page's next_cursor. Clients must not construct or interpret one.",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "X-Request-Id",
+            "in": "header",
+            "description": "Correlation identifier. Adopted when it is 1-128 visible ASCII characters sent exactly once; otherwise the service generates one.",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "One page of models, in slug order, with a null next_cursor on the final page",
+            "headers": {
+              "X-Request-Id": {
+                "schema": {
+                  "type": "string"
+                },
+                "description": "The correlation identifier for this request, echoed from the client or generated here."
+              }
+            },
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/PageResponse_ModelSummaryResponse"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "The request body could not be read",
+            "headers": {
+              "X-Request-Id": {
+                "schema": {
+                  "type": "string"
+                },
+                "description": "The correlation identifier for this request, echoed from the client or generated here."
+              }
+            },
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemDetails"
+                }
+              }
+            }
+          },
+          "401": {
+            "$ref": "#/components/responses/AuthenticationRequiredProblem"
+          },
+          "403": {
+            "$ref": "#/components/responses/InsufficientScopeProblem"
+          },
+          "404": {
+            "description": "The family filter names no family",
+            "headers": {
+              "X-Request-Id": {
+                "schema": {
+                  "type": "string"
+                },
+                "description": "The correlation identifier for this request, echoed from the client or generated here."
+              }
+            },
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemDetails"
+                }
+              }
+            }
+          },
+          "413": {
+            "description": "The request body is larger than the perimeter accepts",
+            "headers": {
+              "X-Request-Id": {
+                "schema": {
+                  "type": "string"
+                },
+                "description": "The correlation identifier for this request, echoed from the client or generated here."
+              }
+            },
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemDetails"
+                }
+              }
+            }
+          },
+          "429": {
+            "$ref": "#/components/responses/RateLimitedProblem"
+          },
+          "503": {
+            "description": "The service is draining, is at capacity, or could not read the models",
+            "headers": {
+              "X-Request-Id": {
+                "schema": {
+                  "type": "string"
+                },
+                "description": "The correlation identifier for this request, echoed from the client or generated here."
+              }
+            },
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemDetails"
+                }
+              }
+            }
+          },
+          "504": {
+            "description": "The handler did not answer within the perimeter deadline",
+            "headers": {
+              "X-Request-Id": {
+                "schema": {
+                  "type": "string"
+                },
+                "description": "The correlation identifier for this request, echoed from the client or generated here."
+              }
+            },
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemDetails"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "apiCredential": [
+              "CATALOG_READ"
+            ]
+          }
+        ]
+      }
+    },
+    "/v1/models/{model}": {
+      "get": {
+        "tags": [
+          "catalog"
+        ],
+        "summary": "Read one model",
+        "description": "One model by its slug. A slug no model carries is a 404.",
+        "operationId": "model",
+        "parameters": [
+          {
+            "name": "model",
+            "in": "path",
+            "description": "The model's slug. The surrogate key is not a public identifier and is never accepted here.",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "X-Request-Id",
+            "in": "header",
+            "description": "Correlation identifier. Adopted when it is 1-128 visible ASCII characters sent exactly once; otherwise the service generates one.",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "The model",
+            "headers": {
+              "X-Request-Id": {
+                "schema": {
+                  "type": "string"
+                },
+                "description": "The correlation identifier for this request, echoed from the client or generated here."
+              }
+            },
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ModelDetailResponse"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "The request body could not be read",
+            "headers": {
+              "X-Request-Id": {
+                "schema": {
+                  "type": "string"
+                },
+                "description": "The correlation identifier for this request, echoed from the client or generated here."
+              }
+            },
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemDetails"
+                }
+              }
+            }
+          },
+          "401": {
+            "$ref": "#/components/responses/AuthenticationRequiredProblem"
+          },
+          "403": {
+            "$ref": "#/components/responses/InsufficientScopeProblem"
+          },
+          "404": {
+            "description": "No model has that slug",
+            "headers": {
+              "X-Request-Id": {
+                "schema": {
+                  "type": "string"
+                },
+                "description": "The correlation identifier for this request, echoed from the client or generated here."
+              }
+            },
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemDetails"
+                }
+              }
+            }
+          },
+          "413": {
+            "description": "The request body is larger than the perimeter accepts",
+            "headers": {
+              "X-Request-Id": {
+                "schema": {
+                  "type": "string"
+                },
+                "description": "The correlation identifier for this request, echoed from the client or generated here."
+              }
+            },
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemDetails"
+                }
+              }
+            }
+          },
+          "429": {
+            "$ref": "#/components/responses/RateLimitedProblem"
+          },
+          "503": {
+            "description": "The service is draining, is at capacity, or could not read the model",
+            "headers": {
+              "X-Request-Id": {
+                "schema": {
+                  "type": "string"
+                },
+                "description": "The correlation identifier for this request, echoed from the client or generated here."
+              }
+            },
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemDetails"
+                }
+              }
+            }
+          },
+          "504": {
+            "description": "The handler did not answer within the perimeter deadline",
+            "headers": {
+              "X-Request-Id": {
+                "schema": {
+                  "type": "string"
+                },
+                "description": "The correlation identifier for this request, echoed from the client or generated here."
+              }
+            },
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemDetails"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "apiCredential": [
+              "CATALOG_READ"
+            ]
+          }
+        ]
+      }
+    },
     "/v1/reference/{catalog}": {
       "get": {
         "tags": [
@@ -694,6 +1035,207 @@
           },
           "raw_value": {
             "$ref": "#/components/schemas/DecimalStringResponse"
+          }
+        }
+      },
+      "ModelDetailResponse": {
+        "type": "object",
+        "description": "One model, whole.\n\nThe summary's members are repeated rather than nested or flattened, which is\nwhat `AGENTS.md` asks for in keeping HTTP DTOs explicit mappings of the\napplication types instead of structural reuse of them. `name_aliases` is\nalways present, possibly empty, because [`ModelDetail`] already collapsed a\nNULL array to an empty one and a client should not have to decide again.",
+        "required": [
+          "slug",
+          "name",
+          "family",
+          "name_aliases"
+        ],
+        "properties": {
+          "certification_year": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int32"
+          },
+          "description": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "display_name": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "family": {
+            "type": "string"
+          },
+          "first_flight_year": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int32"
+          },
+          "generation": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int32"
+          },
+          "name": {
+            "type": "string"
+          },
+          "name_aliases": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "series": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "slug": {
+            "type": "string"
+          }
+        }
+      },
+      "ModelSort": {
+        "type": "string",
+        "description": "Which order a caller asked for.\n\nA closed enum rather than a string, so `?sort=name_desc` is refused by the\nsame query deserialization that already refuses `?limit=abc` -- the `400`\nthe acceptance criteria require of an unsupported sort, with no comparison\nof this module's own.",
+        "enum": [
+          "slug_asc"
+        ]
+      },
+      "ModelSummaryResponse": {
+        "type": "object",
+        "description": "One model as a collection row.",
+        "required": [
+          "slug",
+          "name",
+          "family"
+        ],
+        "properties": {
+          "certification_year": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int32"
+          },
+          "display_name": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "family": {
+            "type": "string",
+            "description": "The parent family's slug."
+          },
+          "first_flight_year": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int32"
+          },
+          "generation": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int32"
+          },
+          "name": {
+            "type": "string"
+          },
+          "series": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "slug": {
+            "type": "string",
+            "description": "The stable public identifier, as `aircraft_ref.slug_text` spells it."
+          }
+        }
+      },
+      "PageResponse_ModelSummaryResponse": {
+        "type": "object",
+        "description": "One page on the wire.\n\n`next_cursor` is serialized as `null` on a final page rather than omitted,\nbecause the accepted decision says \"Empty and final pages return a null next\ncursor\" -- the opposite of the omit-when-absent rule the measurement\nrepresentation follows, and deliberate: a client polling for more pages\nreads the member rather than testing for its presence.",
+        "required": [
+          "items"
+        ],
+        "properties": {
+          "items": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "description": "One model as a collection row.",
+              "required": [
+                "slug",
+                "name",
+                "family"
+              ],
+              "properties": {
+                "certification_year": {
+                  "type": [
+                    "integer",
+                    "null"
+                  ],
+                  "format": "int32"
+                },
+                "display_name": {
+                  "type": [
+                    "string",
+                    "null"
+                  ]
+                },
+                "family": {
+                  "type": "string",
+                  "description": "The parent family's slug."
+                },
+                "first_flight_year": {
+                  "type": [
+                    "integer",
+                    "null"
+                  ],
+                  "format": "int32"
+                },
+                "generation": {
+                  "type": [
+                    "integer",
+                    "null"
+                  ],
+                  "format": "int32"
+                },
+                "name": {
+                  "type": "string"
+                },
+                "series": {
+                  "type": [
+                    "string",
+                    "null"
+                  ]
+                },
+                "slug": {
+                  "type": "string",
+                  "description": "The stable public identifier, as `aircraft_ref.slug_text` spells it."
+                }
+              }
+            }
+          },
+          "next_cursor": {
+            "type": [
+              "string",
+              "null"
+            ]
           }
         }
       },
@@ -1200,6 +1742,10 @@
     {
       "name": "reference",
       "description": "Seeded reference catalogs"
+    },
+    {
+      "name": "catalog",
+      "description": "Aircraft models"
     }
   ]
 }

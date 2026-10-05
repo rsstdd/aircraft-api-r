@@ -15,23 +15,213 @@ WHERE table_schema = 'aircraft_compare'
 ORDER BY table_name;
 -- Expect: criterion_scores, mission_criteria, mission_profiles, variant_suitability
 
--- A2. SEED DATA COUNTS
-SELECT
-    (SELECT count(*) FROM aircraft_compare.mission_profiles)  AS profiles_total,
-    (SELECT count(*) FROM aircraft_compare.mission_criteria)  AS criteria_rows,
-    (SELECT count(*) FROM aircraft_compare.mission_profiles
-     WHERE applies_to_military)                               AS military_profiles,
-    (SELECT count(*) FROM aircraft_compare.mission_profiles
-     WHERE applies_to_civilian)                               AS civilian_profiles;
--- Expect: 15 profiles, >30 criteria rows, 3 military, ≥12 civilian.
+-- A2. SEED DATA COMPLETENESS
+-- Keep this policy check synchronized with
+-- database/seeds/003_mission_profile_seed_data.sql and
+-- crates/aircraft_testsupport/tests/seed_data.rs.
+DO $validation$
+DECLARE
+    invalid_count BIGINT;
+BEGIN
+    IF (SELECT count(*) FROM aircraft_compare.mission_profiles) <> 15 THEN
+        RAISE EXCEPTION 'mission profile count must be exactly 15';
+    END IF;
+    IF (SELECT count(*) FROM aircraft_compare.mission_criteria) <> 88 THEN
+        RAISE EXCEPTION 'mission criterion count must be exactly 88';
+    END IF;
+    IF (SELECT count(*) FROM aircraft_compare.mission_profiles
+        WHERE applies_to_military) <> 4 THEN
+        RAISE EXCEPTION 'military mission profile count must be exactly 4';
+    END IF;
+    IF (SELECT count(*) FROM aircraft_compare.mission_profiles
+        WHERE applies_to_civilian) <> 12 THEN
+        RAISE EXCEPTION 'civilian mission profile count must be exactly 12';
+    END IF;
+
+    SELECT count(*) INTO invalid_count
+    FROM aircraft_compare.mission_profiles
+    WHERE btrim(slug) = '' OR btrim(title) = ''
+       OR description IS NULL OR btrim(description) = ''
+       OR typical_range_nm IS NULL OR typical_pax_count IS NULL
+       OR typical_altitude_ft IS NULL OR NOT is_active;
+    IF invalid_count <> 0 THEN
+        RAISE EXCEPTION '% mission profiles have incomplete canonical data', invalid_count;
+    END IF;
+
+    SELECT count(*) INTO invalid_count
+    FROM aircraft_compare.mission_criteria
+    WHERE scoring_lower_bound IS NULL OR scoring_upper_bound IS NULL
+       OR scoring_lower_bound >= scoring_upper_bound
+       OR notes IS NULL OR btrim(notes) = '' OR notes ILIKE '%stub%';
+    IF invalid_count <> 0 THEN
+        RAISE EXCEPTION '% mission criteria have invalid bounds or notes', invalid_count;
+    END IF;
+
+    SELECT count(*) INTO invalid_count
+    FROM (
+        SELECT profile.id
+        FROM aircraft_compare.mission_profiles AS profile
+        JOIN aircraft_compare.mission_criteria AS criterion
+          ON criterion.mission_profile_id = profile.id
+        GROUP BY profile.id
+        HAVING sum(criterion.weight) <> 1.000
+           OR count(*) NOT IN (5, 6)
+           OR (profile.profile_type_code NOT IN ('BACKCOUNTRY_STOL', 'FLIGHT_TRAINING')
+               AND count(*) <> 6)
+    ) AS invalid_profiles;
+    IF invalid_count <> 0 THEN
+        RAISE EXCEPTION '% mission profiles have invalid criterion counts or weights',
+            invalid_count;
+    END IF;
+
+    -- The baseline matrix is stated once and compared in both directions: the
+    -- left arm catches an installed row the baseline does not authorise, the
+    -- right arm catches a baseline row the seeds never installed. Holding the
+    -- rows in a CTE keeps a future edit from landing on one copy of the matrix
+    -- and leaving the other to disagree with it.
+    IF EXISTS (
+        WITH expected (profile_type_code, criterion_type_code, weight,
+                       is_required, scoring_lower_bound, scoring_upper_bound) AS (
+          VALUES
+            ('FLOATPLANE_OPERATIONS'::aircraft_ref.lookup_code, 'CRITERION_CRUISE_SPEED'::aircraft_ref.lookup_code, 0.100::NUMERIC, FALSE, 70::NUMERIC, 180::NUMERIC),
+            ('FLOATPLANE_OPERATIONS', 'CRITERION_RANGE', 0.250, FALSE, 150, 800),
+            ('FLOATPLANE_OPERATIONS', 'CRITERION_PAYLOAD', 0.200, FALSE, 300, 2000),
+            ('FLOATPLANE_OPERATIONS', 'CRITERION_RUNWAY_TAKEOFF', 0.200, FALSE, 500, 3000),
+            ('FLOATPLANE_OPERATIONS', 'CRITERION_RUNWAY_LANDING', 0.150, FALSE, 500, 3000),
+            ('FLOATPLANE_OPERATIONS', 'CRITERION_HOURLY_COST', 0.100, FALSE, 50, 500),
+            ('CARGO_FREIGHT', 'CRITERION_CRUISE_SPEED', 0.050, FALSE, 100, 450),
+            ('CARGO_FREIGHT', 'CRITERION_RANGE', 0.250, TRUE, 500, 4000),
+            ('CARGO_FREIGHT', 'CRITERION_PAYLOAD', 0.350, TRUE, 1000, 50000),
+            ('CARGO_FREIGHT', 'CRITERION_RUNWAY_TAKEOFF', 0.100, FALSE, 1500, 8000),
+            ('CARGO_FREIGHT', 'CRITERION_RUNWAY_LANDING', 0.100, FALSE, 1500, 8000),
+            ('CARGO_FREIGHT', 'CRITERION_HOURLY_COST', 0.150, FALSE, 200, 10000),
+            ('MEDEVAC_SAR', 'CRITERION_CRUISE_SPEED', 0.150, FALSE, 100, 300),
+            ('MEDEVAC_SAR', 'CRITERION_RANGE', 0.200, TRUE, 300, 1500),
+            ('MEDEVAC_SAR', 'CRITERION_CEILING', 0.100, FALSE, 10000, 30000),
+            ('MEDEVAC_SAR', 'CRITERION_PAYLOAD', 0.150, FALSE, 500, 3000),
+            ('MEDEVAC_SAR', 'CRITERION_RUNWAY_TAKEOFF', 0.200, TRUE, 500, 3000),
+            ('MEDEVAC_SAR', 'CRITERION_RUNWAY_LANDING', 0.200, TRUE, 500, 3000),
+            ('PATROL_SURVEILLANCE', 'CRITERION_CRUISE_SPEED', 0.100, FALSE, 80, 350),
+            ('PATROL_SURVEILLANCE', 'CRITERION_RANGE', 0.300, TRUE, 500, 4000),
+            ('PATROL_SURVEILLANCE', 'CRITERION_CEILING', 0.150, FALSE, 10000, 40000),
+            ('PATROL_SURVEILLANCE', 'CRITERION_FUEL_EFFICIENCY', 0.200, FALSE, 2, 20),
+            ('PATROL_SURVEILLANCE', 'CRITERION_PAYLOAD', 0.150, FALSE, 500, 10000),
+            ('PATROL_SURVEILLANCE', 'CRITERION_HOURLY_COST', 0.100, FALSE, 100, 5000),
+            ('HIGH_ALTITUDE_OPS', 'CRITERION_CRUISE_SPEED', 0.100, FALSE, 100, 300),
+            ('HIGH_ALTITUDE_OPS', 'CRITERION_RANGE', 0.150, FALSE, 300, 2000),
+            ('HIGH_ALTITUDE_OPS', 'CRITERION_CEILING', 0.400, TRUE, 12000, 40000),
+            ('HIGH_ALTITUDE_OPS', 'CRITERION_CLIMB_RATE', 0.200, FALSE, 500, 3000),
+            ('HIGH_ALTITUDE_OPS', 'CRITERION_PAYLOAD', 0.100, FALSE, 300, 3000),
+            ('HIGH_ALTITUDE_OPS', 'CRITERION_RUNWAY_TAKEOFF', 0.050, FALSE, 1000, 5000),
+            ('AEROBATICS', 'CRITERION_CRUISE_SPEED', 0.150, FALSE, 100, 300),
+            ('AEROBATICS', 'CRITERION_RANGE', 0.100, FALSE, 100, 800),
+            ('AEROBATICS', 'CRITERION_CLIMB_RATE', 0.300, FALSE, 1000, 5000),
+            ('AEROBATICS', 'CRITERION_RUNWAY_TAKEOFF', 0.100, FALSE, 500, 3000),
+            ('AEROBATICS', 'CRITERION_PRICE', 0.200, FALSE, 50000, 1000000),
+            ('AEROBATICS', 'CRITERION_HOURLY_COST', 0.150, FALSE, 100, 1000),
+            ('MILITARY_CLOSE_AIR_SUPPORT', 'CRITERION_CRUISE_SPEED', 0.150, FALSE, 250, 700),
+            ('MILITARY_CLOSE_AIR_SUPPORT', 'CRITERION_RANGE', 0.200, FALSE, 300, 2000),
+            ('MILITARY_CLOSE_AIR_SUPPORT', 'CRITERION_CLIMB_RATE', 0.150, FALSE, 3000, 15000),
+            ('MILITARY_CLOSE_AIR_SUPPORT', 'CRITERION_PAYLOAD', 0.300, FALSE, 2000, 20000),
+            ('MILITARY_CLOSE_AIR_SUPPORT', 'CRITERION_RUNWAY_TAKEOFF', 0.100, FALSE, 1500, 6000),
+            ('MILITARY_CLOSE_AIR_SUPPORT', 'CRITERION_HOURLY_COST', 0.100, FALSE, 1000, 30000),
+            ('MILITARY_TRANSPORT_AIRLIFT', 'CRITERION_CRUISE_SPEED', 0.100, FALSE, 200, 550),
+            ('MILITARY_TRANSPORT_AIRLIFT', 'CRITERION_RANGE', 0.250, TRUE, 1000, 6000),
+            ('MILITARY_TRANSPORT_AIRLIFT', 'CRITERION_CEILING', 0.050, FALSE, 20000, 45000),
+            ('MILITARY_TRANSPORT_AIRLIFT', 'CRITERION_PAYLOAD', 0.350, TRUE, 10000, 200000),
+            ('MILITARY_TRANSPORT_AIRLIFT', 'CRITERION_RUNWAY_TAKEOFF', 0.150, FALSE, 2000, 8000),
+            ('MILITARY_TRANSPORT_AIRLIFT', 'CRITERION_RUNWAY_LANDING', 0.100, FALSE, 2000, 8000),
+            ('MILITARY_MARITIME_PATROL', 'CRITERION_CRUISE_SPEED', 0.100, FALSE, 180, 500),
+            ('MILITARY_MARITIME_PATROL', 'CRITERION_RANGE', 0.350, TRUE, 1000, 6000),
+            ('MILITARY_MARITIME_PATROL', 'CRITERION_CEILING', 0.100, FALSE, 15000, 45000),
+            ('MILITARY_MARITIME_PATROL', 'CRITERION_FUEL_EFFICIENCY', 0.150, FALSE, 0.5, 10),
+            ('MILITARY_MARITIME_PATROL', 'CRITERION_PAYLOAD', 0.200, FALSE, 2000, 30000),
+            ('MILITARY_MARITIME_PATROL', 'CRITERION_HOURLY_COST', 0.100, FALSE, 1000, 30000),
+            ('UNMANNED_SPECIAL_MISSION', 'CRITERION_CRUISE_SPEED', 0.100, FALSE, 80, 400),
+            ('UNMANNED_SPECIAL_MISSION', 'CRITERION_RANGE', 0.300, TRUE, 500, 6000),
+            ('UNMANNED_SPECIAL_MISSION', 'CRITERION_CEILING', 0.250, TRUE, 20000, 60000),
+            ('UNMANNED_SPECIAL_MISSION', 'CRITERION_CLIMB_RATE', 0.050, FALSE, 500, 5000),
+            ('UNMANNED_SPECIAL_MISSION', 'CRITERION_PAYLOAD', 0.200, FALSE, 100, 5000),
+            ('UNMANNED_SPECIAL_MISSION', 'CRITERION_HOURLY_COST', 0.100, FALSE, 50, 5000)
+        ),
+        installed AS (
+          SELECT profile.profile_type_code, criterion.criterion_type_code,
+                 criterion.weight, criterion.is_required,
+                 criterion.scoring_lower_bound, criterion.scoring_upper_bound
+          FROM aircraft_compare.mission_criteria AS criterion
+          JOIN aircraft_compare.mission_profiles AS profile
+            ON profile.id = criterion.mission_profile_id
+          WHERE profile.profile_type_code IN (
+              'FLOATPLANE_OPERATIONS', 'CARGO_FREIGHT', 'MEDEVAC_SAR',
+              'PATROL_SURVEILLANCE', 'HIGH_ALTITUDE_OPS', 'AEROBATICS',
+              'MILITARY_CLOSE_AIR_SUPPORT', 'MILITARY_TRANSPORT_AIRLIFT',
+              'MILITARY_MARITIME_PATROL', 'UNMANNED_SPECIAL_MISSION')
+        )
+        (SELECT * FROM installed EXCEPT SELECT * FROM expected)
+        UNION ALL
+        (SELECT * FROM expected EXCEPT SELECT * FROM installed)
+    ) THEN
+        RAISE EXCEPTION 'six-criterion v1 mission policy differs from the repository baseline';
+    END IF;
+
+    IF NOT EXISTS (
+        SELECT 1 FROM aircraft_compare.mission_criteria AS criterion
+        JOIN aircraft_compare.mission_profiles AS profile
+          ON profile.id = criterion.mission_profile_id
+        WHERE profile.profile_type_code = 'PERSONAL_VFR_TOURING'
+          AND criterion.criterion_type_code = 'CRITERION_FUEL_EFFICIENCY'
+          AND criterion.scoring_lower_bound = 5 AND criterion.scoring_upper_bound = 25
+    ) OR NOT EXISTS (
+        SELECT 1 FROM aircraft_compare.mission_criteria AS criterion
+        JOIN aircraft_compare.mission_profiles AS profile
+          ON profile.id = criterion.mission_profile_id
+        WHERE profile.profile_type_code = 'IFR_CROSSCOUNTRY'
+          AND criterion.criterion_type_code = 'CRITERION_FUEL_EFFICIENCY'
+          AND criterion.scoring_lower_bound = 4 AND criterion.scoring_upper_bound = 20
+    ) OR NOT EXISTS (
+        SELECT 1 FROM aircraft_compare.mission_criteria AS criterion
+        JOIN aircraft_compare.mission_profiles AS profile
+          ON profile.id = criterion.mission_profile_id
+        WHERE profile.profile_type_code = 'IFR_CROSSCOUNTRY'
+          AND criterion.criterion_type_code = 'CRITERION_PRICE'
+          AND criterion.scoring_lower_bound = 50000
+          AND criterion.scoring_upper_bound = 1000000
+    ) OR NOT EXISTS (
+        SELECT 1 FROM aircraft_compare.mission_criteria AS criterion
+        JOIN aircraft_compare.mission_profiles AS profile
+          ON profile.id = criterion.mission_profile_id
+        WHERE profile.profile_type_code = 'BACKCOUNTRY_STOL'
+          AND criterion.criterion_type_code = 'CRITERION_PRICE'
+          AND criterion.scoring_lower_bound = 30000
+          AND criterion.scoring_upper_bound = 500000
+    ) OR NOT EXISTS (
+        SELECT 1 FROM aircraft_compare.mission_criteria AS criterion
+        JOIN aircraft_compare.mission_profiles AS profile
+          ON profile.id = criterion.mission_profile_id
+        WHERE profile.profile_type_code = 'BUSINESS_TRAVEL'
+          AND criterion.criterion_type_code = 'CRITERION_HOURLY_COST'
+          AND criterion.scoring_lower_bound = 100
+          AND criterion.scoring_upper_bound = 2500
+    ) OR NOT EXISTS (
+        SELECT 1 FROM aircraft_compare.mission_criteria AS criterion
+        JOIN aircraft_compare.mission_profiles AS profile
+          ON profile.id = criterion.mission_profile_id
+        WHERE profile.profile_type_code = 'FLIGHT_TRAINING'
+          AND criterion.criterion_type_code = 'CRITERION_HOURLY_COST'
+          AND criterion.scoring_lower_bound = 30
+          AND criterion.scoring_upper_bound = 250
+    ) THEN
+        RAISE EXCEPTION 'configured-profile scoring bounds differ from v1 policy';
+    END IF;
+END
+$validation$;
 
 -- A3. WEIGHT VALIDATION (via Phase 16 view — run after Phase 16 applied)
 /*
 SELECT slug, criterion_count, weight_sum, weights_sum_to_one
 FROM aircraft_read.v_weight_criteria_validation
 ORDER BY weights_sum_to_one ASC, slug;
--- Expect: TRUE for the 5 fully-configured profiles (IFR, VFR, STOL, Business, Training).
---         stub profiles show weight_sum = 1.000 (single criterion weight = 1.000).
+-- Expect: TRUE for every profile.
 */
 
 -- A4. MISSION CRITERIA STRUCTURE FOR KEY PROFILES
@@ -165,6 +355,17 @@ SELECT slug, weight_sum, weights_sum_to_one
 FROM aircraft_read.v_weight_criteria_validation
 ORDER BY weights_sum_to_one, slug;
 -- Expect: all rows show weight_sum = 1.000, weights_sum_to_one = TRUE.
+
+DO $validation$
+BEGIN
+    IF EXISTS (
+        SELECT 1 FROM aircraft_read.v_weight_criteria_validation
+        WHERE NOT weights_sum_to_one OR weight_sum <> 1.000
+    ) THEN
+        RAISE EXCEPTION 'mission criterion weights must sum exactly to 1.000';
+    END IF;
+END
+$validation$;
 
 -- B7. SUPPORTING INDEXES ADDED IN PHASE 16
 SELECT i.relname AS index_name, n.nspname AS schema_name, t.relname AS table_name

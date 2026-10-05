@@ -83,6 +83,14 @@ enum CurateCommand {
   Accept {
     #[arg(long, value_parser = clap::value_parser!(i64).range(1..))]
     assertion_id: i64,
+    /// Commit the decision without rebuilding the read model, for a caller
+    /// working through many assertions. The rebuild is non-concurrent and takes
+    /// ACCESS EXCLUSIVE on both search views, so one per decision is what makes
+    /// a bulk pass unaffordable. The refresh request is still recorded, the
+    /// outcome reports `read_model_refresh_pending`, and the caller owes one
+    /// `curate refresh` at the end.
+    #[arg(long)]
+    defer_refresh: bool,
     #[arg(long, value_enum, default_value_t = OutputFormat::Human)]
     format: OutputFormat,
   },
@@ -207,8 +215,13 @@ async fn run_curate(command: CurateCommand) -> Result<(), CliFailure> {
         .map_err(|error| CliFailure::new(6, Error::new(error)))?;
       render_pending(format, &pending)
     }
-    CurateCommand::Accept { assertion_id, format } => {
-      let outcome = service.accept(assertion_id).await.map_err(curation_failure)?;
+    CurateCommand::Accept { assertion_id, defer_refresh, format } => {
+      let outcome = if defer_refresh {
+        service.accept_deferring_refresh(assertion_id).await
+      } else {
+        service.accept(assertion_id).await
+      }
+      .map_err(curation_failure)?;
       render_curation(format, &outcome)
     }
     CurateCommand::Reject { assertion_id, format } => {

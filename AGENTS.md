@@ -18,7 +18,8 @@ the migrations under `database/migrations/`, a checksum lock, ordered seeds, and
 SQL validation. The API crate implements Axum health, readiness, and version
 contracts, bearer authentication with route-scope enforcement, RFC 9457 problem
 documents, validated list queries and cursors, and the scoped
-`GET /v1/reference/{catalog}` catalog route, with OpenAPI generation.
+`GET /v1/reference/{catalog}` catalog route, and the scoped
+`GET /v1/models` and `GET /v1/models/{model}` routes, with OpenAPI generation.
 `apps/server`
 boots: it loads HTTP and database settings, initializes tracing, builds a
 bounded database pool, binds a listener, and serves that router, with
@@ -192,8 +193,21 @@ message file handed to the user, a squash-merge body, and an amend.
 `hooks/commit-msg` enforces this mechanically and is the authority when a
 default disagrees. It is checked in, but `core.hooksPath` is local git config
 and cannot be committed, so **each clone runs `just hooks-install` once**;
-`just hooks-check` reports whether this clone is covered. A genuine human
-`Co-authored-by:` is still rejected — all are refused.
+`just hooks-check` reports whether this clone is covered.
+
+The hook refuses three trailer shapes, anchored to the start of a line so prose
+discussing the rule is not caught: a `Co-Authored-By:` whose value begins with
+`Claude`, any `Claude-Session:` line, and any trailer carrying
+`noreply@anthropic.com` — which catches a `Signed-off-by:` too. A
+`Co-authored-by:` naming a real person is not agent attribution and passes; that
+is the hook's deliberate behaviour, and this paragraph is the description of it,
+so change both together or neither.
+
+**No agent attribution ever ships.** An agent writes no `Co-Authored-By:` line
+of any value and no `Claude-Session:` URL, in a commit message, a pull-request
+body, or an issue comment, whether or not the hook would catch that particular
+spelling. The hook is the backstop for the shapes it knows; the prohibition is
+absolute and is not limited to them.
 
 ## Architectural invariants
 
@@ -306,8 +320,8 @@ server -> composes adapters and runtime infrastructure
 | `apps/server/` | HTTP runtime composition | Boots, builds a verified database pool, serves health, readiness, version, and the reference catalogs, correlates and traces every request, enforces perimeter limits, per-principal rate limits, and CORS, and drains on signal |
 | `crates/aircraft_domain/` | Pure entities, values, units, invariants | Ingestion invariants implemented; broader domain mostly scaffolded |
 | `crates/aircraft_app/` | Use cases and ports | Ingestion orchestration implemented; broader application incomplete |
-| `crates/aircraft_api/` | Axum DTOs, routes, middleware, OpenAPI | Health, readiness, and version routes, the scoped reference-catalog route, bearer authentication and route-scope enforcement, RFC 9457 problem documents, per-principal rate limiting, pagination and measurement representations, and the OpenAPI contract |
-| `crates/aircraft_db/` | SQLx repositories and schema mappings | Ingestion, curation, credential, authentication, reference-catalog, and family repositories implemented; `aircraft_repository` and `comparison_repository` remain empty scaffolds |
+| `crates/aircraft_api/` | Axum DTOs, routes, middleware, OpenAPI | Health, readiness, and version routes, the scoped reference-catalog route, the scoped model collection and detail routes with keyset paging and a family filter, bearer authentication and route-scope enforcement, RFC 9457 problem documents, per-principal rate limiting, pagination and measurement representations, and the OpenAPI contract |
+| `crates/aircraft_db/` | SQLx repositories and schema mappings | Ingestion, curation, credential, authentication, reference-catalog, family, and model repositories implemented; `aircraft_repository` and `comparison_repository` remain empty scaffolds |
 | `crates/aircraft_ingest/` | Source capture, parsing, normalization | PlanePHD adapter implemented |
 | `crates/aircraft_config/` | Typed runtime configuration | Ingestion, HTTP, database-URL, database pool, perimeter limit and CORS, and rate-limit quota settings implemented |
 | `crates/aircraft_observability/` | Structured tracing and telemetry | Basic tracing setup implemented; broader telemetry partial |
@@ -394,7 +408,7 @@ aircraft-ingest validate --source planephd --input FILE_OR_DASH [--format human|
 aircraft-ingest import --source planephd --input FILE_OR_DASH [--format human|json] [--report PATH]
 aircraft-ingest status [--run-id ID | --sha256 HASH] [--limit N] [--format human|json]
 aircraft-ingest curate list [--entity-id ID] [--field FIELD] [--limit N] [--format human|json]
-aircraft-ingest curate accept --assertion-id ID [--format human|json]
+aircraft-ingest curate accept --assertion-id ID [--defer-refresh] [--format human|json]
 aircraft-ingest curate reject --assertion-id ID [--format human|json]
 aircraft-ingest curate refresh [--format human|json]
 ```

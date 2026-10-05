@@ -56,6 +56,22 @@ pub struct AircraftIdentityInput {
 
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct LifecycleInput {
+  /// An `aircraft_ref.variant_types` code, set only when the record documents an
+  /// actual production run. `PRODUCTION_STANDARD` is the vocabulary's own term for
+  /// an ordinary series aircraft; the narrower codes describe prototypes, export
+  /// and conversion variants, none of which a production range evidences.
+  pub variant_type: Option<String>,
+  /// An `aircraft_ref.landing_gear_types` code. Sources commonly state retraction
+  /// without configuration, which is why the vocabulary carries
+  /// `FIXED_UNSPECIFIED` and `RETRACTABLE_UNSPECIFIED`; a source that does state
+  /// tricycle or tailwheel resolves to the specific code instead.
+  pub landing_gear: Option<String>,
+  /// An `aircraft_ref.service_statuses` code restating what the production range
+  /// says: a run that is still open is `IN_PRODUCTION`, one that has closed is
+  /// `DISCONTINUED`. `None` when the source states no range, because then nothing
+  /// is known. This is never `RETIRED` -- that is about service, and a closed
+  /// production run says nothing about whether airframes still fly.
+  pub service_status: Option<String>,
   pub production_start_year: Option<i16>,
   pub production_end_year: Option<i16>,
   pub is_in_production: Option<bool>,
@@ -85,6 +101,10 @@ pub struct WeightInput {
 
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct PropulsionInput {
+  /// An `aircraft_ref.propulsion_categories` code, when the source states the
+  /// category unambiguously. `None` where it does not: the vocabulary splits
+  /// turbofans by bypass ratio and `PlanePHD` never says which.
+  pub category: Option<String>,
   pub manufacturer: Option<String>,
   pub model: Option<String>,
   pub horsepower: Option<String>,
