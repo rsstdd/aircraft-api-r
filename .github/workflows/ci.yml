@@ -91,7 +91,7 @@ jobs:
         with:
           persist-credentials: false
       - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2
-      - uses: taiki-e/install-action@fa23953489c080190314742a9b907f8e97c6767c # v2
+      - uses: taiki-e/install-action@83ac0ad63c0167e6f06796fab0fce28db1bf3db0 # v2
         with:
           tool: cargo-nextest
       # The ingestion gates start their own postgres:16-alpine containers via the
@@ -130,7 +130,7 @@ jobs:
         with:
           persist-credentials: false
       - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2
-      - uses: taiki-e/install-action@fa23953489c080190314742a9b907f8e97c6767c # v2
+      - uses: taiki-e/install-action@83ac0ad63c0167e6f06796fab0fce28db1bf3db0 # v2
         with:
           tool: cargo-audit,cargo-deny
       - run: cargo audit
