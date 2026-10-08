@@ -93,7 +93,7 @@ tracing-subscriber = { version = "0.3", features = ["env-filter", "fmt", "json"]
 tracing-error = "0.2"
 tracing-opentelemetry = "0.33"
 opentelemetry = "0.32"
-opentelemetry-otlp = "0.32"
+opentelemetry-otlp = "0.33"
 
 sha2 = "0.11"
 url = "2.5"
