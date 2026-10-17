@@ -14,7 +14,8 @@
 
 use std::num::NonZeroU16;
 
-use aircraft_app::pagination::PageLimit;
+use aircraft_app::pagination::{Page, PageLimit};
+use aircraft_domain::catalog::Slug;
 use base64::{Engine, engine::general_purpose::URL_SAFE_NO_PAD};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
@@ -269,14 +270,60 @@ mod envelope {
   /// cursor" -- the opposite of the omit-when-absent rule the measurement
   /// representation follows, and deliberate: a client polling for more pages
   /// reads the member rather than testing for its presence.
+  ///
+  /// `limit` is the bound actually applied, which is not always the one asked
+  /// for: `PageLimit::from_requested` substitutes the default when none was sent
+  /// and caps anything above the ceiling. Issue #43 requires the variant
+  /// collection to report it, and it is on this shared envelope rather than on
+  /// that one endpoint so all three collections answer the same shape. Adding a
+  /// member is the compatible addition `docs/architecture/http_v1_decisions.md`
+  /// allows within `/v1`.
   #[derive(Debug, Serialize, ToSchema)]
   pub struct PageResponse<T> {
     pub items: Vec<T>,
     pub next_cursor: Option<String>,
+    /// The page bound this response was built with, after defaulting and
+    /// capping.
+    pub limit: u16,
   }
 }
 
 pub use envelope::PageResponse;
+
+/// Renders a page and the continuation its last row implies.
+///
+/// Shared by every collection route: all three differ only in the row type, the
+/// DTO, and the sort's code, and none of them differs in how a cursor is built.
+/// `last_value` and `tiebreaker` carry the same key because each endpoint's
+/// sort key is its unique identifier; both are set rather than one left empty so
+/// the token stays readable by [`decode`] and a future second sort does not
+/// change the payload's shape.
+#[must_use]
+pub fn render_page<T, R>(
+  page: Page<T, Slug>,
+  sort: &str,
+  filters: FilterFingerprint,
+  limit: PageLimit,
+  into_response: impl Fn(T) -> R,
+) -> PageResponse<R> {
+  let (resume, rows) = page.into_parts();
+  let next_cursor = resume.map(|last| {
+    encode(
+      &CursorPosition {
+        sort: sort.to_owned(),
+        last_value: last.as_str().to_owned(),
+        tiebreaker: last.as_str().to_owned(),
+      },
+      filters,
+    )
+  });
+
+  PageResponse {
+    items: rows.into_iter().map(into_response).collect(),
+    next_cursor,
+    limit: limit.get(),
+  }
+}
 
 #[cfg(test)]
 mod tests {
@@ -484,12 +531,13 @@ mod tests {
 
   #[test]
   fn a_final_page_publishes_a_null_next_cursor_rather_than_omitting_it() {
-    let page = PageResponse { items: vec!["KNOTS"], next_cursor: None };
+    let page = PageResponse { items: vec!["KNOTS"], next_cursor: None, limit: 50 };
 
     assert_eq!(
       serde_json::to_value(page).expect("the envelope serializes"),
-      json!({ "items": ["KNOTS"], "next_cursor": null }),
-      "the decision says a null next cursor, not an absent member"
+      json!({ "items": ["KNOTS"], "next_cursor": null, "limit": 50 }),
+      "the decision says a null next cursor, not an absent member, and #43 adds the \
+       effective limit beside it"
     );
   }
 }

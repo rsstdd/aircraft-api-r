@@ -19,7 +19,7 @@ use std::{
 
 use aircraft_app::{
   authentication::AuthenticationService,
-  catalog::{FamilyReader, ModelReader},
+  catalog::{FamilyReader, ModelReader, VariantReader},
   readiness::ReadinessProbe,
   reference::CatalogReader,
 };
@@ -71,6 +71,7 @@ pub struct ApiState {
   /// routes that will read it for its own sake are not in this build.
   pub families: Arc<dyn FamilyReader>,
   pub models: Arc<dyn ModelReader>,
+  pub variants: Arc<dyn VariantReader>,
   pub authentication: Arc<AuthenticationService>,
   pub version: &'static str,
   pub build_commit: Option<&'static str>,
@@ -117,8 +118,11 @@ impl std::fmt::Debug for ApiState {
       routes::ready::ready,
       routes::version::version,
       routes::reference::catalog,
+      routes::families::list_families,
+      routes::families::family,
       routes::models::list_models,
-      routes::models::model
+      routes::models::model,
+      routes::variants::list_variants
     ),
     components(
       schemas(
@@ -126,10 +130,17 @@ impl std::fmt::Debug for ApiState {
         routes::ready::ReadyResponse,
         routes::version::VersionResponse,
         routes::reference::CatalogEntryResponse,
+        routes::families::FamilySort,
+        routes::families::FamilySummaryResponse,
+        pagination::PageResponse<routes::families::FamilySummaryResponse>,
+        routes::families::FamilyDetailResponse,
         routes::models::ModelSort,
         routes::models::ModelSummaryResponse,
         pagination::PageResponse<routes::models::ModelSummaryResponse>,
         routes::models::ModelDetailResponse,
+        routes::variants::VariantSort,
+        routes::variants::VariantSummaryResponse,
+        pagination::PageResponse<routes::variants::VariantSummaryResponse>,
         measurement::MeasurementResponse,
         measurement::MeasurementConditionsResponse,
         measurement::DecimalStringResponse,
@@ -159,7 +170,7 @@ impl std::fmt::Debug for ApiState {
     tags(
       (name = "health", description = "Service health checks"),
       (name = "reference", description = "Seeded reference catalogs"),
-      (name = "catalog", description = "Aircraft models")
+      (name = "catalog", description = "Aircraft families, models, and variants")
     )
 )]
 struct ApiDoc;
@@ -323,8 +334,21 @@ fn declared_routes() -> Routes {
     .route(RouteMethod::Get, "/ready", RoutePolicy::Public, routes::ready::ready)
     .route(RouteMethod::Get, "/version", RoutePolicy::Public, routes::version::version)
     .route(RouteMethod::Get, CATALOG_PATH, RoutePolicy::CatalogRead, routes::reference::catalog)
+    .route(
+      RouteMethod::Get,
+      FAMILIES_PATH,
+      RoutePolicy::CatalogRead,
+      routes::families::list_families,
+    )
+    .route(RouteMethod::Get, FAMILY_PATH, RoutePolicy::CatalogRead, routes::families::family)
     .route(RouteMethod::Get, MODELS_PATH, RoutePolicy::CatalogRead, routes::models::list_models)
     .route(RouteMethod::Get, MODEL_PATH, RoutePolicy::CatalogRead, routes::models::model)
+    .route(
+      RouteMethod::Get,
+      VARIANTS_PATH,
+      RoutePolicy::CatalogRead,
+      routes::variants::list_variants,
+    )
 }
 
 /// `OriginalUri` rather than `Uri`: a fallback runs with the router's own
@@ -350,8 +374,19 @@ const CATALOG_PATH: &str = "/v1/reference/{catalog}";
 /// `{model}` and not `{model_id}`: the segment is the model's slug, because
 /// `aircraft_core.models.id` is withheld from every catalog projection.
 /// `crates/aircraft_api/src/routes/models.rs` records that reading.
+/// The served paths of the family routes.
+///
+/// `{family}` and not `{family_id}`, for the reason `MODEL_PATH` records:
+/// `aircraft_core.families.id` is withheld from every catalog projection.
+/// `crates/aircraft_api/src/routes/families.rs` records that reading.
+const FAMILIES_PATH: &str = "/v1/families";
+const FAMILY_PATH: &str = "/v1/families/{family}";
+
 const MODELS_PATH: &str = "/v1/models";
 const MODEL_PATH: &str = "/v1/models/{model}";
+
+/// The served path of the variant collection. Issue #44 adds the detail route.
+const VARIANTS_PATH: &str = "/v1/variants";
 
 const API_CREDENTIAL_SCHEME: &str = "apiCredential";
 
@@ -477,11 +512,12 @@ mod tests {
   use aircraft_app::{
     catalog::{
       FamilyDetail, FamilyFilter, FamilyReader, FamilySummary, ModelDetail, ModelFilter,
-      ModelReader, ModelSummary,
+      ModelReader, ModelSummary, VariantDetail, VariantFilter, VariantReadError, VariantReader,
+      VariantSummary,
     },
     pagination::{Page, PageLimit},
   };
-  use aircraft_domain::catalog::{FamilyId, Slug};
+  use aircraft_domain::catalog::{FamilyId, ModelId, Slug};
   use anyhow::{Context, Result};
   use async_trait::async_trait;
   use axum::{
@@ -629,8 +665,9 @@ mod tests {
         catalogs,
         // The model routes are registered on every router this module builds,
         // so the state carries their ports. No test here requests them.
-        families: Arc::new(FakeCatalogs::default()),
-        models: Arc::new(FakeCatalogs::default()),
+        families: Arc::new(UnreadCatalog),
+        models: Arc::new(UnreadCatalog),
+        variants: Arc::new(UnreadCatalog),
         authentication: Arc::new(AuthenticationService::new(Arc::new(NeverLooksUp))),
         version: "9.9.9-test",
         build_commit: None,
@@ -706,9 +743,19 @@ mod tests {
     }
   }
 
+  /// Satisfies the three catalog reader ports and serves none of them.
+  ///
+  /// A local copy, not `tests/common/mod.rs`: this is a `#[cfg(test)]` module
+  /// inside `src/`, which no `tests/` tree is in scope for. It cannot live in
+  /// `aircraft_testsupport` either, because `cargo run -p xtask -- boundaries`
+  /// forbids that crate from depending on `aircraft_domain`, whose `Slug`,
+  /// `FamilyId`, and `ModelId` the port signatures name. The duplication is the
+  /// boundary rule's, not a choice.
+  #[derive(Clone, Copy, Debug, Default)]
+  struct UnreadCatalog;
+
   #[async_trait]
-  #[async_trait]
-  impl FamilyReader for FakeCatalogs {
+  impl FamilyReader for UnreadCatalog {
     async fn list_families(
       &self,
       _filter: &FamilyFilter,
@@ -728,7 +775,7 @@ mod tests {
   }
 
   #[async_trait]
-  impl ModelReader for FakeCatalogs {
+  impl ModelReader for UnreadCatalog {
     async fn list_models(
       &self,
       _filter: &ModelFilter,
@@ -740,6 +787,26 @@ mod tests {
 
     async fn model(&self, _slug: &Slug) -> Result<Option<ModelDetail>, PersistenceError> {
       panic!("no test in this module reads a model")
+    }
+
+    async fn model_id(&self, _slug: &Slug) -> Result<Option<ModelId>, PersistenceError> {
+      panic!("no test in this module resolves a model")
+    }
+  }
+
+  #[async_trait]
+  impl VariantReader for UnreadCatalog {
+    async fn list_variants(
+      &self,
+      _filter: &VariantFilter,
+      _limit: PageLimit,
+      _after: Option<&Slug>,
+    ) -> Result<Page<VariantSummary, Slug>, VariantReadError> {
+      panic!("no test in this module lists variants")
+    }
+
+    async fn variant(&self, _slug: &Slug) -> Result<Option<VariantDetail>, PersistenceError> {
+      panic!("no test in this module reads a variant")
     }
   }
 
@@ -2116,13 +2183,16 @@ mod tests {
   /// operational routes, each `Public`, and nothing else. A route added to
   /// `declared_routes` without a row here is a decision the tests reading
   /// this table refuse to make by default.
-  const DECLARED: [(RouteMethod, &str, RoutePolicy); 6] = [
+  const DECLARED: [(RouteMethod, &str, RoutePolicy); 9] = [
     (RouteMethod::Get, "/health", RoutePolicy::Public),
     (RouteMethod::Get, "/ready", RoutePolicy::Public),
     (RouteMethod::Get, "/version", RoutePolicy::Public),
     (RouteMethod::Get, CATALOG_PATH, RoutePolicy::CatalogRead),
+    (RouteMethod::Get, FAMILIES_PATH, RoutePolicy::CatalogRead),
+    (RouteMethod::Get, FAMILY_PATH, RoutePolicy::CatalogRead),
     (RouteMethod::Get, MODELS_PATH, RoutePolicy::CatalogRead),
     (RouteMethod::Get, MODEL_PATH, RoutePolicy::CatalogRead),
+    (RouteMethod::Get, VARIANTS_PATH, RoutePolicy::CatalogRead),
   ];
 
   #[test]

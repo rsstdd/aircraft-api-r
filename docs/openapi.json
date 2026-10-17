@@ -245,6 +245,338 @@
         }
       }
     },
+    "/v1/families": {
+      "get": {
+        "tags": [
+          "catalog"
+        ],
+        "summary": "List families",
+        "description": "One keyset-paginated page of families, optionally filtered by manufacturer slug and country of origin. A filter value that is not a valid identifier is a 400. A filter that is valid but matches nothing is a successful empty collection, because both filters are compared directly and no existence lookup runs. The only sort is slug_asc.",
+        "operationId": "list_families",
+        "parameters": [
+          {
+            "name": "manufacturer",
+            "in": "query",
+            "description": "Manufacturer organisation slug. A value that is not a slug is a 400.",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "country_of_origin",
+            "in": "query",
+            "description": "ISO 3166-1 alpha-3 country code, upper case. A value that is not one is a 400.",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "sort",
+            "in": "query",
+            "description": "Sort order. slug_asc is the only supported value.",
+            "required": false,
+            "schema": {
+              "$ref": "#/components/schemas/FamilySort"
+            }
+          },
+          {
+            "name": "limit",
+            "in": "query",
+            "description": "Rows per page. Defaults to 50; values above 200 are capped to 200. A limit of 0 is refused.",
+            "required": false,
+            "schema": {
+              "type": "integer",
+              "format": "int32",
+              "minimum": 1
+            }
+          },
+          {
+            "name": "cursor",
+            "in": "query",
+            "description": "Opaque continuation token from a previous page's next_cursor. Clients must not construct or interpret one.",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "X-Request-Id",
+            "in": "header",
+            "description": "Correlation identifier. Adopted when it is 1-128 visible ASCII characters sent exactly once; otherwise the service generates one.",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "One page of families, in slug order, with a null next_cursor on the final page",
+            "headers": {
+              "X-Request-Id": {
+                "schema": {
+                  "type": "string"
+                },
+                "description": "The correlation identifier for this request, echoed from the client or generated here."
+              }
+            },
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/PageResponse_FamilySummaryResponse"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "The request body could not be read",
+            "headers": {
+              "X-Request-Id": {
+                "schema": {
+                  "type": "string"
+                },
+                "description": "The correlation identifier for this request, echoed from the client or generated here."
+              }
+            },
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemDetails"
+                }
+              }
+            }
+          },
+          "401": {
+            "$ref": "#/components/responses/AuthenticationRequiredProblem"
+          },
+          "403": {
+            "$ref": "#/components/responses/InsufficientScopeProblem"
+          },
+          "413": {
+            "description": "The request body is larger than the perimeter accepts",
+            "headers": {
+              "X-Request-Id": {
+                "schema": {
+                  "type": "string"
+                },
+                "description": "The correlation identifier for this request, echoed from the client or generated here."
+              }
+            },
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemDetails"
+                }
+              }
+            }
+          },
+          "429": {
+            "$ref": "#/components/responses/RateLimitedProblem"
+          },
+          "503": {
+            "description": "The service is draining, is at capacity, or could not read the families",
+            "headers": {
+              "X-Request-Id": {
+                "schema": {
+                  "type": "string"
+                },
+                "description": "The correlation identifier for this request, echoed from the client or generated here."
+              }
+            },
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemDetails"
+                }
+              }
+            }
+          },
+          "504": {
+            "description": "The handler did not answer within the perimeter deadline",
+            "headers": {
+              "X-Request-Id": {
+                "schema": {
+                  "type": "string"
+                },
+                "description": "The correlation identifier for this request, echoed from the client or generated here."
+              }
+            },
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemDetails"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "apiCredential": [
+              "CATALOG_READ"
+            ]
+          }
+        ]
+      }
+    },
+    "/v1/families/{family}": {
+      "get": {
+        "tags": [
+          "catalog"
+        ],
+        "summary": "Read one family",
+        "description": "One family by its slug. A segment that is not a slug is a 400; a slug no family carries is a 404.",
+        "operationId": "family",
+        "parameters": [
+          {
+            "name": "family",
+            "in": "path",
+            "description": "The family's slug. The surrogate key is not a public identifier and is never accepted here.",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "X-Request-Id",
+            "in": "header",
+            "description": "Correlation identifier. Adopted when it is 1-128 visible ASCII characters sent exactly once; otherwise the service generates one.",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "The family",
+            "headers": {
+              "X-Request-Id": {
+                "schema": {
+                  "type": "string"
+                },
+                "description": "The correlation identifier for this request, echoed from the client or generated here."
+              }
+            },
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/FamilyDetailResponse"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "The request body could not be read",
+            "headers": {
+              "X-Request-Id": {
+                "schema": {
+                  "type": "string"
+                },
+                "description": "The correlation identifier for this request, echoed from the client or generated here."
+              }
+            },
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemDetails"
+                }
+              }
+            }
+          },
+          "401": {
+            "$ref": "#/components/responses/AuthenticationRequiredProblem"
+          },
+          "403": {
+            "$ref": "#/components/responses/InsufficientScopeProblem"
+          },
+          "404": {
+            "description": "No family has that slug",
+            "headers": {
+              "X-Request-Id": {
+                "schema": {
+                  "type": "string"
+                },
+                "description": "The correlation identifier for this request, echoed from the client or generated here."
+              }
+            },
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemDetails"
+                }
+              }
+            }
+          },
+          "413": {
+            "description": "The request body is larger than the perimeter accepts",
+            "headers": {
+              "X-Request-Id": {
+                "schema": {
+                  "type": "string"
+                },
+                "description": "The correlation identifier for this request, echoed from the client or generated here."
+              }
+            },
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemDetails"
+                }
+              }
+            }
+          },
+          "429": {
+            "$ref": "#/components/responses/RateLimitedProblem"
+          },
+          "503": {
+            "description": "The service is draining, is at capacity, or could not read the family",
+            "headers": {
+              "X-Request-Id": {
+                "schema": {
+                  "type": "string"
+                },
+                "description": "The correlation identifier for this request, echoed from the client or generated here."
+              }
+            },
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemDetails"
+                }
+              }
+            }
+          },
+          "504": {
+            "description": "The handler did not answer within the perimeter deadline",
+            "headers": {
+              "X-Request-Id": {
+                "schema": {
+                  "type": "string"
+                },
+                "description": "The correlation identifier for this request, echoed from the client or generated here."
+              }
+            },
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemDetails"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "apiCredential": [
+              "CATALOG_READ"
+            ]
+          }
+        ]
+      }
+    },
     "/v1/models": {
       "get": {
         "tags": [
@@ -436,7 +768,7 @@
           "catalog"
         ],
         "summary": "Read one model",
-        "description": "One model by its slug. A slug no model carries is a 404.",
+        "description": "One model by its slug. A segment that is not a slug is a 400; a slug no model carries is a 404.",
         "operationId": "model",
         "parameters": [
           {
@@ -827,6 +1159,266 @@
         ]
       }
     },
+    "/v1/variants": {
+      "get": {
+        "tags": [
+          "catalog"
+        ],
+        "summary": "List variants",
+        "description": "One keyset-paginated page of variants. All nine filters combine conjunctively. A model or family slug naming nothing is a 404; a reference code no vocabulary carries, a year outside 1900-2100, an unsupported sort, and a malformed cursor are 400. The reported limit is the one applied, after defaulting to 50 and capping at 200. Summaries carry identity and lineage only; no specification measurement appears, canonical or pending.",
+        "operationId": "list_variants",
+        "parameters": [
+          {
+            "name": "model",
+            "in": "query",
+            "description": "Parent model slug.",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "family",
+            "in": "query",
+            "description": "Grandparent family slug.",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "variant_type",
+            "in": "query",
+            "description": "Variant type code.",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "service_status",
+            "in": "query",
+            "description": "Service status code.",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "landing_gear_type",
+            "in": "query",
+            "description": "Landing gear type code.",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "propulsion_category",
+            "in": "query",
+            "description": "Propulsion category code.",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "country_of_origin",
+            "in": "query",
+            "description": "ISO 3166-1 alpha-3 country code, upper case.",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "is_in_production",
+            "in": "query",
+            "description": "Whether the variant is recorded as in production.",
+            "required": false,
+            "schema": {
+              "type": "boolean"
+            }
+          },
+          {
+            "name": "produced_in_year",
+            "in": "query",
+            "description": "Variants whose production run covered this year. A run with no end year is still in production and is included.",
+            "required": false,
+            "schema": {
+              "type": "integer",
+              "format": "int32",
+              "maximum": 2100,
+              "minimum": 1900
+            }
+          },
+          {
+            "name": "sort",
+            "in": "query",
+            "description": "Sort order. slug_asc is the only supported value.",
+            "required": false,
+            "schema": {
+              "$ref": "#/components/schemas/VariantSort"
+            }
+          },
+          {
+            "name": "limit",
+            "in": "query",
+            "description": "Rows per page. Defaults to 50; values above 200 are capped to 200, and the applied value is reported as the response's limit. A limit of 0 is refused.",
+            "required": false,
+            "schema": {
+              "type": "integer",
+              "format": "int32",
+              "minimum": 1
+            }
+          },
+          {
+            "name": "cursor",
+            "in": "query",
+            "description": "Opaque continuation token from a previous page's next_cursor. Clients must not construct or interpret one.",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "X-Request-Id",
+            "in": "header",
+            "description": "Correlation identifier. Adopted when it is 1-128 visible ASCII characters sent exactly once; otherwise the service generates one.",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "One page of variants, in slug order, with a null next_cursor on the final page and the applied limit",
+            "headers": {
+              "X-Request-Id": {
+                "schema": {
+                  "type": "string"
+                },
+                "description": "The correlation identifier for this request, echoed from the client or generated here."
+              }
+            },
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/PageResponse_VariantSummaryResponse"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "The request body could not be read",
+            "headers": {
+              "X-Request-Id": {
+                "schema": {
+                  "type": "string"
+                },
+                "description": "The correlation identifier for this request, echoed from the client or generated here."
+              }
+            },
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemDetails"
+                }
+              }
+            }
+          },
+          "401": {
+            "$ref": "#/components/responses/AuthenticationRequiredProblem"
+          },
+          "403": {
+            "$ref": "#/components/responses/InsufficientScopeProblem"
+          },
+          "404": {
+            "description": "The model or family filter names no such row",
+            "headers": {
+              "X-Request-Id": {
+                "schema": {
+                  "type": "string"
+                },
+                "description": "The correlation identifier for this request, echoed from the client or generated here."
+              }
+            },
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemDetails"
+                }
+              }
+            }
+          },
+          "413": {
+            "description": "The request body is larger than the perimeter accepts",
+            "headers": {
+              "X-Request-Id": {
+                "schema": {
+                  "type": "string"
+                },
+                "description": "The correlation identifier for this request, echoed from the client or generated here."
+              }
+            },
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemDetails"
+                }
+              }
+            }
+          },
+          "429": {
+            "$ref": "#/components/responses/RateLimitedProblem"
+          },
+          "503": {
+            "description": "The service is draining, is at capacity, or could not read the variants",
+            "headers": {
+              "X-Request-Id": {
+                "schema": {
+                  "type": "string"
+                },
+                "description": "The correlation identifier for this request, echoed from the client or generated here."
+              }
+            },
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemDetails"
+                }
+              }
+            }
+          },
+          "504": {
+            "description": "The handler did not answer within the perimeter deadline",
+            "headers": {
+              "X-Request-Id": {
+                "schema": {
+                  "type": "string"
+                },
+                "description": "The correlation identifier for this request, echoed from the client or generated here."
+              }
+            },
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemDetails"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "apiCredential": [
+              "CATALOG_READ"
+            ]
+          }
+        ]
+      }
+    },
     "/version": {
       "get": {
         "tags": [
@@ -970,6 +1562,110 @@
         "type": "string",
         "description": "A `NUMERIC` value on the wire: always a JSON string, never a JSON number.\n\nThe published `pattern` is the grammar and deliberately not the capacity:\n`DecimalString` bounds digits at what `PostgreSQL` can store, but\nrepublishing those five-digit quantifiers as a `maxLength` would put a\nstorage detail in the public contract, which the pull-request `oasdiff`\ngate would then freeze.",
         "pattern": "^-?[0-9]+(\\.[0-9]+)?$"
+      },
+      "FamilyDetailResponse": {
+        "type": "object",
+        "description": "One family, whole.\n\nThe summary's members are repeated rather than nested or flattened, which is\nwhat `AGENTS.md` asks of HTTP DTOs: explicit mappings of the application\ntypes, not structural reuse of them. `name_aliases` is always present,\npossibly empty, because [`FamilyDetail`] already collapsed a NULL array to\nan empty one.",
+        "required": [
+          "slug",
+          "name",
+          "name_aliases"
+        ],
+        "properties": {
+          "common_name": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "country_of_origin": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "description": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "first_flight_year": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int32"
+          },
+          "manufacturer": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "name": {
+            "type": "string"
+          },
+          "name_aliases": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "slug": {
+            "type": "string"
+          }
+        }
+      },
+      "FamilySort": {
+        "type": "string",
+        "description": "Which order a caller asked for.\n\nA closed enum rather than a string, so `?sort=name_desc` is refused by the\nquery deserialization that already refuses `?limit=abc`.",
+        "enum": [
+          "slug_asc"
+        ]
+      },
+      "FamilySummaryResponse": {
+        "type": "object",
+        "description": "One family as a collection row.",
+        "required": [
+          "slug",
+          "name"
+        ],
+        "properties": {
+          "common_name": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "country_of_origin": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "first_flight_year": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int32"
+          },
+          "manufacturer": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "The manufacturing organisation's own slug, absent when the family records\nno manufacturer."
+          },
+          "name": {
+            "type": "string"
+          },
+          "slug": {
+            "type": "string",
+            "description": "The stable public identifier, as `aircraft_ref.slug_text` spells it."
+          }
+        }
       },
       "HealthResponse": {
         "type": "object",
@@ -1166,11 +1862,80 @@
           }
         }
       },
+      "PageResponse_FamilySummaryResponse": {
+        "type": "object",
+        "description": "One page on the wire.\n\n`next_cursor` is serialized as `null` on a final page rather than omitted,\nbecause the accepted decision says \"Empty and final pages return a null next\ncursor\" -- the opposite of the omit-when-absent rule the measurement\nrepresentation follows, and deliberate: a client polling for more pages\nreads the member rather than testing for its presence.\n\n`limit` is the bound actually applied, which is not always the one asked\nfor: `PageLimit::from_requested` substitutes the default when none was sent\nand caps anything above the ceiling. Issue #43 requires the variant\ncollection to report it, and it is on this shared envelope rather than on\nthat one endpoint so all three collections answer the same shape. Adding a\nmember is the compatible addition `docs/architecture/http_v1_decisions.md`\nallows within `/v1`.",
+        "required": [
+          "items",
+          "limit"
+        ],
+        "properties": {
+          "items": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "description": "One family as a collection row.",
+              "required": [
+                "slug",
+                "name"
+              ],
+              "properties": {
+                "common_name": {
+                  "type": [
+                    "string",
+                    "null"
+                  ]
+                },
+                "country_of_origin": {
+                  "type": [
+                    "string",
+                    "null"
+                  ]
+                },
+                "first_flight_year": {
+                  "type": [
+                    "integer",
+                    "null"
+                  ],
+                  "format": "int32"
+                },
+                "manufacturer": {
+                  "type": [
+                    "string",
+                    "null"
+                  ],
+                  "description": "The manufacturing organisation's own slug, absent when the family records\nno manufacturer."
+                },
+                "name": {
+                  "type": "string"
+                },
+                "slug": {
+                  "type": "string",
+                  "description": "The stable public identifier, as `aircraft_ref.slug_text` spells it."
+                }
+              }
+            }
+          },
+          "limit": {
+            "type": "integer",
+            "format": "int32",
+            "description": "The page bound this response was built with, after defaulting and\ncapping.",
+            "minimum": 0
+          },
+          "next_cursor": {
+            "type": [
+              "string",
+              "null"
+            ]
+          }
+        }
+      },
       "PageResponse_ModelSummaryResponse": {
         "type": "object",
-        "description": "One page on the wire.\n\n`next_cursor` is serialized as `null` on a final page rather than omitted,\nbecause the accepted decision says \"Empty and final pages return a null next\ncursor\" -- the opposite of the omit-when-absent rule the measurement\nrepresentation follows, and deliberate: a client polling for more pages\nreads the member rather than testing for its presence.",
+        "description": "One page on the wire.\n\n`next_cursor` is serialized as `null` on a final page rather than omitted,\nbecause the accepted decision says \"Empty and final pages return a null next\ncursor\" -- the opposite of the omit-when-absent rule the measurement\nrepresentation follows, and deliberate: a client polling for more pages\nreads the member rather than testing for its presence.\n\n`limit` is the bound actually applied, which is not always the one asked\nfor: `PageLimit::from_requested` substitutes the default when none was sent\nand caps anything above the ceiling. Issue #43 requires the variant\ncollection to report it, and it is on this shared envelope rather than on\nthat one endpoint so all three collections answer the same shape. Adding a\nmember is the compatible addition `docs/architecture/http_v1_decisions.md`\nallows within `/v1`.",
         "required": [
-          "items"
+          "items",
+          "limit"
         ],
         "properties": {
           "items": {
@@ -1230,6 +1995,150 @@
                 }
               }
             }
+          },
+          "limit": {
+            "type": "integer",
+            "format": "int32",
+            "description": "The page bound this response was built with, after defaulting and\ncapping.",
+            "minimum": 0
+          },
+          "next_cursor": {
+            "type": [
+              "string",
+              "null"
+            ]
+          }
+        }
+      },
+      "PageResponse_VariantSummaryResponse": {
+        "type": "object",
+        "description": "One page on the wire.\n\n`next_cursor` is serialized as `null` on a final page rather than omitted,\nbecause the accepted decision says \"Empty and final pages return a null next\ncursor\" -- the opposite of the omit-when-absent rule the measurement\nrepresentation follows, and deliberate: a client polling for more pages\nreads the member rather than testing for its presence.\n\n`limit` is the bound actually applied, which is not always the one asked\nfor: `PageLimit::from_requested` substitutes the default when none was sent\nand caps anything above the ceiling. Issue #43 requires the variant\ncollection to report it, and it is on this shared envelope rather than on\nthat one endpoint so all three collections answer the same shape. Adding a\nmember is the compatible addition `docs/architecture/http_v1_decisions.md`\nallows within `/v1`.",
+        "required": [
+          "items",
+          "limit"
+        ],
+        "properties": {
+          "items": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "description": "One variant as a collection row.\n\nWider than the family and model rows because a variant is what a client\ncompares, which is the reasoning [`VariantSummary`] records. Every member is\nan `aircraft_core.variants` column or its parent model's slug; none is a\nmeasurement.",
+              "required": [
+                "slug",
+                "name",
+                "model"
+              ],
+              "properties": {
+                "certification_year": {
+                  "type": [
+                    "integer",
+                    "null"
+                  ],
+                  "format": "int32"
+                },
+                "country_of_origin": {
+                  "type": [
+                    "string",
+                    "null"
+                  ]
+                },
+                "crew_count": {
+                  "type": [
+                    "integer",
+                    "null"
+                  ],
+                  "format": "int32"
+                },
+                "engine_count": {
+                  "type": [
+                    "integer",
+                    "null"
+                  ],
+                  "format": "int32"
+                },
+                "first_flight_year": {
+                  "type": [
+                    "integer",
+                    "null"
+                  ],
+                  "format": "int32"
+                },
+                "is_in_production": {
+                  "type": [
+                    "boolean",
+                    "null"
+                  ]
+                },
+                "landing_gear_type": {
+                  "type": [
+                    "string",
+                    "null"
+                  ]
+                },
+                "model": {
+                  "type": "string",
+                  "description": "The parent model's slug."
+                },
+                "name": {
+                  "type": "string"
+                },
+                "passenger_capacity": {
+                  "type": [
+                    "integer",
+                    "null"
+                  ],
+                  "format": "int32"
+                },
+                "popular_name": {
+                  "type": [
+                    "string",
+                    "null"
+                  ]
+                },
+                "production_end_year": {
+                  "type": [
+                    "integer",
+                    "null"
+                  ],
+                  "format": "int32"
+                },
+                "production_start_year": {
+                  "type": [
+                    "integer",
+                    "null"
+                  ],
+                  "format": "int32"
+                },
+                "propulsion_category": {
+                  "type": [
+                    "string",
+                    "null"
+                  ]
+                },
+                "service_status": {
+                  "type": [
+                    "string",
+                    "null"
+                  ]
+                },
+                "slug": {
+                  "type": "string",
+                  "description": "The stable public identifier, as `aircraft_ref.slug_text` spells it."
+                },
+                "variant_type": {
+                  "type": [
+                    "string",
+                    "null"
+                  ]
+                }
+              }
+            }
+          },
+          "limit": {
+            "type": "integer",
+            "format": "int32",
+            "description": "The page bound this response was built with, after defaulting and\ncapping.",
+            "minimum": 0
           },
           "next_cursor": {
             "type": [
@@ -1328,6 +2237,126 @@
         "type": "string",
         "description": "A measurement-unit code on the wire, in the shape\n`aircraft_ref.lookup_code` requires of every seeded code.",
         "pattern": "^[A-Z][A-Z0-9_]*$"
+      },
+      "VariantSort": {
+        "type": "string",
+        "description": "Which order a caller asked for.",
+        "enum": [
+          "slug_asc"
+        ]
+      },
+      "VariantSummaryResponse": {
+        "type": "object",
+        "description": "One variant as a collection row.\n\nWider than the family and model rows because a variant is what a client\ncompares, which is the reasoning [`VariantSummary`] records. Every member is\nan `aircraft_core.variants` column or its parent model's slug; none is a\nmeasurement.",
+        "required": [
+          "slug",
+          "name",
+          "model"
+        ],
+        "properties": {
+          "certification_year": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int32"
+          },
+          "country_of_origin": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "crew_count": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int32"
+          },
+          "engine_count": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int32"
+          },
+          "first_flight_year": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int32"
+          },
+          "is_in_production": {
+            "type": [
+              "boolean",
+              "null"
+            ]
+          },
+          "landing_gear_type": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "model": {
+            "type": "string",
+            "description": "The parent model's slug."
+          },
+          "name": {
+            "type": "string"
+          },
+          "passenger_capacity": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int32"
+          },
+          "popular_name": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "production_end_year": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int32"
+          },
+          "production_start_year": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int32"
+          },
+          "propulsion_category": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "service_status": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "slug": {
+            "type": "string",
+            "description": "The stable public identifier, as `aircraft_ref.slug_text` spells it."
+          },
+          "variant_type": {
+            "type": [
+              "string",
+              "null"
+            ]
+          }
+        }
       },
       "VersionResponse": {
         "type": "object",
@@ -1745,7 +2774,7 @@
     },
     {
       "name": "catalog",
-      "description": "Aircraft models"
+      "description": "Aircraft families, models, and variants"
     }
   ]
 }

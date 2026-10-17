@@ -19,15 +19,7 @@ use aircraft_app::{
   readiness::ReadinessProbe,
   reference::{CatalogEntry, CatalogReader},
 };
-use aircraft_app::{
-  catalog::{
-    FamilyDetail, FamilyFilter, FamilyReader, FamilySummary, ModelDetail, ModelFilter, ModelReader,
-    ModelSummary,
-  },
-  pagination::{Page, PageLimit},
-};
 use aircraft_db::{SqlxCredentialStore, readiness::PoolReadiness};
-use aircraft_domain::catalog::{FamilyId, Slug};
 use aircraft_domain::reference::Catalog;
 use aircraft_testsupport::{TestResult, install_schema, start_postgres};
 use async_trait::async_trait;
@@ -39,6 +31,10 @@ use serde_json::{Value, json};
 use sqlx_core::{query::query, query_scalar::query_scalar};
 use tower::ServiceExt as _;
 use uuid::Uuid;
+
+mod common;
+
+use common::UnreadCatalog;
 
 const REQUEST_ID: &str = "real-database-problem-test";
 
@@ -78,8 +74,9 @@ fn state(readiness: Arc<dyn ReadinessProbe>) -> ApiState {
   ApiState {
     readiness,
     catalogs: Arc::new(NoCatalogs),
-    families: Arc::new(NoCatalogs),
-    models: Arc::new(NoCatalogs),
+    families: Arc::new(UnreadCatalog),
+    models: Arc::new(UnreadCatalog),
+    variants: Arc::new(UnreadCatalog),
     authentication: Arc::new(AuthenticationService::new(Arc::new(NeverLooksUp))),
     version: "9.9.9-test",
     build_commit: None,
@@ -219,43 +216,4 @@ async fn a_real_unique_violation_maps_to_a_correlated_redacted_conflict_problem(
     assert_absent(&body, needle, description);
   }
   Ok(())
-}
-
-/// The model routes are registered on every router this file builds, so the
-/// state must carry their ports. No test here requests them, and a panic is a
-/// clearer failure than an empty page if one ever does.
-#[async_trait]
-impl FamilyReader for NoCatalogs {
-  async fn list_families(
-    &self,
-    _filter: &FamilyFilter,
-    _limit: PageLimit,
-    _after: Option<&Slug>,
-  ) -> Result<Page<FamilySummary, Slug>, PersistenceError> {
-    panic!("no test in this file lists families")
-  }
-
-  async fn family(&self, _slug: &Slug) -> Result<Option<FamilyDetail>, PersistenceError> {
-    panic!("no test in this file reads a family")
-  }
-
-  async fn family_id(&self, _slug: &Slug) -> Result<Option<FamilyId>, PersistenceError> {
-    panic!("no test in this file resolves a family")
-  }
-}
-
-#[async_trait]
-impl ModelReader for NoCatalogs {
-  async fn list_models(
-    &self,
-    _filter: &ModelFilter,
-    _limit: PageLimit,
-    _after: Option<&Slug>,
-  ) -> Result<Page<ModelSummary, Slug>, PersistenceError> {
-    panic!("no test in this file lists models")
-  }
-
-  async fn model(&self, _slug: &Slug) -> Result<Option<ModelDetail>, PersistenceError> {
-    panic!("no test in this file reads a model")
-  }
 }

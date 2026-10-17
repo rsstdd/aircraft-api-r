@@ -19,7 +19,9 @@ SQL validation. The API crate implements Axum health, readiness, and version
 contracts, bearer authentication with route-scope enforcement, RFC 9457 problem
 documents, validated list queries and cursors, and the scoped
 `GET /v1/reference/{catalog}` catalog route, and the scoped
-`GET /v1/models` and `GET /v1/models/{model}` routes, with OpenAPI generation.
+`GET /v1/families`, `GET /v1/families/{family}`, `GET /v1/models`,
+`GET /v1/models/{model}`, and `GET /v1/variants` routes, with OpenAPI
+generation.
 `apps/server`
 boots: it loads HTTP and database settings, initializes tracing, builds a
 bounded database pool, binds a listener, and serves that router, with
@@ -317,11 +319,11 @@ server -> composes adapters and runtime infrastructure
 |---|---|---|
 | `Cargo.toml` | Workspace membership, shared dependencies, lints, profiles | Cargo resolves eleven packages |
 | `apps/ingest/` | Ingestion CLI composition root | Working deployment candidate with Docker-backed gates |
-| `apps/server/` | HTTP runtime composition | Boots, builds a verified database pool, serves health, readiness, version, and the reference catalogs, correlates and traces every request, enforces perimeter limits, per-principal rate limits, and CORS, and drains on signal |
+| `apps/server/` | HTTP runtime composition | Boots, builds a verified database pool, serves health, readiness, version, the reference catalogs, and the family, model, and variant catalog routes, correlates and traces every request, enforces perimeter limits, per-principal rate limits, and CORS, and drains on signal |
 | `crates/aircraft_domain/` | Pure entities, values, units, invariants | Ingestion invariants implemented; broader domain mostly scaffolded |
 | `crates/aircraft_app/` | Use cases and ports | Ingestion orchestration implemented; broader application incomplete |
-| `crates/aircraft_api/` | Axum DTOs, routes, middleware, OpenAPI | Health, readiness, and version routes, the scoped reference-catalog route, the scoped model collection and detail routes with keyset paging and a family filter, bearer authentication and route-scope enforcement, RFC 9457 problem documents, per-principal rate limiting, pagination and measurement representations, and the OpenAPI contract |
-| `crates/aircraft_db/` | SQLx repositories and schema mappings | Ingestion, curation, credential, authentication, reference-catalog, family, and model repositories implemented; `aircraft_repository` and `comparison_repository` remain empty scaffolds |
+| `crates/aircraft_api/` | Axum DTOs, routes, middleware, OpenAPI | Health, readiness, and version routes, the scoped reference-catalog route, the scoped family, model, and variant catalog routes with keyset paging, conjunctive filters, and a reported page limit, bearer authentication and route-scope enforcement, RFC 9457 problem documents, per-principal rate limiting, pagination and measurement representations, and the OpenAPI contract |
+| `crates/aircraft_db/` | SQLx repositories and schema mappings | Ingestion, curation, credential, authentication, reference-catalog, family, model, and variant repositories implemented; `aircraft_repository` and `comparison_repository` remain empty scaffolds |
 | `crates/aircraft_ingest/` | Source capture, parsing, normalization | PlanePHD adapter implemented |
 | `crates/aircraft_config/` | Typed runtime configuration | Ingestion, HTTP, database-URL, database pool, perimeter limit and CORS, and rate-limit quota settings implemented |
 | `crates/aircraft_observability/` | Structured tracing and telemetry | Basic tracing setup implemented; broader telemetry partial |

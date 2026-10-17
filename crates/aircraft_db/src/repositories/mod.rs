@@ -7,3 +7,4 @@ pub mod family_repository;
 pub mod ingestion_repository;
 pub mod model_repository;
 pub mod reference_repository;
+pub mod variant_repository;

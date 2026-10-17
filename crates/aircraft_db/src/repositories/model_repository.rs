@@ -19,9 +19,9 @@ use aircraft_app::{
   ingestion::PersistenceError,
   pagination::{Page, PageLimit},
 };
-use aircraft_domain::catalog::{FamilyId, Slug};
+use aircraft_domain::catalog::{FamilyId, ModelId, Slug};
 use async_trait::async_trait;
-use sqlx_core::{query::query, row::Row};
+use sqlx_core::{query::query, query_scalar::query_scalar, row::Row};
 use sqlx_postgres::{PgPool, PgRow};
 
 use crate::repositories::ingestion_repository::database_error;
@@ -58,6 +58,13 @@ SELECT m.slug, m.name, m.display_name, f.slug AS family, \
   FROM aircraft_core.models m \
   LEFT JOIN aircraft_core.families f ON f.id = m.family_id \
  WHERE m.slug = $1";
+
+/// The id behind a model's public slug.
+///
+/// Its own statement rather than a column on either projection, for the reason
+/// `family_repository::FAMILY_ID` gives: the caller is resolving a filter, not
+/// reading a model, and `id` is withheld from everything a client reads.
+const MODEL_ID: &str = "SELECT id FROM aircraft_core.models WHERE slug = $1";
 
 /// A stored value the catalog contract cannot represent.
 ///
@@ -165,5 +172,21 @@ impl ModelReader for SqlxModelReader {
       name_aliases: aliases.unwrap_or_default(),
       description: row.try_get("description").map_err(database_error)?,
     }))
+  }
+
+  /// # Errors
+  ///
+  /// [`PersistenceError::Database`] carrying the sanitized `SQLx` failure. No
+  /// [`PersistenceError::Invariant`] is reachable: the column is the table's
+  /// `BIGINT` primary key, so there is no stored value a [`ModelId`] cannot
+  /// hold.
+  async fn model_id(&self, slug: &Slug) -> Result<Option<ModelId>, PersistenceError> {
+    let id: Option<i64> = query_scalar(MODEL_ID)
+      .bind(slug.as_str())
+      .fetch_optional(&self.pool)
+      .await
+      .map_err(database_error)?;
+
+    Ok(id.map(ModelId::new))
   }
 }

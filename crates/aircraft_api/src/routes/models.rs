@@ -22,7 +22,6 @@ use std::num::NonZeroU16;
 use aircraft_app::{
   catalog::{ModelDetail, ModelFilter, ModelSummary},
   ingestion::PersistenceError,
-  pagination::Page,
 };
 use aircraft_domain::catalog::Slug;
 use axum::{
@@ -34,22 +33,9 @@ use utoipa::ToSchema;
 
 use crate::{
   ApiState,
-  pagination::{CursorPosition, FilterFingerprint, ListQuery, PageResponse, encode},
+  pagination::{FilterFingerprint, ListQuery, PageResponse},
   problem::{ApiProblem, ApiQuery, PerimeterResponses, ProblemDetails},
 };
-
-/// This endpoint's whole sort allowlist.
-///
-/// One order, because `aircraft_core.models.slug` is `NOT NULL UNIQUE`
-/// (`004:76`) and so is already the total order the accepted decision requires
-/// of every sort -- the unique identifier *is* the sort key, and no separate
-/// tiebreaker exists to add. A second order is a change to this allowlist and
-/// to the adapter's `ORDER BY` together.
-///
-/// Spelled as a constant because two things compare against it: the `sort`
-/// query parameter and the `sort` a cursor carries. The parameter is typed, so
-/// the comparison that can actually fail is the cursor's.
-const SLUG_ASCENDING: &str = "slug_asc";
 
 /// Which order a caller asked for.
 ///
@@ -67,7 +53,7 @@ pub enum ModelSort {
 impl ModelSort {
   const fn code(self) -> &'static str {
     match self {
-      Self::SlugAsc => SLUG_ASCENDING,
+      Self::SlugAsc => "slug_asc",
     }
   }
 }
@@ -198,20 +184,15 @@ impl From<ModelDetail> for ModelDetailResponse {
   }
 }
 
-/// The failure class a read reported, as the one answer it maps to.
+/// Logs the failure class and answers with the status its class earns.
 ///
-/// The split is `routes::reference::catalog`'s and the reasoning is the same: a
-/// `Database` failure is a dependency outage that `503` correctly invites a
-/// retry for, while an `Invariant` failure means the database answered and
-/// broke a rule this service set, which no retry clears. The class is logged
-/// and never served, so the document carries no diagnostic.
+/// The mapping is `ApiProblem::from_persistence`'s, shared with every other
+/// catalog route. What stays here is the log line: the class is recorded for an
+/// operator correlating the failure, and never served, because the document
+/// cannot carry a diagnostic.
 fn read_failure(error: &PersistenceError, instance: &str, operation: &str) -> Response {
   tracing::warn!(code = error.code(), operation, "model read failed");
-  match error {
-    PersistenceError::Database { .. } => ApiProblem::database_unavailable(instance),
-    PersistenceError::Invariant(_) => ApiProblem::internal(instance),
-  }
-  .into_response()
+  ApiProblem::from_persistence(error, instance).into_response()
 }
 
 /// What this endpoint's cursor is bound to.
@@ -369,33 +350,14 @@ pub async fn list_models(
     Err(error) => return read_failure(&error, instance, "list_models"),
   };
 
-  axum::Json(page_response(page, sort, filters)).into_response()
-}
-
-/// Renders a page, issuing the continuation its last row implies.
-///
-/// The cursor's `last_value` and `tiebreaker` are the same slug because this
-/// endpoint's sort key *is* its unique identifier; they are both set rather
-/// than one left empty so the token stays readable by the shared decoder and a
-/// future second sort does not change the payload's shape.
-fn page_response(
-  page: Page<ModelSummary, Slug>,
-  sort: ModelSort,
-  filters: FilterFingerprint,
-) -> PageResponse<ModelSummaryResponse> {
-  let (resume, rows) = page.into_parts();
-  let next_cursor = resume.map(|last| {
-    encode(
-      &CursorPosition {
-        sort: sort.code().to_owned(),
-        last_value: last.as_str().to_owned(),
-        tiebreaker: last.as_str().to_owned(),
-      },
-      filters,
-    )
-  });
-
-  PageResponse { items: rows.into_iter().map(ModelSummaryResponse::from).collect(), next_cursor }
+  axum::Json(crate::pagination::render_page(
+    page,
+    sort.code(),
+    filters,
+    limit,
+    ModelSummaryResponse::from,
+  ))
+  .into_response()
 }
 
 #[utoipa::path(
@@ -403,7 +365,8 @@ fn page_response(
   path = "/v1/models/{model}",
   tag = "catalog",
   summary = "Read one model",
-  description = "One model by its slug. A slug no model carries is a 404.",
+  description = "One model by its slug. A segment that is not a slug is a 400; a \
+                 slug no model carries is a 404.",
   params(
     (
       "model" = String, Path,
@@ -419,6 +382,16 @@ fn page_response(
       status = 200,
       description = "The model",
       body = ModelDetailResponse,
+      headers(
+        ("X-Request-Id" = String, description = "The correlation identifier for this \
+         request, echoed from the client or generated here.")
+      )
+    ),
+    (
+      status = 400,
+      description = "The path segment is not a slug",
+      body = ProblemDetails,
+      content_type = "application/problem+json",
       headers(
         ("X-Request-Id" = String, description = "The correlation identifier for this \
          request, echoed from the client or generated here.")
@@ -455,11 +428,16 @@ pub async fn model(
 ) -> Response {
   let instance = uri.path();
 
-  // A path segment that is not a slug names nothing, so it is the same `404` a
-  // well-formed slug with no row gets. Answering `400` here would tell a caller
-  // probing identifiers which of their guesses were even shaped right.
+  // Malformed, not absent. This answered `404` when the route first shipped, on
+  // the argument that a `400` would tell a caller probing identifiers which
+  // guesses were shaped right. #39 retired that argument: every model slug it
+  // would protect is already enumerated by the collection under the same scope,
+  // so the collapse hid nothing but the client's own malformed request, and
+  // `docs/architecture/http_v1_decisions.md` carries malformed input and
+  // not-found as distinct classes. `crate::routes::families` records the full
+  // reasoning; change both together.
   let Ok(slug) = Slug::try_from(requested.as_str()) else {
-    return ApiProblem::not_found(instance).into_response();
+    return ApiProblem::validation_failed(instance).into_response();
   };
 
   match state.models.model(&slug).await {

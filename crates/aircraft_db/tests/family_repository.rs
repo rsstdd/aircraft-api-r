@@ -15,12 +15,15 @@
 use std::time::Duration;
 
 use aircraft_app::{
-  catalog::{FamilyFilter, FamilyReader as _, ModelFilter, ModelReader as _},
+  catalog::{
+    FamilyFilter, FamilyReader as _, ModelFilter, ModelReader as _, VariantFilter,
+    VariantReader as _,
+  },
   ingestion::PersistenceError,
   pagination::PageLimit,
 };
-use aircraft_db::{SqlxFamilyReader, SqlxModelReader, pool::connect};
-use aircraft_domain::catalog::{CountryCode, FamilyId, Slug};
+use aircraft_db::{SqlxFamilyReader, SqlxModelReader, SqlxVariantReader, pool::connect};
+use aircraft_domain::catalog::{CountryCode, FamilyId, LookupCode, Slug};
 use aircraft_testsupport::{TestResult, install_schema, run_psql, sqlstate, start_postgres};
 use sqlx_core::{query::query, query_scalar::query_scalar, row::Row};
 use sqlx_postgres::PgPool;
@@ -368,33 +371,42 @@ async fn the_runtime_role_reads_the_catalog_and_writes_none() -> TestResult {
   // because the filter reads `family_id`, which the unfiltered list never
   // touches and PostgreSQL checks as a `WHERE` column privilege.
   let models = SqlxModelReader::new(runtime.clone());
-  query("INSERT INTO aircraft_core.models (family_id, slug, name) VALUES ($1, 'c-172', '172')")
-    .bind(family)
-    .execute(&admin)
-    .await?;
+  let model: i64 = query_scalar(
+    "INSERT INTO aircraft_core.models (family_id, slug, name)
+         VALUES ($1, 'c-172', '172') RETURNING id",
+  )
+  .bind(family)
+  .fetch_one(&admin)
+  .await?;
   let filter = ModelFilter { family: Some(FamilyId::new(family)) };
   let page = models.list_models(&filter, limit(50), None).await?;
   assert_eq!(page.items().len(), 1, "the runtime role must read models");
   assert!(models.model(&slug("c-172")).await?.is_some(), "and read one by slug");
 
-  // Variants are granted ahead of the reader issue #42 adds, so the grant is
-  // proven before a statement depends on it rather than after a route answers
-  // 503. Every published column is named explicitly: PostgreSQL checks column
-  // privileges per column, so `SELECT *` would pass against a grant missing
-  // exactly the column a projection needs.
-  for projection in
-    ["SELECT id, slug, name, popular_name, model_id, variant_type_code, service_status_code,
-            country_of_origin_code, first_flight_year, certification_year,
-            production_start_year, production_end_year, passenger_capacity, crew_count,
-            engine_count, landing_gear_type_code, propulsion_category_code,
-            is_in_production, description
-       FROM aircraft_core.variants ORDER BY slug, id LIMIT 1"]
-  {
-    query(projection)
-      .execute(&runtime)
-      .await
-      .unwrap_or_else(|error| panic!("the runtime role must read the catalog: {error}"));
-  }
+  // The variant reader's own statements, as the role runs them. A filtered list
+  // and the code-existence check are driven, not just an unfiltered page: the
+  // filters read `m.family_id` and the reference vocabularies, columns and
+  // tables an unfiltered page never touches and PostgreSQL checks as `WHERE`
+  // privileges.
+  let variants = SqlxVariantReader::new(runtime.clone());
+  query("INSERT INTO aircraft_core.variants (model_id, slug, name) VALUES ($1, 'c-172s', '172S')")
+    .bind(model)
+    .execute(&admin)
+    .await?;
+  let variant_filter = VariantFilter {
+    family: Some(FamilyId::new(family)),
+    variant_type: Some(LookupCode::try_from("PRODUCTION_STANDARD").expect("a seeded code")),
+    country_of_origin: Some(CountryCode::try_from("USA").expect("a seeded country")),
+    ..VariantFilter::default()
+  };
+  // The codes are seeded and the row carries neither, so this is an empty page
+  // rather than a refusal -- which is the answer that proves the existence
+  // check ran as this role and could read the vocabularies.
+  let page = variants.list_variants(&variant_filter, limit(50), None).await?;
+  assert!(page.items().is_empty(), "the filters match no row, which is not a failure");
+  let page = variants.list_variants(&VariantFilter::default(), limit(50), None).await?;
+  assert_eq!(page.items().len(), 1, "the runtime role must read variants");
+  assert!(variants.variant(&slug("c-172s")).await?.is_some(), "and read one by slug");
 
   for statement in [
     "UPDATE aircraft_core.models SET name = 'x'",

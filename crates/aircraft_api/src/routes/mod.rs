@@ -22,13 +22,16 @@
 //! `crate::openapi` publishes each scoped operation's security requirement
 //! from, and what the tests read against the generated `OpenAPI` document
 //! operation by operation. `/health`, `/ready`,
-//! and `/version` are `Public`; `/v1/reference/{catalog}`, `/v1/models`, and
-//! `/v1/models/{model}` are `CatalogRead`.
+//! and `/version` are `Public`; `/v1/reference/{catalog}`, `/v1/families`,
+//! `/v1/families/{family}`, `/v1/models`, `/v1/models/{model}`, and
+//! `/v1/variants` are `CatalogRead`.
 
+pub mod families;
 pub mod health;
 pub mod models;
 pub mod ready;
 pub mod reference;
+pub mod variants;
 pub mod version;
 
 use std::{convert::Infallible, future::Future, pin::Pin, time::Instant};

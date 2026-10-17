@@ -10,6 +10,7 @@
 use std::{borrow::Cow, collections::BTreeMap};
 
 use aircraft_app::authentication::Scope;
+use aircraft_app::ingestion::PersistenceError;
 use axum::{
   Json as AxumJson,
   extract::{
@@ -349,6 +350,25 @@ impl ApiProblem {
   #[must_use]
   pub fn rate_limited(instance: &str, retry_after_seconds: u64) -> Self {
     Self::new(ProblemKind::RateLimited { retry_after_seconds }, instance)
+  }
+
+  /// The one answer a repository failure gets, by class.
+  ///
+  /// A `Database` failure is the dependency's outage, which `503` correctly
+  /// invites a retry for; an `Invariant` failure means the database answered and
+  /// broke a rule this service set, which no retry clears, so it is the `500`
+  /// the problem table assigns. Collapsing the two would tell an operator the
+  /// database is down while it is healthy.
+  ///
+  /// Shared by every catalog route rather than copied into each: the mapping is
+  /// a property of the error, not of the endpoint. The caller logs the class
+  /// itself, because the document deliberately cannot carry one.
+  #[must_use]
+  pub fn from_persistence(error: &PersistenceError, instance: &str) -> Self {
+    match error {
+      PersistenceError::Database { .. } => Self::database_unavailable(instance),
+      PersistenceError::Invariant(_) => Self::internal(instance),
+    }
   }
 
   #[must_use]

@@ -133,11 +133,12 @@ mod tests {
   use aircraft_app::{
     catalog::{
       FamilyDetail, FamilyFilter, FamilyReader, FamilySummary, ModelDetail, ModelFilter,
-      ModelReader, ModelSummary,
+      ModelReader, ModelSummary, VariantDetail, VariantFilter, VariantReadError, VariantReader,
+      VariantSummary,
     },
     pagination::{Page, PageLimit},
   };
-  use aircraft_domain::catalog::{FamilyId, Slug};
+  use aircraft_domain::catalog::{FamilyId, ModelId, Slug};
   use aircraft_domain::reference::Catalog;
   use anyhow::Result;
   use async_trait::async_trait;
@@ -178,11 +179,19 @@ mod tests {
   /// Panics if consulted: no route here reads a reference catalog.
   struct NoCatalogs;
 
-  /// The model routes are registered on every router this module builds, so the
-  /// state must carry their ports. No test here requests them, and a panic is a
-  /// clearer failure than an empty page if one ever does.
+  /// Satisfies the three catalog reader ports and serves none of them.
+  ///
+  /// A local copy, not `tests/common/mod.rs`: this is a `#[cfg(test)]` module
+  /// inside `src/`, which no `tests/` tree is in scope for. It cannot live in
+  /// `aircraft_testsupport` either, because `cargo run -p xtask -- boundaries`
+  /// forbids that crate from depending on `aircraft_domain`, whose `Slug`,
+  /// `FamilyId`, and `ModelId` the port signatures name. The duplication is the
+  /// boundary rule's, not a choice.
+  #[derive(Clone, Copy, Debug, Default)]
+  struct UnreadCatalog;
+
   #[async_trait]
-  impl FamilyReader for NoCatalogs {
+  impl FamilyReader for UnreadCatalog {
     async fn list_families(
       &self,
       _filter: &FamilyFilter,
@@ -202,7 +211,7 @@ mod tests {
   }
 
   #[async_trait]
-  impl ModelReader for NoCatalogs {
+  impl ModelReader for UnreadCatalog {
     async fn list_models(
       &self,
       _filter: &ModelFilter,
@@ -214,6 +223,26 @@ mod tests {
 
     async fn model(&self, _slug: &Slug) -> Result<Option<ModelDetail>, PersistenceError> {
       panic!("no test in this module reads a model")
+    }
+
+    async fn model_id(&self, _slug: &Slug) -> Result<Option<ModelId>, PersistenceError> {
+      panic!("no test in this module resolves a model")
+    }
+  }
+
+  #[async_trait]
+  impl VariantReader for UnreadCatalog {
+    async fn list_variants(
+      &self,
+      _filter: &VariantFilter,
+      _limit: PageLimit,
+      _after: Option<&Slug>,
+    ) -> Result<Page<VariantSummary, Slug>, VariantReadError> {
+      panic!("no test in this module lists variants")
+    }
+
+    async fn variant(&self, _slug: &Slug) -> Result<Option<VariantDetail>, PersistenceError> {
+      panic!("no test in this module reads a variant")
     }
   }
 
@@ -243,8 +272,9 @@ mod tests {
     ApiState {
       readiness: Arc::new(AlwaysReady),
       catalogs: Arc::new(NoCatalogs),
-      families: Arc::new(NoCatalogs),
-      models: Arc::new(NoCatalogs),
+      families: Arc::new(UnreadCatalog),
+      models: Arc::new(UnreadCatalog),
+      variants: Arc::new(UnreadCatalog),
       authentication: Arc::new(AuthenticationService::new(lookup)),
       version: "9.9.9-test",
       build_commit: None,

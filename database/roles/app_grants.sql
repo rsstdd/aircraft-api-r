@@ -183,6 +183,18 @@ GRANT SELECT (code, label, description, sort_order, is_active)
 -- stay ungranted.
 GRANT USAGE ON SCHEMA aircraft_core TO :"app_role";
 GRANT USAGE ON SCHEMA aircraft_org TO :"app_role";
+GRANT USAGE ON SCHEMA aircraft_geo TO :"app_role";
+
+-- `code` only, and only because the variant collection's country filter must
+-- tell a code this vocabulary does not carry from one that simply matches no
+-- row: `crates/aircraft_db/src/repositories/variant_repository.rs` reports the
+-- first as the caller's error, which needs an existence check here. `name` is
+-- not read by any statement and stays ungranted, as do the other
+-- `aircraft_geo` tables, which no catalog statement touches.
+-- `the_runtime_role_reads_the_catalog_and_writes_none` caught the absence of
+-- this grant before it could answer 503 in production.
+GRANT SELECT (code)
+    ON aircraft_geo.countries TO :"app_role";
 
 -- id is granted because a model statement joins models.family_id back to it for
 -- the family's public slug.
@@ -194,16 +206,14 @@ GRANT SELECT (id, slug, name, common_name, manufacturer_org_id, country_of_origi
 GRANT SELECT (id, slug)
     ON aircraft_org.organizations TO :"app_role";
 
--- Models, read by crates/aircraft_db/src/repositories/model_repository.rs, which
--- names this file in turn; and variants, for the reader issue #42 adds. The
--- projections are aircraft_app::catalog's ModelSummary/ModelDetail and
--- VariantSummary/VariantDetail. Granting variants ahead of their statements is
--- deliberate, because every test connects as the container owner and cannot see
--- a missing grant -- the route would pass its whole suite and answer 503 in
--- production, as happened for aircraft_ref in #145 and for families in #38.
+-- Models and variants, read by
+-- crates/aircraft_db/src/repositories/model_repository.rs and
+-- variant_repository.rs, which name this file in turn. The projections are
+-- aircraft_app::catalog's ModelSummary/ModelDetail and
+-- VariantSummary/VariantDetail.
 --
--- id is granted on both: variants join models.id, and #42 requires the variant id
--- as the sort tiebreaker, which PostgreSQL checks as an ORDER BY column
+-- id is granted on both: variants join models.id, and the variant statement
+-- orders by slug then id, which PostgreSQL checks as an ORDER BY column
 -- privilege. The generated tsvectors, extra_attributes, the row timestamps, and
 -- the ingest_key and source_path staging columns are not published and stay
 -- ungranted.

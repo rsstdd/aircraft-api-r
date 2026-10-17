@@ -40,7 +40,7 @@ use aircraft_app::{
   reference::{CatalogEntry, CatalogReader},
 };
 use aircraft_domain::{
-  catalog::{FamilyId, Slug},
+  catalog::{FamilyId, ModelId, Slug},
   reference::Catalog,
 };
 use aircraft_testsupport::TestResult;
@@ -52,6 +52,10 @@ use axum::{
 use serde_json::{Value, json};
 use tower::ServiceExt as _;
 use uuid::Uuid;
+
+mod common;
+
+use common::UnreadCatalog;
 
 const LIST: &str = "/__test/models";
 const DETAIL: &str = "/__test/models/{model}";
@@ -190,6 +194,10 @@ impl ModelReader for StubModels {
       },
     ))
   }
+
+  async fn model_id(&self, _slug: &Slug) -> Result<Option<ModelId>, PersistenceError> {
+    panic!("no test in this file resolves a model")
+  }
 }
 
 fn slug(value: &str) -> Slug {
@@ -215,6 +223,7 @@ fn state(families: Arc<StubFamilies>, models: Arc<StubModels>) -> ApiState {
     catalogs: Arc::new(NoCatalogs),
     families,
     models,
+    variants: Arc::new(UnreadCatalog),
     authentication: Arc::new(AuthenticationService::new(Arc::new(NeverLooksUp))),
     version: "9.9.9-test",
     build_commit: None,
@@ -285,9 +294,11 @@ async fn a_page_of_models_publishes_the_contract_the_application_types_describe(
         },
         { "slug": "c-182", "name": "C-182", "family": "cessna" }
       ],
-      "next_cursor": null
+      "next_cursor": null,
+      "limit": 50
     }),
-    "an absent optional member is omitted, and a final page's cursor is null"
+    "an absent optional member is omitted, a final page's cursor is null, and the \
+     effective limit is reported"
   );
   Ok(())
 }
@@ -304,7 +315,7 @@ async fn a_family_that_exists_with_no_models_is_a_successful_empty_collection() 
     get(serving(families.clone(), models.clone()), &format!("{LIST}?family=cessna")).await?;
 
   assert_eq!(status, StatusCode::OK);
-  assert_eq!(body, json!({ "items": [], "next_cursor": null }));
+  assert_eq!(body, json!({ "items": [], "next_cursor": null, "limit": 50 }));
   assert_eq!(
     *models.calls.lock().expect("an uncontended lock"),
     vec![(Some(CESSNA), None)],
@@ -487,9 +498,11 @@ async fn a_forged_cursor_naming_another_sort_does_not_resume_the_scan() -> TestR
 }
 
 /// AC3. Present and absent together, so a handler answering `404` for
-/// everything passes neither half. A path segment that is not a slug is the
-/// same `404`: it names nothing, and a `400` would tell a caller probing
-/// identifiers which guesses were even shaped right.
+/// everything passes neither half. A segment that is not a slug is a `400` and
+/// not a `404`: it is the caller's own malformed request, which the problem
+/// table carries as its own class. This route answered `404` for it until #39,
+/// whose AC2 required the split and whose module header records why the
+/// information-disclosure argument for collapsing them does not hold here.
 #[tokio::test]
 async fn one_model_is_served_by_slug_and_anything_else_is_not_found() -> TestResult {
   let detail = ModelDetail {
@@ -514,11 +527,13 @@ async fn one_model_is_served_by_slug_and_anything_else_is_not_found() -> TestRes
     "an empty alias list is still published; absent optionals are omitted"
   );
 
-  for missing in ["c-999", "NOT+A+SLUG"] {
-    let (status, body) = get(router(), &format!("/__test/models/{missing}")).await?;
-    assert_eq!(status, StatusCode::NOT_FOUND, "{missing} names no model");
-    assert_eq!(body["status"], json!(404));
-  }
+  let (status, body) = get(router(), "/__test/models/c-999").await?;
+  assert_eq!(status, StatusCode::NOT_FOUND, "a well-formed slug naming nothing is absent");
+  assert_eq!(body["status"], json!(404));
+
+  let (status, body) = get(router(), "/__test/models/NOT+A+SLUG").await?;
+  assert_eq!(status, StatusCode::BAD_REQUEST, "a segment that cannot be a slug is malformed");
+  assert_eq!(body["status"], json!(400));
   Ok(())
 }
 

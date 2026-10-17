@@ -39,14 +39,6 @@ use aircraft_app::{
   readiness::ReadinessProbe,
   reference::{CatalogEntry, CatalogReader},
 };
-use aircraft_app::{
-  catalog::{
-    FamilyDetail, FamilyFilter, FamilyReader, FamilySummary, ModelDetail, ModelFilter, ModelReader,
-    ModelSummary,
-  },
-  pagination::{Page, PageLimit},
-};
-use aircraft_domain::catalog::{FamilyId, Slug};
 use aircraft_domain::reference::Catalog;
 use anyhow::{Context, Result};
 use async_trait::async_trait;
@@ -61,6 +53,10 @@ use tower::ServiceExt as _;
 use tracing::instrument::WithSubscriber as _;
 use tracing_subscriber::fmt::MakeWriter;
 use uuid::Uuid;
+
+mod common;
+
+use common::UnreadCatalog;
 
 struct AlwaysReady;
 
@@ -88,9 +84,10 @@ impl ReadinessProbe for FailsWith {
 /// Collects formatted `tracing` output so a test can read an event back.
 ///
 /// The same shape as the writer in `apps/server/tests/shutdown.rs`, duplicated
-/// rather than shared: the only home for it would be `aircraft_testsupport`,
-/// and taking a dev-dependency on a Docker-backed `PostgreSQL` harness to reach a
-/// byte buffer costs far more than the twenty lines it saves.
+/// rather than shared: its only home would be `aircraft_testsupport`, and a
+/// twenty-line byte buffer does not earn a place in the shared harness the way
+/// the catalog port fakes imported above do -- those exist in every state this
+/// crate builds, this exists in two files.
 #[derive(Clone, Default)]
 struct CapturedLogs(Arc<Mutex<Vec<u8>>>);
 
@@ -288,8 +285,9 @@ fn state_with(readiness: Arc<dyn ReadinessProbe>, lookup: Arc<dyn CredentialLook
   ApiState {
     readiness,
     catalogs: Arc::new(NoCatalogs),
-    families: Arc::new(NoCatalogs),
-    models: Arc::new(NoCatalogs),
+    families: Arc::new(UnreadCatalog),
+    models: Arc::new(UnreadCatalog),
+    variants: Arc::new(UnreadCatalog),
     authentication: Arc::new(AuthenticationService::new(lookup)),
     version: "9.9.9-test",
     build_commit: None,
@@ -514,43 +512,4 @@ async fn authentication_traces_carry_no_credential_material_on_any_outcome() -> 
     );
   }
   Ok(())
-}
-
-/// The model routes are registered on every router this file builds, so the
-/// state must carry their ports. No test here requests them, and a panic is a
-/// clearer failure than an empty page if one ever does.
-#[async_trait]
-impl FamilyReader for NoCatalogs {
-  async fn list_families(
-    &self,
-    _filter: &FamilyFilter,
-    _limit: PageLimit,
-    _after: Option<&Slug>,
-  ) -> Result<Page<FamilySummary, Slug>, PersistenceError> {
-    panic!("no test in this file lists families")
-  }
-
-  async fn family(&self, _slug: &Slug) -> Result<Option<FamilyDetail>, PersistenceError> {
-    panic!("no test in this file reads a family")
-  }
-
-  async fn family_id(&self, _slug: &Slug) -> Result<Option<FamilyId>, PersistenceError> {
-    panic!("no test in this file resolves a family")
-  }
-}
-
-#[async_trait]
-impl ModelReader for NoCatalogs {
-  async fn list_models(
-    &self,
-    _filter: &ModelFilter,
-    _limit: PageLimit,
-    _after: Option<&Slug>,
-  ) -> Result<Page<ModelSummary, Slug>, PersistenceError> {
-    panic!("no test in this file lists models")
-  }
-
-  async fn model(&self, _slug: &Slug) -> Result<Option<ModelDetail>, PersistenceError> {
-    panic!("no test in this file reads a model")
-  }
 }

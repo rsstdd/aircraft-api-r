@@ -33,11 +33,11 @@ use aircraft_app::{
 use aircraft_app::{
   catalog::{
     FamilyDetail, FamilyFilter, FamilyReader, FamilySummary, ModelDetail, ModelFilter, ModelReader,
-    ModelSummary,
+    ModelSummary, VariantDetail, VariantFilter, VariantReadError, VariantReader, VariantSummary,
   },
   pagination::{Page, PageLimit},
 };
-use aircraft_domain::catalog::{FamilyId, Slug};
+use aircraft_domain::catalog::{FamilyId, ModelId, Slug};
 use aircraft_domain::reference::Catalog;
 use anyhow::{Context, Result, anyhow};
 use async_trait::async_trait;
@@ -164,8 +164,9 @@ async fn start(grace: Duration, dispatch: tracing::Dispatch) -> Result<Harness> 
   let state = ApiState {
     readiness: Arc::new(BlockingProbe { entered: entered_tx, release: Arc::clone(&release) }),
     catalogs: Arc::new(NoCatalogs),
-    families: Arc::new(NoCatalogs),
-    models: Arc::new(NoCatalogs),
+    families: Arc::new(UnreadCatalog),
+    models: Arc::new(UnreadCatalog),
+    variants: Arc::new(UnreadCatalog),
     authentication: Arc::new(AuthenticationService::new(Arc::new(NeverLooksUp))),
     version: "9.9.9-test",
     build_commit: None,
@@ -336,11 +337,18 @@ async fn a_request_still_running_at_expiry_is_cancelled_and_counted() -> Result<
   Ok(())
 }
 
-/// The model routes are registered on every router, so the state must carry
-/// their ports. This file drives shutdown, not the catalog, and a panic is a
-/// clearer failure than an empty page if a request ever reaches one.
+/// Satisfies the three catalog reader ports and serves none of them.
+///
+/// A local copy: `crates/aircraft_api/tests/common/mod.rs` is not in scope from
+/// another crate's test, and `aircraft_testsupport` cannot host it because
+/// `cargo run -p xtask -- boundaries` forbids that crate from depending on
+/// `aircraft_domain`, whose vocabulary the port signatures name. This file's
+/// subject is shutdown; a catalog read here is a bug, so it panics.
+#[derive(Clone, Copy, Debug, Default)]
+struct UnreadCatalog;
+
 #[async_trait]
-impl FamilyReader for NoCatalogs {
+impl FamilyReader for UnreadCatalog {
   async fn list_families(
     &self,
     _filter: &FamilyFilter,
@@ -360,7 +368,7 @@ impl FamilyReader for NoCatalogs {
 }
 
 #[async_trait]
-impl ModelReader for NoCatalogs {
+impl ModelReader for UnreadCatalog {
   async fn list_models(
     &self,
     _filter: &ModelFilter,
@@ -372,5 +380,25 @@ impl ModelReader for NoCatalogs {
 
   async fn model(&self, _slug: &Slug) -> Result<Option<ModelDetail>, PersistenceError> {
     panic!("no test in this file reads a model")
+  }
+
+  async fn model_id(&self, _slug: &Slug) -> Result<Option<ModelId>, PersistenceError> {
+    panic!("no test in this file resolves a model")
+  }
+}
+
+#[async_trait]
+impl VariantReader for UnreadCatalog {
+  async fn list_variants(
+    &self,
+    _filter: &VariantFilter,
+    _limit: PageLimit,
+    _after: Option<&Slug>,
+  ) -> Result<Page<VariantSummary, Slug>, VariantReadError> {
+    panic!("no test in this file lists variants")
+  }
+
+  async fn variant(&self, _slug: &Slug) -> Result<Option<VariantDetail>, PersistenceError> {
+    panic!("no test in this file reads a variant")
   }
 }

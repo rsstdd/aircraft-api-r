@@ -11,7 +11,7 @@ use aircraft_api::{ApiState, shutdown::ShutdownState};
 use aircraft_app::authentication::AuthenticationService;
 use aircraft_config::{DatabaseSettings, Settings};
 use aircraft_db::{
-  SqlxCatalogReader, SqlxCredentialLookup, SqlxFamilyReader, SqlxModelReader,
+  SqlxCatalogReader, SqlxCredentialLookup, SqlxFamilyReader, SqlxModelReader, SqlxVariantReader,
   readiness::PoolReadiness,
 };
 use anyhow::{Context, Result};
@@ -103,6 +103,7 @@ async fn main() -> Result<()> {
     catalogs: Arc::new(SqlxCatalogReader::new(pool.clone())),
     families: Arc::new(SqlxFamilyReader::new(pool.clone())),
     models: Arc::new(SqlxModelReader::new(pool.clone())),
+    variants: Arc::new(SqlxVariantReader::new(pool.clone())),
     readiness: Arc::new(PoolReadiness::new(pool)),
     authentication,
     version: env!("CARGO_PKG_VERSION"),

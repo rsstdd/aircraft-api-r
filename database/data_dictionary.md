@@ -102,8 +102,9 @@ union of what the family statements read and what the contract withholds, so a
 column a later migration adds and nobody classifies fails the gate rather than
 passing unnoticed. For models it is
 `every_model_column_is_read_or_deliberately_withheld` in
-`crates/aircraft_db/tests/model_repository.rs`. The variant reader owes the same
-when it lands.
+`crates/aircraft_db/tests/model_repository.rs`, and for variants it is
+`every_variant_column_is_read_or_deliberately_withheld` in
+`crates/aircraft_db/tests/variant_repository.rs`.
 
 `aircraft_db::repositories::family_repository` is what reads
 `aircraft_core.families`, joining `aircraft_org.organizations` for the
@@ -128,6 +129,39 @@ join drop the row unseen. The slug a request carries is turned into that
 `FamilyId` by `FamilyReader::family_id`, a statement of its own in the family
 repository rather than a column on either projection: `id` stays withheld from
 everything a client reads, and resolving a filter is not reading a family.
+
+`aircraft_db::repositories::variant_repository` reads `aircraft_core.variants`,
+joining `aircraft_core.models` for the parent's public slug and for the family
+filter's `family_id`. That join is an inner join, unlike the model reader's join
+to families: `VariantSummary::model` is not optional, `model_id` is `NOT NULL`
+with `ON DELETE RESTRICT`, and a variant whose model were gone could not satisfy
+a family filter under any join. The order is `slug` then `id`; `slug` alone is
+already total, and `id` is named because the pagination decision requires a
+unique identifier as every order's final tiebreaker, which is also why
+`database/roles/app_grants.sql` grants it.
+
+Its nine filters are each `$n IS NULL OR column = $n`, except
+`produced_in_year`, which matches a run that started no later and either has not
+ended or ended no earlier -- the open-ended arm is load-bearing, because a NULL
+end year means still in production. Before the page, a single statement checks
+that every supplied reference code exists in its own vocabulary, so a code no
+vocabulary carries is `VariantReadError::UnknownFilterCode` and a caller-visible
+`400` rather than an empty page. That check is why the runtime role is granted
+`code` on `aircraft_geo.countries` and nothing else in `aircraft_geo`.
+`every_variant_column_is_read_or_deliberately_withheld` in
+`crates/aircraft_db/tests/variant_repository.rs` holds the installed column list
+against read plus withheld, as the family and model gates do.
+
+`aircraft_ref.year_value`, declared in
+`database/migrations/001_extensions_schemas_domains_triggers.sql` as a
+`SMALLINT` with `CHECK (VALUE BETWEEN 1900 AND 2100)`, is mirrored at the HTTP
+boundary by `EARLIEST_YEAR` and `LATEST_YEAR` in
+`crates/aircraft_api/src/routes/variants.rs`, which refuse a
+`produced_in_year` filter outside that range as an invalid filter rather than
+running a query the domain could never satisfy. Migration `001` is hashed and
+immutable and so cannot cite the Rust; this paragraph is the half of that
+mirror the migration cannot carry, and the bounds must move in all three
+places together.
 
 `aircraft_domain::reference::Catalog` is the allowlist behind
 `GET /v1/reference/{catalog}`: one variant per catalog, in this migration's

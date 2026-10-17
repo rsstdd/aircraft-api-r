@@ -230,17 +230,56 @@ pub trait ModelReader: Send + Sync {
   ) -> Result<Page<ModelSummary, Slug>, PersistenceError>;
 
   async fn model(&self, slug: &Slug) -> Result<Option<ModelDetail>, PersistenceError>;
+
+  /// The id a model's public slug names, for a caller building a
+  /// [`VariantFilter`] from a request.
+  ///
+  /// The counterpart of [`FamilyReader::family_id`] and there for the same
+  /// reason: [`VariantFilter::model`] carries a resolved [`ModelId`] so the
+  /// adapter runs no lookup per page, and the HTTP boundary has only the slug a
+  /// request carries.
+  ///
+  /// `Ok(None)` for a slug no model carries, so the boundary decides whether
+  /// that is a `404` or an empty collection.
+  async fn model_id(&self, slug: &Slug) -> Result<Option<ModelId>, PersistenceError>;
 }
 
-/// Reads variants. See [`FamilyReader`] for the error and absence contract.
+/// Why a variant collection read did not produce a page.
+///
+/// Separate from [`PersistenceError`] because the two are different answers.
+/// A persistence failure is the dependency's; an unknown filter code is the
+/// caller's, and issue #42 requires it to be caller-visible rather than
+/// indistinguishable from a filter that simply matched nothing. Collapsing them
+/// would make `?variant_type=NONSENSE` an empty `200`, which tells a client its
+/// filter worked.
+///
+/// The payload is the filter's name as the wire spells it, never the rejected
+/// value: the name is all a caller needs to fix the request, and it is this
+/// service's own vocabulary rather than caller-supplied text.
+#[derive(Debug, thiserror::Error)]
+pub enum VariantReadError {
+  #[error("the {0} filter names a code no reference row carries")]
+  UnknownFilterCode(&'static str),
+  #[error(transparent)]
+  Persistence(#[from] PersistenceError),
+}
+
+/// Reads variants. See [`FamilyReader`] for the absence contract.
 #[async_trait]
 pub trait VariantReader: Send + Sync {
+  /// One page of variants, bounded by `limit` and resuming after `after`.
+  ///
+  /// # Errors
+  ///
+  /// [`VariantReadError::UnknownFilterCode`] when a reference-code filter names
+  /// no row in its vocabulary, which the HTTP boundary answers `400`; and
+  /// [`VariantReadError::Persistence`] wrapping the repository's own failure.
   async fn list_variants(
     &self,
     filter: &VariantFilter,
     limit: PageLimit,
     after: Option<&Slug>,
-  ) -> Result<Page<VariantSummary, Slug>, PersistenceError>;
+  ) -> Result<Page<VariantSummary, Slug>, VariantReadError>;
 
   async fn variant(&self, slug: &Slug) -> Result<Option<VariantDetail>, PersistenceError>;
 }
@@ -326,10 +365,16 @@ mod tests {
   async fn a_repository_failure_propagates_its_exact_variant() {
     let reader = FakeCatalog::failing();
 
-    let listed = reader.list_variants(&VariantFilter::default(), limit(2), None).await;
+    // The collection wraps its persistence failure in `VariantReadError` so an
+    // unknown filter code stays distinguishable from an outage; the detail has
+    // no filters and so keeps the bare error.
+    let listed = match reader.list_variants(&VariantFilter::default(), limit(2), None).await {
+      Err(VariantReadError::Persistence(error)) => Some(error),
+      other => panic!("a repository failure must arrive as Persistence, got {other:?}"),
+    };
     let detailed = reader.variant(&slug("cessna-172s")).await;
 
-    for outcome in [listed.err(), detailed.err()] {
+    for outcome in [listed, detailed.err()] {
       match outcome {
         Some(PersistenceError::Database { code, .. }) => assert_eq!(code, "57P01"),
         other => panic!("the port must pass the repository's own failure through, got {other:?}"),
@@ -423,6 +468,10 @@ mod tests {
     async fn model(&self, _slug: &Slug) -> Result<Option<ModelDetail>, PersistenceError> {
       self.failure().map_or_else(|| Ok(None), Err)
     }
+
+    async fn model_id(&self, _slug: &Slug) -> Result<Option<ModelId>, PersistenceError> {
+      self.failure().map_or_else(|| Ok(None), Err)
+    }
   }
 
   #[async_trait]
@@ -432,9 +481,9 @@ mod tests {
       _filter: &VariantFilter,
       limit: PageLimit,
       _after: Option<&Slug>,
-    ) -> Result<Page<VariantSummary, Slug>, PersistenceError> {
+    ) -> Result<Page<VariantSummary, Slug>, VariantReadError> {
       if let Some(failure) = self.failure() {
-        return Err(failure);
+        return Err(VariantReadError::Persistence(failure));
       }
       Ok(Page::from_overfetched(self.variants.clone(), limit, |row: &VariantSummary| {
         row.slug.clone()
